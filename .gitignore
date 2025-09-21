@@ -1,0 +1,29 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.env
+.venv
+.pytest_cache/
+.ruff_cache/
+*.log
+*.pt
+*.zst
+manifest.json
+
+# AI stuff
+.claude/
+
+# Extra data
+wandb/
+logs/
+external/
+
+# Model checkpoints
+final_model/
+checkpoints/
