@@ -145,17 +145,29 @@ class BaseProbe(ABC):
                 "_tokens_per_sample not set. This should be set during _prepare_features."
             )
 
-        # Split scores by sample
-        if scores.dim() == 1:
-            # Binary scores [n_tokens]
-            sample_scores = torch.split(scores, self._tokens_per_sample.tolist())
-        else:
-            # Probability scores [n_tokens, n_classes]
-            sample_scores = torch.split(scores, self._tokens_per_sample.tolist(), dim=0)
+        split_sizes = self._tokens_per_sample.tolist()
 
-        # Aggregate each sample
         aggregated = []
-        for sample_score in sample_scores:
+        offset = 0
+        for size in split_sizes:
+            if size == 0:
+                if scores.dim() == 1:
+                    zero_value = torch.zeros(
+                        (), device=scores.device, dtype=scores.dtype
+                    )
+                else:
+                    zero_value = torch.zeros(
+                        scores.shape[1], device=scores.device, dtype=scores.dtype
+                    )
+                aggregated.append(zero_value)
+                offset += size
+                continue
+
+            if scores.dim() == 1:
+                sample_score = scores[offset : offset + size]
+            else:
+                sample_score = scores[offset : offset + size, :]
+
             if method == "mean":
                 aggregated.append(sample_score.mean(dim=0))
             elif method == "max":
@@ -168,6 +180,8 @@ class BaseProbe(ABC):
                 aggregated.append(sample_score[-1])
             else:
                 raise ValueError(f"Unknown aggregation method: {method}")
+
+            offset += size
 
         # Stack results
         if scores.dim() == 1:

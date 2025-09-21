@@ -254,6 +254,9 @@ class Activations:
                 input_ids=self.input_ids.to(device),
                 detection_mask=self.detection_mask.to(device),
                 layer_indices=layer_indices,
+                batch_indices=self.batch_indices.copy()
+                if self.batch_indices is not None
+                else None,
             )
 
         # For dtype only changes, only convert activations
@@ -263,6 +266,7 @@ class Activations:
             input_ids=self.input_ids,
             detection_mask=self.detection_mask,
             layer_indices=layer_indices,
+            batch_indices=self.batch_indices,
         )
 
     def filter_layers(self, target_layers: int | list[int]) -> "Activations":

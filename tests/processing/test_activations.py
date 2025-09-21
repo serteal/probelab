@@ -330,6 +330,7 @@ class TestActivations:
             input_ids=input_ids,
             detection_mask=detection_mask,
             layer_indices=[0, 1],
+            batch_indices=[0, 1, 2, 3],
         )
 
         # Check that attention mask is stored correctly
@@ -349,6 +350,7 @@ class TestActivations:
             input_ids=input_ids,
             detection_mask=detection_mask,
             layer_indices=[0, 1],
+            batch_indices=[0, 1, 2, 3],
         )
 
         # Test device movement
@@ -357,11 +359,13 @@ class TestActivations:
             assert cuda_acts.activations.device.type == "cuda"
             assert cuda_acts.attention_mask.device.type == "cuda"
             assert cuda_acts.layer_indices == [0, 1]  # Should be preserved
+            assert cuda_acts.batch_indices == [0, 1, 2, 3]
 
         # Test dtype conversion
         float16_acts = activations.to(torch.float16)
         assert float16_acts.activations.dtype == torch.float16
         assert float16_acts.attention_mask.dtype == torch.float32  # Should not change
+        assert float16_acts.batch_indices == [0, 1, 2, 3]
 
     def test_get_layer_tensor_indices(self):
         """Test mapping layer indices to tensor indices."""
