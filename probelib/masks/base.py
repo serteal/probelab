@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Optional, Sequence
 
 from torch import Tensor
@@ -20,12 +21,15 @@ class TokenMetadata:
 
     # Optional fields for text-based masks
     token_to_char: Optional[dict] = None  # Maps token indices to char indices
-    char_to_token: Optional[dict] = None  # Maps char indices to token indices
+    char_to_token: Optional[
+        Callable[[int, int], Optional[int]]
+    ] = None  # Maps char indices to token indices
     formatted_texts: Optional[Sequence[str]] = None  # Original formatted texts
 
     # Padding information
     role_ids_no_padding: Optional[Tensor] = None  # Role IDs without padding applied
     architecture: Optional[str] = None  # Model architecture for padding config
+    special_token_ids: Optional[set[int]] = None  # Known special token ids
 
 
 class MaskFunction(ABC):

@@ -186,6 +186,18 @@ def build_token_metadata(
         if first_token_id in bos_token_ids:
             role_ids_with_padding[batch_idx, 0] = role_to_id["system"]
 
+    special_token_ids: set[int] | None = None
+    if hasattr(tokenizer, "all_special_ids") and tokenizer.all_special_ids is not None:
+        try:
+            special_token_ids = {
+                int(token_id)
+                for token_id in tokenizer.all_special_ids
+                if token_id is not None
+            }
+        except TypeError:
+            # Fall back if tokenizer reports non-iterable
+            pass
+
     return TokenMetadata(
         token_ids=tokenizer_out["input_ids"],
         role_ids=role_ids_with_padding,  # Use padded version by default
@@ -198,6 +210,7 @@ def build_token_metadata(
         formatted_texts=formatted_dialogues,
         role_ids_no_padding=role_ids_no_padding,  # Store unpadded version
         architecture=model_family,  # Store architecture info
+        special_token_ids=special_token_ids,
     )
 
 
@@ -297,10 +310,8 @@ def tokenize_dialogues(
         detection_mask = mask_fn.evaluate(dialogues, metadata)
         token_dict["detection_mask"] = detection_mask
     else:
-        # No mask - all tokens are False (backward compat)
-        token_dict["detection_mask"] = torch.zeros_like(
-            token_dict["attention_mask"], dtype=torch.bool
-        )
+        # No mask - default to selecting all real (non-padding) tokens.
+        token_dict["detection_mask"] = token_dict["attention_mask"].bool()
 
     return token_dict  # type: ignore
 

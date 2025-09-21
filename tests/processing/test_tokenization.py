@@ -290,6 +290,26 @@ class TestTokenizeDialogues:
         assert result["attention_mask"].shape == (2, 3)
         assert result["detection_mask"].shape == (2, 3)
 
+    def test_default_mask_selects_all_tokens(self, mock_tokenizer):
+        """When no mask is provided, all real tokens should be selected."""
+        dialogues = [
+            Dialogue(
+                [
+                    Message(role="user", content="Hello"),
+                    Message(role="assistant", content="Hi"),
+                ]
+            ),
+        ]
+
+        result = tokenize_dialogues(
+            tokenizer=mock_tokenizer,
+            dialogues=dialogues,
+            device="cpu",
+        )
+
+        expected = result["attention_mask"].bool()
+        assert torch.equal(result["detection_mask"], expected)
+
     def test_gemma_system_folding(self, mock_tokenizer):
         """Test that Gemma models fold system messages."""
         mock_tokenizer.name_or_path = "google/gemma-7b"

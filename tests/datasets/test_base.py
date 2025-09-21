@@ -1,5 +1,7 @@
 """Tests for base dataset classes."""
 
+import numpy as np
+
 from probelib.datasets.base import DialogueDataset
 from probelib.types import Dialogue, Label, Message, DialogueDataType
 
@@ -112,6 +114,47 @@ class TestDialogueDataset:
         # Due to shuffling, we can't guarantee order, but check contents
         assert set(d[0].content for d in combined.dialogues) == {"Test 1", "Test 2"}
         assert sorted(combined.labels) == sorted(labels1 + labels2)
+
+    def test_dataset_shuffling_does_not_touch_global_rng(self):
+        """Shuffling should not reset NumPy's global RNG state."""
+        dialogues = [
+            Dialogue([Message(role="user", content=f"Test {i}")]) for i in range(5)
+        ]
+        labels = [Label.POSITIVE] * 5
+
+        np.random.seed(123)
+        _ = np.random.random()  # Advance RNG once
+
+        SimpleDialogueDataset(dialogues=dialogues, labels=labels)
+
+        second_draw = np.random.random()
+
+        np.random.seed(123)
+        _ = np.random.random()  # Skip first draw
+        expected_second = np.random.random()
+
+        assert second_draw == expected_second
+
+    def test_dataset_shuffle_seed_reproducible(self):
+        """Providing a shuffle seed should produce reproducible order."""
+        dialogues = [
+            Dialogue([Message(role="user", content=f"Test {i}")]) for i in range(5)
+        ]
+        labels = [Label.POSITIVE] * 5
+
+        dataset_a = SimpleDialogueDataset(
+            dialogues=dialogues,
+            labels=labels,
+            shuffle_seed=7,
+        )
+        dataset_b = SimpleDialogueDataset(
+            dialogues=dialogues,
+            labels=labels,
+            shuffle_seed=7,
+        )
+
+        assert dataset_a.labels == dataset_b.labels
+        assert dataset_a.dialogues == dataset_b.dialogues
 
     def test_dialogue_dataset_metadata(self):
         """Test dataset with metadata."""
