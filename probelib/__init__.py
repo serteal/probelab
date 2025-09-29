@@ -18,7 +18,7 @@ from . import datasets
 from . import processing
 from . import metrics
 from . import masks
-from . import integrations
+from . import benchmarks
 
 
 __version__ = "0.1.0"
@@ -38,5 +38,5 @@ __all__ = [
     "processing",
     "metrics",
     "masks",
-    "integrations",
+    "benchmarks",
 ]
