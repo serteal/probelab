@@ -115,8 +115,44 @@ class BenignInstructionsDataset(DialogueDataset):
 
 class WildGuardMixDataset(DialogueDataset):
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        # allenai/wildguardmix
-        raise NotImplementedError("WildGuardMixDataset is not implemented yet.")
+        split = kwargs.get("split", "train")
+        assert split in ["train", "test"]
+        if split == "test":
+            dataset_split = "wildguardtest"
+        else:
+            dataset_split = "wildguardtrain"
+        dataset = load_dataset("allenai/wildguardmix", dataset_split)[split]
+
+        dialogues = []
+        labels = []
+        metadata = {
+            "prompt_harm_label": [],
+            "response_refusal_label": [],
+            "response_harm_label": [],
+            "adversarial": [],
+            "subcategory": [],
+        }
+        for d in dataset:
+            dialogues.append(
+                [
+                    Message(role="user", content=str(d["prompt"])),
+                    Message(role="assistant", content=str(d["response"])),
+                ]
+            )
+            # true if response_refusal_label=='compliance' and response_harm_label=='harmful'
+            labels.append(
+                Label.POSITIVE
+                if d["response_refusal_label"] == "compliance"
+                and d["response_harm_label"] == "harmful"
+                else Label.NEGATIVE
+            )
+            metadata["prompt_harm_label"].append(d["prompt_harm_label"])
+            metadata["response_refusal_label"].append(d["response_refusal_label"])
+            metadata["response_harm_label"].append(d["response_harm_label"])
+            metadata["adversarial"].append(d["adversarial"])
+            metadata["subcategory"].append(d["subcategory"])
+
+        return dialogues, labels, metadata
 
 
 class XSTestResponseDataset(DialogueDataset):

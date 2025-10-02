@@ -17,6 +17,7 @@ from .harmfulness import (
     CircuitBreakersDataset,
     ClearHarmLlama3Dataset,
     ClearHarmMistralSmallDataset,
+    WildGuardMixDataset,
     WildJailbreakDataset,
     XSTestResponseDataset,
 )
@@ -48,4 +49,5 @@ __all__ = [
     "MathInstructDataset",
     "AlpacaDataset",
     "GenericSpanishDataset",
+    "WildGuardMixDataset",
 ]
