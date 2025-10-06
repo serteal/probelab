@@ -123,3 +123,10 @@ class HookedModel:
         # Remove hooks
         for hook in self.hooks:
             hook.remove()
+
+        # Clear cache to free any remaining references
+        self.cache.clear()
+
+        # Clear GPU cache when exiting context
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()

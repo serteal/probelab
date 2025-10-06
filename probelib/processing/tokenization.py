@@ -6,7 +6,8 @@ using the new mask system instead of use_for_training flags.
 """
 
 import re
-from typing import TYPE_CHECKING, Any, Optional, Sequence
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -217,7 +218,7 @@ def build_token_metadata(
 def tokenize_dialogues(
     tokenizer: "PreTrainedTokenizerBase",
     dialogues: Sequence[Dialogue],
-    mask: Optional[MaskFunction] = None,
+    mask: MaskFunction | None = None,
     device: torch.device | str = "cpu",
     dataset: DialogueDataset | None = None,
     add_generation_prompt: bool = False,
@@ -320,9 +321,7 @@ def tokenize_dialogues(
         # Use dataset's default mask
         mask_fn = dataset.default_mask
         logger.info(
-            "No mask provided; using default mask %s from dataset %s",
-            mask_fn.__class__.__name__,
-            dataset.__class__.__name__,
+            f"No mask provided; using default mask {mask_fn} from dataset {dataset}",
         )
         metadata = build_token_metadata(
             processed_dialogues, formatted_dialogues, tokenizer, token_dict
@@ -339,7 +338,7 @@ def tokenize_dialogues(
 def tokenize_dataset(
     dataset: DialogueDataset,
     tokenizer: "PreTrainedTokenizerBase",
-    mask: Optional[MaskFunction] = None,
+    mask: MaskFunction | None = None,
     device: torch.device | str = "cpu",
     **tokenize_kwargs: Any,
 ) -> dict[str, torch.Tensor]:

@@ -14,7 +14,6 @@ from typing import (
     Iterable,
     Iterator,
     Literal,
-    Optional,
     Sequence,
     overload,
 )
@@ -43,18 +42,19 @@ def get_batches(
 ) -> Iterator[tuple[dict[str, torch.Tensor], list[int]]]:
     """Yield length-aware batches while preserving original indices.
 
-    Sequences are sorted by non-padding length so each batch shares a similar
-    sequence length. This minimizes padding, keeps GPU transfers tight, and
-    slices away excess padding for every field in ``inputs``.
+    Sequences are sorted by non-padding length (descending) so each batch shares
+    a similar sequence length. This minimizes padding, keeps GPU transfers tight,
+    and processes longest sequences first to reduce memory fragmentation.
 
     Args:
         inputs: Tokenized inputs keyed by field name.
         batch_size: Maximum number of sequences per batch.
         tokenizer: Provides padding semantics used to trim left/right padding.
     """
-    # Get sequence lengths and sort by length for efficient batching
+    # Get sequence lengths and sort by length (descending) for efficient batching
+    # Largest batches first to allocate peak memory when GPU is unfragmented
     seq_lengths = (inputs["input_ids"] != tokenizer.pad_token_id).sum(dim=1)  # type: ignore
-    sorted_indices = torch.sort(seq_lengths)[1]
+    sorted_indices = torch.sort(seq_lengths, descending=True)[1]
 
     # Create batches
     num_samples = sorted_indices.numel()
@@ -94,6 +94,9 @@ def get_hidden_dim(model: "PreTrainedModel") -> int:
 
     if hasattr(config, "hidden_size"):
         return config.hidden_size  # type: ignore
+    elif hasattr(config, "text_config") and hasattr(config.text_config, "hidden_size"):
+        # Multimodal models like Gemma3 have text_config.hidden_size
+        return config.text_config.hidden_size  # type: ignore
     else:
         raise ValueError(f"Cannot determine hidden dimension for {model.name_or_path}")
 
@@ -1271,7 +1274,7 @@ def collect_activations(
     *,
     layers: int | list[int],
     batch_size: int,
-    mask: Optional["MaskFunction"] = None,
+    mask: "MaskFunction" | None = None,
     add_generation_prompt: bool = False,
     streaming: Literal[False] = False,
     verbose: bool = False,
@@ -1289,7 +1292,7 @@ def collect_activations(
     *,
     layers: int | list[int],
     batch_size: int,
-    mask: Optional["MaskFunction"] = None,
+    mask: "MaskFunction" | None = None,
     add_generation_prompt: bool = False,
     streaming: Literal[True],
     verbose: bool = False,
@@ -1305,7 +1308,7 @@ def collect_activations(
     *,
     layers: int | list[int],
     batch_size: int,
-    mask: Optional["MaskFunction"] = None,
+    mask: "MaskFunction" | None = None,
     add_generation_prompt: bool = False,
     streaming: bool = False,
     verbose: bool = False,
@@ -1372,7 +1375,7 @@ def collect_activations(
         tokenizer=tokenizer,
         dialogues=dialogues,
         mask=mask,  # Pass mask if provided
-        device=model.device,
+        device="cpu",
         dataset=dataset,  # Pass dataset if available for default mask
         add_generation_prompt=add_generation_prompt,
         **default_tokenize_kwargs,

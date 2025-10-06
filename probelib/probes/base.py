@@ -2,8 +2,6 @@
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Union
-
 import torch
 
 from ..processing.activations import ActivationIterator, Activations, Axis, SequencePooling
@@ -236,7 +234,7 @@ class BaseProbe(ABC):
     @abstractmethod
     def fit(
         self,
-        X: Union[Activations, ActivationIterator],
+        X: Activations | ActivationIterator,
         y: list | torch.Tensor,
     ) -> "BaseProbe":
         """
@@ -272,7 +270,7 @@ class BaseProbe(ABC):
     @abstractmethod
     def predict_proba(
         self,
-        X: Union[Activations, ActivationIterator],
+        X: Activations | ActivationIterator,
     ) -> torch.Tensor:
         """
         Predict class probabilities.
@@ -292,7 +290,7 @@ class BaseProbe(ABC):
     # Utility methods provided by the base class
     def predict(
         self,
-        X: Union[Activations, ActivationIterator],
+        X: Activations | ActivationIterator,
     ) -> torch.Tensor:
         """
         Predict class labels.
@@ -308,7 +306,7 @@ class BaseProbe(ABC):
 
     def score(
         self,
-        X: Union[Activations, ActivationIterator],
+        X: Activations | ActivationIterator,
         y: list | torch.Tensor,
     ) -> float:
         """

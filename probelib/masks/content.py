@@ -1,6 +1,6 @@
 """Content-type mask functions for token selection."""
 
-from typing import Sequence, Set, Optional
+from collections.abc import Sequence
 
 import torch
 from torch import Tensor
@@ -12,14 +12,14 @@ from .base import MaskFunction, TokenMetadata
 class SpecialTokensMask(MaskFunction):
     """Mask that selects special tokens (e.g., <bos>, <eos>, <pad>, etc.)."""
 
-    def __init__(self, special_token_ids: Optional[Set[int]] = None):
+    def __init__(self, special_token_ids: set[int] | None = None):
         """
         Args:
             special_token_ids: Optional set of special token IDs.
                              If None, will be determined from tokenizer.
         """
         self.special_token_ids = special_token_ids
-        self._cached_ids: Optional[Set[int]] = (
+        self._cached_ids: set[int] | None = (
             set(special_token_ids) if special_token_ids is not None else None
         )
         self._initialized = False
@@ -64,9 +64,9 @@ class SpecialTokensMask(MaskFunction):
 
     def _infer_special_ids(
         self, token_ids: Tensor, metadata: TokenMetadata
-    ) -> Set[int]:
+    ) -> set[int]:
         """Fallback heuristic for models without reported special IDs."""
-        inferred: Set[int] = {
+        inferred: set[int] = {
             0,
             1,
             2,
@@ -97,6 +97,6 @@ class SpecialTokensMask(MaskFunction):
 
 
 # Convenience function
-def special_tokens(special_token_ids: Optional[Set[int]] = None) -> SpecialTokensMask:
+def special_tokens(special_token_ids: set[int] | None = None) -> SpecialTokensMask:
     """Create a mask for special tokens."""
     return SpecialTokensMask(special_token_ids)

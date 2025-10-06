@@ -3,7 +3,7 @@ Unified high-level workflow functions for training and evaluating probes.
 """
 
 import functools
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 import torch
 from jaxtyping import Float, Int
@@ -27,13 +27,14 @@ if TYPE_CHECKING:
     from ..masks import MaskFunction
 
 # Type aliases for clarity
-BaseProbeInput = Union[BaseProbe, Mapping[str, BaseProbe]]
-DataInput = Union[DialogueDataset, list[Dialogue]]
-PredictionsOutput = Union[
-    Float[torch.Tensor, "n_examples"], Mapping[str, Float[torch.Tensor, "n_examples"]]
-]
+BaseProbeInput = BaseProbe | Mapping[str, BaseProbe]
+DataInput = DialogueDataset | list[Dialogue]
+PredictionsOutput = (
+    Float[torch.Tensor, "n_examples"]
+    | Mapping[str, Float[torch.Tensor, "n_examples"]]
+)
 MetricsDict = Mapping[str, Any]
-MetricsOutput = Union[MetricsDict, Mapping[str, MetricsDict]]
+MetricsOutput = MetricsDict | Mapping[str, MetricsDict]
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +70,7 @@ def train_probes(
     data: DataInput,
     *,
     labels: list[Label] | Int[torch.Tensor, "n_examples"] | None = None,
-    mask: Optional["MaskFunction"] = None,
+    mask: "MaskFunction" | None = None,
     batch_size: int = 32,
     streaming: bool = True,
     verbose: bool = True,
@@ -178,7 +179,7 @@ def evaluate_probes(
     data: DataInput,
     *,
     labels: list[Label] | Int[torch.Tensor, "n_examples"] | None = None,
-    mask: Optional["MaskFunction"] = None,
+    mask: "MaskFunction" | None = None,
     batch_size: int = 32,
     streaming: bool = True,
     metrics: list[Callable | str] | None = None,

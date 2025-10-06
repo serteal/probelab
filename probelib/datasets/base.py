@@ -265,3 +265,11 @@ class DialogueDataset(ABC):
     def name(self) -> str:
         """Get dataset name."""
         return self.base_name
+    
+    def __repr__(self) -> str:
+        """Get dataset name."""
+        return self.name
+
+    def __str__(self) -> str:
+        """Get dataset name."""
+        return self.name

@@ -3,6 +3,8 @@ from pathlib import Path
 import pandas as pd
 from datasets import load_dataset
 
+from ..masks import MaskFunction, user
+
 from ..types import DialogueDataType, Label, Message
 from .base import DialogueDataset
 
@@ -114,6 +116,12 @@ class BenignInstructionsDataset(DialogueDataset):
 
 
 class WildGuardMixDataset(DialogueDataset):
+    base_name = "wildguardmix"
+
+    @property
+    def default_mask(self) -> MaskFunction:
+        return user(include_padding=False)
+
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         split = kwargs.get("split", "train")
         assert split in ["train", "test"]
@@ -131,26 +139,20 @@ class WildGuardMixDataset(DialogueDataset):
             "response_harm_label": [],
             "adversarial": [],
             "subcategory": [],
+            "response": [],
         }
         for d in dataset:
             dialogues.append(
-                [
-                    Message(role="user", content=str(d["prompt"])),
-                    Message(role="assistant", content=str(d["response"])),
-                ]
+                [Message(role="user", content=str(d["prompt"]))]
             )
-            # true if response_refusal_label=='compliance' and response_harm_label=='harmful'
-            labels.append(
-                Label.POSITIVE
-                if d["response_refusal_label"] == "compliance"
-                and d["response_harm_label"] == "harmful"
-                else Label.NEGATIVE
-            )
+            prompt_label = str(d["prompt_harm_label"]).lower()
+            labels.append(Label.POSITIVE if prompt_label == "harmful" else Label.NEGATIVE)
             metadata["prompt_harm_label"].append(d["prompt_harm_label"])
             metadata["response_refusal_label"].append(d["response_refusal_label"])
             metadata["response_harm_label"].append(d["response_harm_label"])
             metadata["adversarial"].append(d["adversarial"])
             metadata["subcategory"].append(d["subcategory"])
+            metadata["response"].append(d.get("response"))
 
         return dialogues, labels, metadata
 

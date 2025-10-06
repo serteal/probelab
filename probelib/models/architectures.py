@@ -204,12 +204,54 @@ class GemmaArchitecture(ModelArchitecture):
             )
 
 
+class Gemma3Architecture(ModelArchitecture):
+    """Architecture handler for Gemma3 models (multimodal)."""
+
+    def get_layer_norm(
+        self, model: "PreTrainedModel", layer_idx: int
+    ) -> torch.nn.Module:
+        return model.language_model.layers[layer_idx].input_layernorm  # type: ignore
+
+    def get_layer_module(
+        self, model: "PreTrainedModel", layer_idx: int
+    ) -> torch.nn.Module:
+        return model.language_model.layers[layer_idx]  # type: ignore
+
+    def get_layers(self, model: "PreTrainedModel") -> list[torch.nn.Module]:
+        return model.language_model.layers  # type: ignore
+
+    def set_layers(
+        self, model: "PreTrainedModel", layers: list[torch.nn.Module]
+    ) -> None:
+        model.language_model.layers = layers  # type: ignore
+
+    def get_token_padding(self) -> TokenPadding:
+        return TokenPadding(left=3, right=2)
+
+    def get_prefix_pattern(self) -> re.Pattern[str]:
+        """Get Gemma3-specific chat template regex pattern."""
+        begin_of_text = r"(<pad>)*(<bos>)?"
+        end_of_last = r"(<end_of_turn>\n)?"
+        start_of_turn = r"<start_of_turn>(user|model)\n"
+        return re.compile(
+            rf"{begin_of_text}{start_of_turn}|{end_of_last}{start_of_turn}|(\n\n)?"
+        )
+
+    def should_fold_system_messages(self) -> bool:
+        return True  # Gemma3 doesn't support system messages
+
+    def get_num_layers(self, model: "PreTrainedModel") -> int:
+        """Get the number of layers for Gemma3 models."""
+        return model.language_model.config.num_hidden_layers  # type: ignore
+
+
 class ArchitectureRegistry:
     """Registry for mapping model types to their architecture handlers."""
 
     _architectures: dict[str, type[ModelArchitecture]] = {
         "llama": LlamaArchitecture,
         "gemma": GemmaArchitecture,
+        "gemma3": Gemma3Architecture,
     }
 
     @classmethod
