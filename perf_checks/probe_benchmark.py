@@ -1,109 +1,16 @@
 import argparse
 import gc
-import time
-from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+import logging
+from typing import Any, Dict, List, Optional
 
-import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from utils import TimingResult, measure_with_warmup, timer
 
 import probelib as pl
 
 torch.set_float32_matmul_precision("high")
-
-
-@dataclass
-class TimingResult:
-    """Container for timing measurements."""
-
-    mean: float
-    std: float
-    min: float
-    max: float
-    samples: List[float]
-
-    def __str__(self) -> str:
-        return (
-            f"Mean: {self.mean:.3f}s ± {self.std:.3f}s | "
-            f"Min: {self.min:.3f}s | Max: {self.max:.3f}s"
-        )
-
-
-@contextmanager
-def timer(name: str = "Operation"):
-    """Context manager for timing operations."""
-    torch.cuda.synchronize() if torch.cuda.is_available() else None
-    start = time.perf_counter()
-    try:
-        yield
-    finally:
-        torch.cuda.synchronize() if torch.cuda.is_available() else None
-        elapsed = time.perf_counter() - start
-        print(f"{name}: {elapsed:.3f}s")
-
-
-def measure_with_warmup(
-    func: Callable,
-    warmup_runs: int = 1,
-    measurement_runs: int = 3,
-    clear_cache: bool = True,
-    name: str = "Operation",
-) -> TimingResult:
-    """Measure function execution time with warmup runs.
-
-    Args:
-        func: Function to measure
-        warmup_runs: Number of warmup runs to perform
-        measurement_runs: Number of measurement runs
-        clear_cache: Whether to clear GPU cache between runs
-        name: Name for logging
-
-    Returns:
-        TimingResult with statistics
-    """
-    print(f"\n{'=' * 60}")
-    print(f"Measuring: {name}")
-    print(f"{'=' * 60}")
-
-    # Warmup runs
-    print(f"Running {warmup_runs} warmup iteration(s)...")
-    for i in range(warmup_runs):
-        if clear_cache and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            gc.collect()
-        with timer(f"Warmup {i + 1}"):
-            func()
-
-    # Measurement runs
-    print(f"\nRunning {measurement_runs} measurement iterations...")
-    timings = []
-    for i in range(measurement_runs):
-        if clear_cache and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            gc.collect()
-
-        torch.cuda.synchronize() if torch.cuda.is_available() else None
-        start = time.perf_counter()
-
-        func()
-
-        torch.cuda.synchronize() if torch.cuda.is_available() else None
-        elapsed = time.perf_counter() - start
-        timings.append(elapsed)
-        print(f"  Run {i + 1}: {elapsed:.3f}s")
-
-    result = TimingResult(
-        mean=np.mean(timings),
-        std=np.std(timings),
-        min=np.min(timings),
-        max=np.max(timings),
-        samples=timings,
-    )
-
-    print(f"\nResults: {result}")
-    return result
+pl.logger.logger.setLevel(logging.WARNING)  # type: ignore
 
 
 def benchmark_activation_collection(
@@ -248,65 +155,58 @@ def benchmark_probe_training(
 
         return inner_train_probe_full
 
-    # logistic_full_pipeline_result = measure_with_warmup(
-    #     train_probe_full(pl.probes.SklearnLogistic, sequence_aggregation="mean"),  # type: ignore
-    #     warmup_runs=1,
-    #     measurement_runs=3,
-    #     name="Logistic Full Pipeline",
-    # )
-    # results["logistic_sequence_full_pipeline"] = logistic_full_pipeline_result
-    # logistic_score_full_pipeline_result = measure_with_warmup(
-    #     train_probe_full(pl.probes.SklearnLogistic, score_aggregation="mean"),  # type: ignore
-    #     warmup_runs=1,
-    #     measurement_runs=3,
-    #     name="Logistic Score Full Pipeline",
-    # )
-    # results["logistic_score_full_pipeline"] = logistic_score_full_pipeline_result
+    # Import SequencePooling for the new API
+    from probelib.processing import SequencePooling
 
-    gpu_logistic_full_pipeline_result = measure_with_warmup(
-        train_probe_full(pl.probes.Logistic, sequence_aggregation="mean"),  # type: ignore
+    # Test with MEAN pooling (sample-level aggregation)
+    gpu_logistic_mean_result = measure_with_warmup(
+        train_probe_full(pl.probes.Logistic, sequence_pooling=SequencePooling.MEAN),  # type: ignore
         warmup_runs=1,
         measurement_runs=3,
-        name="GPU Logistic Full Pipeline",
+        name="GPU Logistic with MEAN pooling",
     )
-    results["gpu_logistic_full_pipeline"] = gpu_logistic_full_pipeline_result
-    gpu_logistic_score_full_pipeline_result = measure_with_warmup(
-        train_probe_full(pl.probes.Logistic, score_aggregation="mean"),  # type: ignore
-        warmup_runs=1,
-        measurement_runs=3,
-        name="GPU Logistic Score Full Pipeline",
-    )
-    results["gpu_logistic_score_full_pipeline"] = (
-        gpu_logistic_score_full_pipeline_result
-    )
+    results["gpu_logistic_mean_pooling"] = gpu_logistic_mean_result
 
-    mlp_full_pipeline_result = measure_with_warmup(
-        train_probe_full(pl.probes.MLP, sequence_aggregation="mean"),  # type: ignore
+    # Test with NONE pooling (token-level training)
+    gpu_logistic_token_result = measure_with_warmup(
+        train_probe_full(pl.probes.Logistic, sequence_pooling=SequencePooling.NONE),  # type: ignore
         warmup_runs=1,
         measurement_runs=3,
-        name="MLP Full Pipeline",
+        name="GPU Logistic with token-level (NONE pooling)",
     )
-    results["mlp_sequence_full_pipeline"] = mlp_full_pipeline_result
-    mlp_score_full_pipeline_result = measure_with_warmup(
-        train_probe_full(pl.probes.MLP, score_aggregation="mean"),  # type: ignore
-        warmup_runs=1,
-        measurement_runs=3,
-        name="MLP Score Full Pipeline",
-    )
-    results["mlp_score_full_pipeline"] = mlp_score_full_pipeline_result
+    results["gpu_logistic_token_level"] = gpu_logistic_token_result
 
+    # MLP with MEAN pooling
+    mlp_mean_result = measure_with_warmup(
+        train_probe_full(pl.probes.MLP, sequence_pooling=SequencePooling.MEAN),  # type: ignore
+        warmup_runs=1,
+        measurement_runs=3,
+        name="MLP with MEAN pooling",
+    )
+    results["mlp_mean_pooling"] = mlp_mean_result
+
+    # MLP with token-level (NONE pooling)
+    mlp_token_result = measure_with_warmup(
+        train_probe_full(pl.probes.MLP, sequence_pooling=SequencePooling.NONE),  # type: ignore
+        warmup_runs=1,
+        measurement_runs=3,
+        name="MLP with token-level (NONE pooling)",
+    )
+    results["mlp_token_level"] = mlp_token_result
+
+    # Attention probe (always uses NONE pooling but aggregates internally)
     attention_full_pipeline_result = measure_with_warmup(
-        train_probe_full(pl.probes.Attention),  # type: ignore
+        train_probe_full(pl.probes.Attention, sequence_pooling=SequencePooling.NONE),  # type: ignore
         warmup_runs=1,
         measurement_runs=3,
-        name="Attention Full Pipeline",
+        name="Attention Probe (attention-based aggregation)",
     )
     results["attention_full_pipeline"] = attention_full_pipeline_result
 
     def train_10_probes_full():
         probes = {
             f"logistic_{i}": pl.probes.Logistic(
-                layer=layers[0], sequence_aggregation="mean"
+                layer=layers[0], sequence_pooling=SequencePooling.MEAN
             )
             for i in range(10)
         }

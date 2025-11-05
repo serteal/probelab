@@ -8,17 +8,12 @@ This library provides tools for:
 - Standard evaluation metrics
 """
 
+from . import datasets, masks, metrics, probes, processing, scripts
 from .models import HookedModel
 from .processing import Activations, collect_activations
+from .processing.activations import SequencePooling, detect_collection_strategy
 from .types import Dialogue, Label, Message
 from .visualization import print_metrics, visualize_mask
-from . import scripts
-from . import probes
-from . import datasets
-from . import processing
-from . import metrics
-from . import masks
-
 
 __version__ = "0.1.0"
 
@@ -27,6 +22,7 @@ __all__ = [
     "Label",
     "Dialogue",
     "collect_activations",
+    "detect_collection_strategy",
     "HookedModel",
     "Activations",
     "print_metrics",
@@ -37,4 +33,5 @@ __all__ = [
     "processing",
     "metrics",
     "masks",
+    "SequencePooling",
 ]

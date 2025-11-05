@@ -1,10 +1,6 @@
-"""
-GPU-based logistic regression probe implementation.
-Follows the same pattern as MLP probe for consistency and performance.
-"""
+"""GPU-accelerated L2-regularized logistic regression probe."""
 
 from pathlib import Path
-from typing import Literal, Self
 
 import numpy as np
 import torch
@@ -13,272 +9,215 @@ import torch.nn.functional as F
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.preprocessing import StandardScaler
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
-from ..processing.activations import ActivationIterator, Activations
+from ..processing.activations import ActivationIterator, Activations, SequencePooling
 from .base import BaseProbe
 
 
-class LogisticNetwork(nn.Module):
-    """
-    Simple linear model for GPU-based logistic regression.
-
-    This is equivalent to sklearn's LogisticRegression with fit_intercept=False.
-    Uses a single linear layer without bias for binary classification.
-    """
+class _LogisticNetwork(nn.Module):
+    """Simple logistic regression network (internal implementation)."""
 
     def __init__(self, d_model: int):
-        """
-        Initialize the logistic regression network.
-
-        Args:
-            d_model: Input dimension (hidden size of the model)
-        """
         super().__init__()
-        self.linear = nn.Linear(d_model, 1, bias=False)
-
-        # Initialize weights with small random values (similar to sklearn)
-        nn.init.xavier_uniform_(self.linear.weight, gain=1.0)
+        self.linear = nn.Linear(d_model, 1, bias=True)
+        nn.init.xavier_uniform_(self.linear.weight)
+        nn.init.zeros_(self.linear.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass through the linear layer.
-
-        Args:
-            x: Input tensor [batch_size, d_model]
-
-        Returns:
-            Logits tensor [batch_size]
-        """
         return self.linear(x).squeeze(-1)
 
 
-class GPUStandardScaler:
-    """
-    GPU-based standardization with support for both batch and streaming modes.
+class _GPUStandardScaler:
+    """Standard scaler for GPU tensors with streaming support."""
 
-    Maintains running statistics for streaming updates using Welford's algorithm.
-    All operations are performed on the specified device for efficiency.
-    """
-
-    def __init__(self, device: str = "cuda", epsilon: float = 1e-8):
-        """
-        Initialize the GPU standard scaler.
-
-        Args:
-            device: Device to use for computations
-            epsilon: Small value for numerical stability
-        """
+    def __init__(self, device: str = "cuda"):
         self.device = device
-        self.epsilon = epsilon
-
-        # Statistics (initialized on first fit)
-        self.mean_: torch.Tensor | None = None
-        self.var_: torch.Tensor | None = None
-        self.scale_: torch.Tensor | None = None
-        self.n_samples_seen_: int = 0
-
-        # For streaming updates (Welford's algorithm)
-        self.mean_accumulator_: torch.Tensor | None = None
-        self.m2_accumulator_: torch.Tensor | None = None
+        self.mean_ = None
+        self.std_ = None
+        self._fitted = False
+        self.n_samples_seen_ = 0
 
     def fit(self, X: torch.Tensor) -> "GPUStandardScaler":
-        """
-        Compute mean and standard deviation for standardization.
-
-        Args:
-            X: Training data [n_samples, n_features]
-
-        Returns:
-            self: Fitted scaler
-        """
+        """Fit the scaler on data."""
         X = X.to(self.device)
-
-        # Compute statistics in one pass
         self.mean_ = X.mean(dim=0)
-        self.var_ = X.var(dim=0, unbiased=False)  # Use biased variance like sklearn
-        self.scale_ = torch.sqrt(self.var_ + self.epsilon)
+        self.std_ = X.std(dim=0).clamp(min=1e-8)
+        self._fitted = True
         self.n_samples_seen_ = X.shape[0]
-
-        # Initialize streaming accumulators
-        self.mean_accumulator_ = self.mean_.clone()
-        self.m2_accumulator_ = self.var_ * self.n_samples_seen_
-
         return self
 
     def partial_fit(self, X: torch.Tensor) -> "GPUStandardScaler":
-        """
-        Incrementally update statistics using vectorized Welford's algorithm.
-
-        Args:
-            X: Batch of training data [n_samples, n_features]
-
-        Returns:
-            self: Updated scaler
-        """
+        """Update running statistics with a batch."""
         X = X.to(self.device)
-        n_samples = X.shape[0]
+        batch_size = X.shape[0]
 
-        if self.mean_ is None:
-            # First batch - initialize
+        if not self._fitted:
             return self.fit(X)
 
-        # Vectorized Welford's algorithm - much faster than loop
-        batch_mean = X.mean(dim=0)
-        batch_var = X.var(dim=0, unbiased=False)
+        # Update running statistics
+        delta = X.mean(dim=0) - self.mean_
+        self.mean_ += delta * batch_size / (self.n_samples_seen_ + batch_size)
 
-        # Combine statistics using parallel algorithm
-        delta = batch_mean - self.mean_accumulator_
-        total_samples = self.n_samples_seen_ + n_samples
+        # Update variance estimate
+        batch_var = X.var(dim=0)
+        old_var = self.std_**2
 
-        # Update mean
-        self.mean_accumulator_ = (
-            self.mean_accumulator_ * self.n_samples_seen_ + batch_mean * n_samples
-        ) / total_samples
+        weight_old = self.n_samples_seen_ / (self.n_samples_seen_ + batch_size)
+        weight_new = batch_size / (self.n_samples_seen_ + batch_size)
 
-        # Update M2 (sum of squared deviations)
-        self.m2_accumulator_ = (
-            self.m2_accumulator_
-            + batch_var * n_samples
-            + delta**2 * self.n_samples_seen_ * n_samples / total_samples
+        new_var = (
+            weight_old * old_var
+            + weight_new * batch_var
+            + weight_old * weight_new * delta**2
         )
-
-        self.n_samples_seen_ = total_samples
-
-        # Update statistics
-        self.mean_ = self.mean_accumulator_.clone()
-        if self.n_samples_seen_ > 1:
-            self.var_ = self.m2_accumulator_ / self.n_samples_seen_
-            self.scale_ = torch.sqrt(self.var_ + self.epsilon)
+        self.std_ = torch.sqrt(new_var).clamp(min=1e-8)
+        self.n_samples_seen_ += batch_size
 
         return self
 
     def transform(self, X: torch.Tensor) -> torch.Tensor:
-        """
-        Standardize features by removing mean and scaling to unit variance.
-
-        Args:
-            X: Data to transform [n_samples, n_features]
-
-        Returns:
-            Standardized data
-        """
-        if self.mean_ is None:
+        """Transform the data."""
+        if not self._fitted:
             raise RuntimeError("Scaler must be fitted before transform")
-
         X = X.to(self.device)
-        return (X - self.mean_) / self.scale_
+        # Ensure dtypes match for the operation
+        mean = self.mean_.to(X.dtype)
+        std = self.std_.to(X.dtype)
+        return (X - mean) / std
 
     def fit_transform(self, X: torch.Tensor) -> torch.Tensor:
-        """
-        Fit to data, then transform it.
-
-        Args:
-            X: Training data [n_samples, n_features]
-
-        Returns:
-            Standardized data
-        """
+        """Fit and transform in one step."""
         return self.fit(X).transform(X)
 
 
 class Logistic(BaseProbe):
-    """
-    GPU-based logistic regression probe for binary classification.
+    """GPU-accelerated L2-regularized logistic regression probe.
 
-    This probe uses PyTorch's autograd for training, making it efficient
-    on GPU especially for token-level training (score_aggregation mode).
-    It follows the same pattern as MLP probe for consistency.
-
-    Attributes:
-        l2_penalty: L2 regularization strength (weight_decay in optimizer)
-        learning_rate: Learning rate for optimizer
-        n_epochs: Maximum number of training epochs
-        patience: Early stopping patience
-        _network: LogisticNetwork instance
-        _optimizer: PyTorch optimizer
-        _scaler: GPUStandardScaler instance
+    This implementation uses PyTorch with LBFGS optimizer to match sklearn's
+    LogisticRegression behavior. For batch training, it uses LBFGS on all data.
+    For streaming, it falls back to SGD-like updates via partial_fit.
     """
 
     def __init__(
         self,
-        layer: int,
-        sequence_aggregation: Literal["mean", "max", "last_token"] | None = None,
-        score_aggregation: Literal["mean", "max", "last_token"] | None = None,
-        l2_penalty: float = 1.0,
-        learning_rate: float = 0.001,
-        n_epochs: int = 100,
-        patience: int = 10,
+        layer: int | None = None,
+        sequence_pooling: SequencePooling = SequencePooling.MEAN,
+        C: float = 1.0,
+        max_iter: int = 100,
         device: str | None = None,
         random_state: int | None = None,
         verbose: bool = False,
     ):
-        """
-        Initialize GPU-based logistic regression probe.
+        """Initialize GPU-based logistic regression probe.
 
         Args:
-            layer: Layer index to use activations from
-            sequence_aggregation: Aggregate sequences BEFORE training
-            score_aggregation: Train on tokens, aggregate AFTER prediction
-            l2_penalty: L2 regularization strength (1/C in sklearn)
-            learning_rate: Learning rate (None for automatic)
-            n_epochs: Maximum number of training epochs
-            patience: Early stopping patience
+            layer: Optional layer index for train_probes compatibility
+            sequence_pooling: How to pool sequences before training
+            C: Inverse of regularization strength (higher = less regularization)
+            max_iter: Maximum number of iterations for LBFGS
             device: Device for PyTorch operations
             random_state: Random seed for reproducibility
             verbose: Whether to print progress information
         """
-        # Validate that at least one aggregation is specified
-        if sequence_aggregation is None and score_aggregation is None:
-            raise ValueError(
-                "Logistic requires either sequence_aggregation or score_aggregation"
-            )
-
         super().__init__(
             layer=layer,
-            sequence_aggregation=sequence_aggregation,
-            score_aggregation=score_aggregation,
+            sequence_pooling=sequence_pooling,
             device=device,
             random_state=random_state,
             verbose=verbose,
         )
 
-        self.l2_penalty = l2_penalty
-        self.n_epochs = n_epochs
-        self.patience = patience
-        self.learning_rate = learning_rate
+        # Training parameters
+        self.C = C
+        self.max_iter = max_iter
 
         # Model components (initialized during fit)
         self._network = None
         self._optimizer = None
-        self._scaler = GPUStandardScaler(device=self.device)
+        self._scheduler = None  # Learning rate scheduler for streaming mode
+        self._scaler = _GPUStandardScaler(device=self.device)
         self._d_model = None
         self._streaming_steps = 0
+        self._use_lbfgs = True  # Track optimizer type
+        self._streaming_n_seen = 0  # Total samples seen in streaming mode
+        self._scaler_frozen = False  # Freeze scaler after first epoch
+        self._n_epochs = 100  # Default number of epochs for streaming
 
-        # This probe requires gradients for training
+        # This probe requires gradients
         self._requires_grad = True
 
-        # Set random seed for reproducibility
+        # Set random seed
         if random_state is not None:
             torch.manual_seed(random_state)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(random_state)
 
-    def _init_network(self, d_model: int):
+    def _init_network(
+        self,
+        d_model: int,
+        dtype: torch.dtype | None = None,
+        use_lbfgs: bool = True,
+        n_epochs: int = 100,
+    ):
         """Initialize the network and optimizer once we know the input dimension."""
         self._d_model = d_model
-        self._network = LogisticNetwork(d_model).to(self.device)
+        self._network = _LogisticNetwork(d_model).to(self.device)
 
-        # Convert l2_penalty to weight_decay (they're equivalent)
-        weight_decay = self.l2_penalty
+        # Match the dtype of the input features for mixed precision support
+        if dtype is not None:
+            self._network = self._network.to(dtype)
 
-        self._optimizer = AdamW(
-            self._network.parameters(),
-            lr=self.learning_rate,
-            weight_decay=weight_decay,
-            fused=self.device.startswith("cuda"),
-        )
+        # Use LBFGS for batch training, AdamW for streaming
+        if use_lbfgs:
+            self._optimizer = torch.optim.LBFGS(
+                self._network.parameters(),
+                max_iter=self.max_iter,
+                line_search_fn="strong_wolfe",
+            )
+            self._use_lbfgs = True
+        else:
+            # For streaming mode, use AdamW (better than SGD for streaming)
+            # Compute weight decay from C (L2 regularization strength)
+            self._alpha = 1.0 / self.C if self.C > 0 else 0.0001
 
-    def fit(self, X: Activations | ActivationIterator, y: list | torch.Tensor) -> Self:
-        """
-        Fit the probe on training data.
+            # AdamW learning rate - typically 1e-3 to 1e-4
+            # Scale inversely with alpha for better conditioning
+            self._lr = min(1e-3, 1.0 / (100 * self._alpha)) if self._alpha > 0 else 1e-3
+
+            self._optimizer = torch.optim.AdamW(
+                self._network.parameters(),
+                lr=self._lr,
+                weight_decay=self._alpha,  # AdamW handles L2 reg via weight_decay
+                betas=(0.9, 0.999),
+                eps=1e-8,
+            )
+            self._use_lbfgs = False
+            self._t = 0  # Step counter for tracking
+            self._n_epochs = n_epochs
+
+            # Create learning rate scheduler: simple cosine decay (no warmup)
+            # Cosine annealing works well for AdamW and decays smoothly to a minimum
+            self._scheduler = CosineAnnealingLR(
+                self._optimizer,
+                T_max=n_epochs,  # Full cosine cycle over all epochs
+                eta_min=self._lr * 0.1,  # Minimum LR is 10% of base (not too low)
+            )
+
+            # Log streaming hyperparameters if verbose
+            if hasattr(self, "verbose") and self.verbose:
+                print(
+                    f"Streaming AdamW initialized: C={self.C}, alpha={self._alpha:.4f}, "
+                    f"lr={self._lr:.6f}, weight_decay={self._alpha:.4f}"
+                )
+                print(
+                    f"LR schedule: cosine annealing over {n_epochs} epochs (min_lr={self._lr * 0.1:.6f})"
+                )
+
+    def fit(
+        self, X: Activations | ActivationIterator, y: list | torch.Tensor
+    ) -> "Logistic":
+        """Fit the probe on training data.
 
         Args:
             X: Activations or ActivationIterator containing features
@@ -288,13 +227,57 @@ class Logistic(BaseProbe):
             self: Fitted probe instance
         """
         if isinstance(X, ActivationIterator):
-            # Use streaming approach for iterators
-            return self._fit_iterator(X, y)
+            # Use streaming for iterators - more epochs for better convergence
+            # Increased from 50 to 100 for improved performance
+            n_epochs = min(100, max(50, self.max_iter))
 
-        # Standard batch fitting
+            labels = self._prepare_labels(y)
+
+            if self.verbose:
+                print(
+                    f"Streaming mode: training for {n_epochs} epochs with cosine annealing LR"
+                )
+
+            # Track first batch to initialize network with correct n_epochs
+            first_batch = True
+
+            for epoch in range(n_epochs):
+                for batch_acts in X:
+                    batch_idx = torch.tensor(
+                        batch_acts.batch_indices, device=labels.device, dtype=torch.long
+                    )
+                    batch_labels = labels.index_select(0, batch_idx)
+
+                    # Pass n_epochs on first batch for scheduler initialization
+                    if first_batch:
+                        self._current_n_epochs = n_epochs
+                        first_batch = False
+
+                    self.partial_fit(batch_acts, batch_labels)
+
+                # Freeze scaler after first epoch to prevent non-stationarity
+                if epoch == 0:
+                    self._scaler_frozen = True
+                    if self.verbose:
+                        print(
+                            f"  Scaler frozen after epoch 1 (mean: {self._scaler.mean_[:3].cpu().numpy()}, std: {self._scaler.std_[:3].cpu().numpy()})"
+                        )
+
+                # Step the learning rate scheduler at the end of each epoch
+                if self._scheduler is not None:
+                    self._scheduler.step()
+                    current_lr = self._optimizer.param_groups[0]["lr"]
+                    if self.verbose and (epoch + 1) % 10 == 0:
+                        print(f"  Epoch {epoch + 1}/{n_epochs}: lr={current_lr:.6f}")
+                elif self.verbose and (epoch + 1) % 10 == 0:
+                    print(f"  Completed epoch {epoch + 1}/{n_epochs}")
+
+            return self
+
+        # Prepare features and labels
         features = self._prepare_features(X)
         labels = self._prepare_labels(
-            y, expand_for_tokens=(self.sequence_aggregation is None)
+            y, expand_for_tokens=(self.sequence_pooling == SequencePooling.NONE)
         )
 
         # Skip if no features
@@ -304,98 +287,65 @@ class Logistic(BaseProbe):
             return self
 
         # Move to device
-        features = features.to(self.device).float()
-        labels = labels.to(self.device).float()
+        features = features.to(self.device)
+        labels = labels.to(self.device).float()  # Labels should be float for BCE loss
+
+        # Initialize network if needed (use LBFGS for batch mode)
+        if self._network is None:
+            self._init_network(features.shape[1], dtype=features.dtype, use_lbfgs=True)
 
         # Standardize features
         features_scaled = self._scaler.fit_transform(features)
 
-        # Initialize network if needed
-        if self._network is None:
-            self._init_network(features.shape[1])
+        # Train on all data using LBFGS (no validation split, matching sklearn)
+        n_samples = features.shape[0]
 
-        # Create train/validation split for early stopping
-        n_samples = len(features_scaled)
-        n_val = max(1, int(0.2 * n_samples))
-
-        if self.random_state is not None:
-            torch.manual_seed(self.random_state)
-        indices = torch.randperm(n_samples, device=self.device)
-
-        train_indices = indices[n_val:]
-        val_indices = indices[:n_val]
-
-        X_train = features_scaled[train_indices]
-        y_train = labels[train_indices]
-        X_val = features_scaled[val_indices]
-        y_val = labels[val_indices]
-
-        best_val_loss = float("inf")
-        patience_counter = 0
+        # Compute L2 regularization weight (sklearn's C is inverse of regularization)
+        # In sklearn: loss = BCE + (1/(2*C*n)) * ||w||^2
+        # We'll apply: loss = BCE + (1/(2*C*n)) * ||w||^2
+        l2_weight = 1.0 / (2.0 * self.C * n_samples) if self.C > 0 else 0.0
 
         self._network.train()
-        for epoch in range(self.n_epochs):
-            # Training step
-            self._optimizer.zero_grad()
-            logits = self._network(X_train)
-            loss = F.binary_cross_entropy_with_logits(logits, y_train)
-            loss.backward()
-            self._optimizer.step()
 
-            # Validation and early stopping
+        # LBFGS requires a closure that computes and returns the loss
+        def closure():
+            self._optimizer.zero_grad()
+            logits = self._network(features_scaled)
+
+            # Binary cross entropy loss
+            bce_loss = F.binary_cross_entropy_with_logits(logits, labels)
+
+            # Add L2 regularization on weights (not bias)
+            l2_reg = 0.0
+            if l2_weight > 0:
+                for name, param in self._network.named_parameters():
+                    if "weight" in name:  # Only regularize weights, not bias
+                        l2_reg += torch.sum(param**2)
+
+            loss = bce_loss + l2_weight * l2_reg
+            loss.backward()
+
+            return loss
+
+        # Run LBFGS optimization
+        self._optimizer.step(closure)
+
+        if self.verbose:
+            # Evaluate final loss without gradients
             self._network.eval()
             with torch.no_grad():
-                val_logits = self._network(X_val)
-                val_loss = F.binary_cross_entropy_with_logits(val_logits, y_val)
-            self._network.train()
-
-            # Early stopping check
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= self.patience:
-                    if self.verbose:
-                        print(f"Early stopping at epoch {epoch}")
-                    break
-
-            # Stop if loss is very small
-            if val_loss < 0.01:
-                if self.verbose:
-                    print(f"Converged at epoch {epoch}")
-                break
+                logits = self._network(features_scaled)
+                bce_loss = F.binary_cross_entropy_with_logits(logits, labels)
+                print(f"LBFGS converged with BCE loss: {bce_loss.item():.4f}")
 
         self._network.eval()
         self._fitted = True
         return self
 
-    def _fit_iterator(self, X: ActivationIterator, y: list | torch.Tensor) -> Self:
-        """
-        Fit using an ActivationIterator (streaming mode).
+    def partial_fit(self, X: Activations, y: list | torch.Tensor) -> "Logistic":
+        """Incrementally fit the probe on a batch of samples.
 
-        Args:
-            X: ActivationIterator yielding batches of activations
-            y: All labels
-
-        Returns:
-            self: Fitted probe instance
-        """
-        labels_tensor = self._prepare_labels(y)
-
-        # Process batches
-        for batch_acts in X:
-            batch_idx = torch.tensor(
-                batch_acts.batch_indices, device=labels_tensor.device, dtype=torch.long
-            )
-            batch_labels = labels_tensor.index_select(0, batch_idx)
-            self.partial_fit(batch_acts, batch_labels)
-
-        return self
-
-    def partial_fit(self, X: Activations, y: list | torch.Tensor) -> Self:
-        """
-        Incrementally fit the probe on a batch of samples.
+        Uses SGD with optimal learning rate schedule (sklearn-style) for streaming updates.
 
         Args:
             X: Activations containing features for this batch
@@ -404,119 +354,135 @@ class Logistic(BaseProbe):
         Returns:
             self: Partially fitted probe instance
         """
+        # Prepare features and labels
         features = self._prepare_features(X)
         labels = self._prepare_labels(
-            y, expand_for_tokens=(self.sequence_aggregation is None)
+            y, expand_for_tokens=(self.sequence_pooling == SequencePooling.NONE)
         )
 
-        # Skip empty batches (no detected tokens)
+        # Skip empty batches
         if features.shape[0] == 0:
             if self.verbose:
                 print("Skipping batch with no detected tokens")
             return self
 
         # Move to device
-        features = features.to(self.device).float()
-        labels = labels.to(self.device).float()
+        features = features.to(self.device)
+        labels = labels.to(self.device).float()  # Labels should be float for BCE loss
 
-        # Update scaler and transform
-        if self._scaler.mean_ is None:
-            features_scaled = self._scaler.fit_transform(features)
+        # Initialize network on first batch (use AdamW for streaming)
+        if self._network is None:
+            # Use stored n_epochs if available, otherwise default to 100
+            n_epochs = getattr(self, "_current_n_epochs", 100)
+            self._init_network(
+                features.shape[1],
+                dtype=features.dtype,
+                use_lbfgs=False,
+                n_epochs=n_epochs,
+            )
+
+        # Update scaler statistics on first epoch only, then freeze
+        if not self._scaler_frozen:
+            # First epoch: update running statistics
+            features_scaled = self._scaler.partial_fit(features).transform(features)
         else:
-            self._scaler.partial_fit(features)
+            # Subsequent epochs: use frozen statistics
             features_scaled = self._scaler.transform(features)
 
-        # Initialize network on first batch
-        if self._network is None:
-            self._init_network(features.shape[1])
+        # Track total samples seen
+        n_samples = features.shape[0]
+        self._streaming_n_seen += n_samples
+        self._t += 1
 
-        # Training step
+        # Single optimization step (AdamW handles L2 via weight_decay)
         self._network.train()
         self._optimizer.zero_grad()
+
+        # Compute loss (no manual L2 reg - AdamW handles it)
         logits = self._network(features_scaled)
         loss = F.binary_cross_entropy_with_logits(logits, labels)
+
         loss.backward()
         self._optimizer.step()
 
         self._streaming_steps += 1
-        self._fitted = True
+        if self.verbose and self._streaming_steps % 50 == 0:
+            lr = self._optimizer.param_groups[0]["lr"]
+            print(
+                f"  Step {self._streaming_steps}: loss={loss.item():.4f}, lr={lr:.6f}"
+            )
 
-        # Switch back to eval mode
         self._network.eval()
+        self._fitted = True
         return self
 
-    def predict_proba(self, X: Activations | ActivationIterator) -> torch.Tensor:
-        """
-        Predict class probabilities.
+    def predict_proba(
+        self, X: Activations | ActivationIterator, *, logits: bool = False
+    ) -> torch.Tensor:
+        """Predict class probabilities or logits.
 
         Args:
             X: Activations or ActivationIterator containing features
+            logits: If True, return raw logits instead of probabilities.
+                Useful for adversarial training to avoid sigmoid saturation.
 
         Returns:
-            Tensor of shape (n_samples, 2) with probabilities for each class
+            If logits=False (default): Tensor of shape (n_samples, 2) with probabilities
+            If logits=True: Tensor of shape (n_samples,) with raw logits
         """
         if not self._fitted:
             raise RuntimeError("Probe must be fitted before prediction")
 
         if isinstance(X, ActivationIterator):
             # Predict on iterator batches
-            return self._predict_iterator(X)
+            predictions = []
+            for batch_acts in X:
+                batch_probs = self.predict_proba(batch_acts, logits=logits)
+                predictions.append(batch_probs)
+            return torch.cat(predictions, dim=0)
 
-        # Get features based on training mode
+        # Prepare features
         features = self._prepare_features(X)
-        features = features.to(self.device).float()
+        features = features.to(self.device)
 
         # Standardize features
         features_scaled = self._scaler.transform(features)
 
         # Get predictions
         self._network.eval()
-        with torch.no_grad():
-            logits = self._network(features_scaled)
+        raw_logits = self._network(features_scaled)
 
-            # Apply score aggregation if needed
-            if self.score_aggregation is not None and hasattr(
-                self, "_tokens_per_sample"
+        # Return logits directly if requested
+        if logits:
+            # Aggregate token predictions to sample predictions if needed
+            if (
+                self.sequence_pooling == SequencePooling.NONE
+                and self._tokens_per_sample is not None
             ):
-                logits = self._aggregate_scores(
-                    logits.unsqueeze(-1), self.score_aggregation
+                raw_logits = self.aggregate_token_predictions(
+                    raw_logits.unsqueeze(-1), self._tokens_per_sample, method="mean"
                 ).squeeze(-1)
+            return raw_logits
 
-            probs_positive = torch.sigmoid(logits)
+        # Otherwise return probabilities
+        probs_positive = torch.sigmoid(raw_logits)
 
         # Create 2-class probability matrix
-        n_predictions = len(probs_positive)
-        probs = torch.zeros(n_predictions, 2, device=self.device)
-        probs[:, 0] = 1 - probs_positive  # P(y=0)
-        probs[:, 1] = probs_positive  # P(y=1)
+        probs = torch.stack([1 - probs_positive, probs_positive], dim=-1)
+
+        # Aggregate token predictions to sample predictions if needed
+        if (
+            self.sequence_pooling == SequencePooling.NONE
+            and self._tokens_per_sample is not None
+        ):
+            probs = self.aggregate_token_predictions(
+                probs, self._tokens_per_sample, method="mean"
+            )
 
         return probs
 
-    def _predict_iterator(self, X: ActivationIterator) -> torch.Tensor:
-        """
-        Predict on an ActivationIterator.
-
-        Args:
-            X: ActivationIterator yielding batches
-
-        Returns:
-            Concatenated predictions for all batches
-        """
-        all_probs = []
-
-        for batch_acts in X:
-            batch_probs = self.predict_proba(batch_acts)
-            all_probs.append(batch_probs)
-
-        return torch.cat(all_probs, dim=0)
-
     def save(self, path: Path | str) -> None:
-        """
-        Save the probe to disk.
-
-        Args:
-            path: Path to save the probe
-        """
+        """Save the probe to disk."""
         if not self._fitted:
             raise RuntimeError("Cannot save unfitted probe")
 
@@ -526,149 +492,150 @@ class Logistic(BaseProbe):
         # Prepare state dict
         state = {
             "layer": self.layer,
-            "sequence_aggregation": self.sequence_aggregation,
-            "score_aggregation": self.score_aggregation,
-            "l2_penalty": self.l2_penalty,
-            "learning_rate": self.learning_rate,
-            "n_epochs": self.n_epochs,
-            "patience": self.patience,
-            "device": self.device,
-            "random_state": self.random_state,
-            "verbose": self.verbose,
+            "sequence_pooling": self.sequence_pooling.value,
+            "C": self.C,
+            "max_iter": self.max_iter,
             "d_model": self._d_model,
-            "network_state_dict": self._network.state_dict(),
-            "optimizer_state_dict": self._optimizer.state_dict(),
+            "network_state": self._network.state_dict(),
             "scaler_mean": self._scaler.mean_,
-            "scaler_var": self._scaler.var_,
-            "scaler_scale": self._scaler.scale_,
+            "scaler_std": self._scaler.std_,
             "scaler_n_samples": self._scaler.n_samples_seen_,
+            "random_state": self.random_state,
+            "use_lbfgs": self._use_lbfgs,
             "streaming_steps": self._streaming_steps,
+            "streaming_n_seen": self._streaming_n_seen,
+            "t": getattr(self, "_t", 0),
+            "lr": getattr(self, "_lr", 1e-3),
+            "alpha": getattr(self, "_alpha", 0.0),
+            "n_epochs": getattr(self, "_n_epochs", 100),
+            "scheduler_state": self._scheduler.state_dict()
+            if self._scheduler is not None
+            else None,
         }
 
         torch.save(state, path)
 
     @classmethod
-    def load(cls, path: Path | str, device: str | None = None) -> Self:
-        """
-        Load a probe from disk.
-
-        Args:
-            path: Path to load the probe from
-            device: Device to load onto (None to use saved device)
-
-        Returns:
-            Loaded probe instance
-        """
+    def load(cls, path: Path | str, device: str | None = None) -> "Logistic":
+        """Load a probe from disk."""
         path = Path(path)
-        state = torch.load(path, map_location="cpu")
+        if not path.exists():
+            raise FileNotFoundError(f"Probe file not found: {path}")
+
+        # Load state dict
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        state = torch.load(path, map_location=device)
+
+        # Convert sequence_pooling string back to enum
+        pooling_value = state.get("sequence_pooling", "mean")
+        sequence_pooling = SequencePooling(pooling_value)
+
+        # Backward compatibility: handle old parameter names
+        if "C" in state:
+            C = state["C"]
+            max_iter = state.get("max_iter", 100)
+        else:
+            # Old format with l2_penalty
+            C = (
+                1.0 / state.get("l2_penalty", 1.0)
+                if state.get("l2_penalty", 1.0) > 0
+                else 1.0
+            )
+            max_iter = state.get("n_epochs", 100)
 
         # Create probe instance
         probe = cls(
             layer=state["layer"],
-            sequence_aggregation=state["sequence_aggregation"],
-            score_aggregation=state["score_aggregation"],
-            l2_penalty=state["l2_penalty"],
-            learning_rate=state["learning_rate"],
-            n_epochs=state["n_epochs"],
-            patience=state["patience"],
-            device=device or state["device"],
-            random_state=state["random_state"],
-            verbose=state.get("verbose", False),
+            sequence_pooling=sequence_pooling,
+            C=C,
+            max_iter=max_iter,
+            device=device,
+            random_state=state.get("random_state"),
         )
 
-        # Initialize network
-        probe._init_network(state["d_model"])
+        # Initialize network and load state
+        use_lbfgs = state.get("use_lbfgs", True)
+        n_epochs = state.get("n_epochs", 100)
+        probe._init_network(state["d_model"], use_lbfgs=use_lbfgs, n_epochs=n_epochs)
+        probe._network.load_state_dict(state["network_state"])
+        probe._use_lbfgs = use_lbfgs
 
-        # Load network and optimizer states
-        probe._network.load_state_dict(state["network_state_dict"])
-        probe._optimizer.load_state_dict(state["optimizer_state_dict"])
+        # Restore streaming state
+        probe._streaming_steps = state.get("streaming_steps", 0)
+        probe._streaming_n_seen = state.get("streaming_n_seen", 0)
+        if not use_lbfgs:
+            probe._t = state.get("t", 0)
+            probe._lr = state.get("lr", 1e-3)
+            probe._alpha = state.get("alpha", 1.0 / C if C > 0 else 0.0001)
+            probe._n_epochs = n_epochs
 
-        # Load scaler state
-        probe._scaler.mean_ = state["scaler_mean"].to(probe.device)
-        probe._scaler.var_ = state["scaler_var"].to(probe.device)
-        probe._scaler.scale_ = state["scaler_scale"].to(probe.device)
+            # Restore scheduler state if available
+            if "scheduler_state" in state and state["scheduler_state"] is not None:
+                probe._scheduler.load_state_dict(state["scheduler_state"])
+
+        # Restore scaler state
+        probe._scaler._fitted = True
+        probe._scaler.mean_ = state["scaler_mean"].to(device)
+        probe._scaler.std_ = state["scaler_std"].to(device)
         probe._scaler.n_samples_seen_ = state["scaler_n_samples"]
-        probe._scaler.mean_accumulator_ = probe._scaler.mean_.clone()
-        probe._scaler.m2_accumulator_ = (
-            probe._scaler.var_ * probe._scaler.n_samples_seen_
-        )
 
-        probe._streaming_steps = state["streaming_steps"]
-
-        # Move to correct device
-        probe._network = probe._network.to(probe.device)
-        probe._network.eval()
         probe._fitted = True
-
         return probe
 
 
 class SklearnLogistic(BaseProbe):
-    """
-    Logistic regression probe with L2 regularization.
+    """Sklearn-based logistic regression probe matching TPC implementation.
 
-    This probe uses sklearn's LogisticRegression for batch training
-    and SGDClassifier for streaming/incremental training. Features are
-    automatically standardized before training.
-
-    Attributes:
-        l2_penalty: L2 regularization strength (default 1.0)
-        _clf: Underlying sklearn classifier
-        _scaler: StandardScaler for feature normalization
-        _coef: Coefficient vector as tensor for efficient prediction
-        _scaler_mean: Scaler mean as tensor
-        _scaler_scale: Scaler scale as tensor
-        _use_sgd: Whether using SGD (streaming) or regular LogisticRegression
+    This implementation uses scikit-learn's LogisticRegression with LBFGS solver
+    for batch training, and SGDClassifier for streaming mode via partial_fit.
     """
 
     def __init__(
         self,
-        layer: int,
-        sequence_aggregation: str | None = None,
-        score_aggregation: str | None = None,
-        l2_penalty: float = 1.0,
+        layer: int | None = None,
+        sequence_pooling: SequencePooling = SequencePooling.MEAN,
+        C: float = 1.0,
+        max_iter: int = 500,
         device: str | None = None,
         random_state: int | None = None,
         verbose: bool = False,
     ):
-        """
-        Initialize logistic regression probe.
+        """Initialize sklearn-based logistic regression probe.
 
         Args:
-            layer: Layer index to use activations from
-            sequence_aggregation: Aggregate sequences BEFORE training (classic)
-            score_aggregation: Train on tokens, aggregate AFTER prediction
-            l2_penalty: L2 regularization strength (C = 1/l2_penalty in sklearn)
-            device: Device for PyTorch operations
+            layer: Optional layer index for train_probes compatibility
+            sequence_pooling: How to pool sequences before training
+            C: Inverse of regularization strength (default: 1.0)
+            max_iter: Maximum iterations for solver
+            device: Device for feature extraction (sklearn runs on CPU)
             random_state: Random seed for reproducibility
             verbose: Whether to print progress information
         """
-        # Validate that at least one aggregation is specified
-        if sequence_aggregation is None and score_aggregation is None:
-            raise ValueError(
-                "LogisticProbe requires either sequence_aggregation or score_aggregation"
-            )
-
         super().__init__(
             layer=layer,
-            sequence_aggregation=sequence_aggregation,
-            score_aggregation=score_aggregation,
+            sequence_pooling=sequence_pooling,
             device=device,
             random_state=random_state,
             verbose=verbose,
         )
 
-        self.l2_penalty = l2_penalty
-        self._clf = None
-        self._scaler = StandardScaler()
-        self._coef = None
-        self._scaler_mean = None
-        self._scaler_scale = None
-        self._use_sgd = False
+        self.C = C
+        self.max_iter = max_iter
 
-    def fit(self, X: Activations | ActivationIterator, y: list | torch.Tensor) -> Self:
-        """
-        Fit the probe on training data.
+        # Model components (initialized during fit)
+        self._scaler = StandardScaler()
+        self._model = None
+        self._use_sgd = False  # Track whether we're using SGD for streaming
+
+        # This probe doesn't require gradients
+        self._requires_grad = False
+
+    def fit(
+        self, X: Activations | ActivationIterator, y: list | torch.Tensor
+    ) -> "SklearnLogistic":
+        """Fit the probe on training data.
 
         Args:
             X: Activations or ActivationIterator containing features
@@ -678,79 +645,72 @@ class SklearnLogistic(BaseProbe):
             self: Fitted probe instance
         """
         if isinstance(X, ActivationIterator):
-            # Use streaming approach for iterators
-            return self._fit_iterator(X, y)
+            # Use streaming for iterators - multiple epochs for better convergence
+            # Sklearn SGDClassifier uses max_iter as total iterations across all data
+            # Use fewer epochs to avoid overfitting
+            n_epochs = min(20, max(10, self.max_iter // 10))
 
+            labels = self._prepare_labels(y)
+
+            if self.verbose:
+                print(f"Sklearn streaming mode: training for {n_epochs} epochs")
+
+            for epoch in range(n_epochs):
+                for batch_acts in X:
+                    batch_idx = torch.tensor(
+                        batch_acts.batch_indices, device=labels.device, dtype=torch.long
+                    )
+                    batch_labels = labels.index_select(0, batch_idx)
+                    self.partial_fit(batch_acts, batch_labels)
+
+                if self.verbose and (epoch + 1) % 50 == 0:
+                    print(f"  Completed epoch {epoch + 1}/{n_epochs}")
+
+            return self
+
+        # Prepare features and labels
         features = self._prepare_features(X)
         labels = self._prepare_labels(
-            y, expand_for_tokens=(self.sequence_aggregation is None)
+            y, expand_for_tokens=(self.sequence_pooling == SequencePooling.NONE)
         )
 
-        # Convert to numpy
-        X_np = features.cpu().float().numpy()
-        y_np = labels.cpu().numpy()
+        # Skip if no features
+        if features.shape[0] == 0:
+            if self.verbose:
+                print("No features to train on (empty batch)")
+            return self
 
-        # Validate we have both classes
-        unique_classes = np.unique(y_np)
-        if len(unique_classes) < 2:
-            raise ValueError(
-                f"Training data must contain both classes. Found: {unique_classes}"
-            )
+        # Convert to numpy (convert to float32 first to handle bfloat16)
+        if isinstance(features, torch.Tensor):
+            X_np = features.to(dtype=torch.float32).cpu().numpy()
+        else:
+            X_np = features
 
-        # Standardize features
+        if isinstance(labels, torch.Tensor):
+            y_np = labels.to(dtype=torch.float32).cpu().numpy()
+        else:
+            y_np = labels
+
+        # Fit scaler on training data
         X_scaled = self._scaler.fit_transform(X_np)
 
-        # Train logistic regression
-        self._clf = LogisticRegression(
-            C=1.0 / self.l2_penalty,  # sklearn uses C = 1/lambda
-            fit_intercept=False,
+        # Train LogisticRegression with LBFGS
+        self._model = LogisticRegression(
+            C=self.C,
+            max_iter=self.max_iter,
             random_state=self.random_state,
+            solver="lbfgs",
         )
-        self._clf.fit(X_scaled, y_np)
-
-        # Cache coefficients as tensors for fast prediction
-        self._coef = torch.tensor(
-            self._clf.coef_[0], device=self.device, dtype=torch.float32
-        )
-        self._scaler_mean = torch.tensor(
-            self._scaler.mean_, device=self.device, dtype=torch.float32
-        )
-        self._scaler_scale = torch.tensor(
-            self._scaler.scale_, device=self.device, dtype=torch.float32
-        )
-
-        self._fitted = True
+        self._model.fit(X_scaled, y_np)
         self._use_sgd = False
-        return self
-
-    def _fit_iterator(self, X: ActivationIterator, y: list | torch.Tensor) -> Self:
-        """
-        Fit using an ActivationIterator (streaming mode).
-
-        Args:
-            X: ActivationIterator yielding batches of activations
-            y: All labels
-
-        Returns:
-            self: Fitted probe instance
-        """
-        labels_tensor = self._prepare_labels(y)
-
-        # Process batches
-        for batch_acts in X:
-            batch_idx = torch.tensor(
-                batch_acts.batch_indices, device=labels_tensor.device, dtype=torch.long
-            )
-            batch_labels = labels_tensor.index_select(0, batch_idx)
-            self.partial_fit(batch_acts, batch_labels)
+        self._fitted = True
 
         return self
 
-    def partial_fit(self, X: Activations, y: list | torch.Tensor) -> Self:
-        """
-        Incrementally fit the probe on a batch of samples.
+    def partial_fit(self, X: Activations, y: list | torch.Tensor) -> "SklearnLogistic":
+        """Incrementally fit the probe on a batch of samples.
 
-        Uses SGDClassifier for online learning.
+        Uses SGDClassifier for streaming updates.
 
         Args:
             X: Activations containing features for this batch
@@ -759,64 +719,61 @@ class SklearnLogistic(BaseProbe):
         Returns:
             self: Partially fitted probe instance
         """
+        # Prepare features and labels
         features = self._prepare_features(X)
         labels = self._prepare_labels(
-            y, expand_for_tokens=(self.sequence_aggregation is None)
+            y, expand_for_tokens=(self.sequence_pooling == SequencePooling.NONE)
         )
 
-        # Convert to numpy
-        X_np = features.cpu().float().numpy()
-        y_np = labels.cpu().numpy()
+        # Skip empty batches
+        if features.shape[0] == 0:
+            if self.verbose:
+                print("Skipping batch with no features")
+            return self
 
-        if self._clf is None:
-            # First batch - initialize SGD classifier
-            self._clf = SGDClassifier(
-                loss="log_loss",  # Logistic loss
-                # TODO: try empirically what works here
-                alpha=self.l2_penalty,  # Scale by batch size
-                fit_intercept=False,
-                random_state=42,
-            )
-
-            # Fit scaler on first batch
-            X_scaled = self._scaler.fit_transform(X_np)
-            self._scaler_mean_f32 = self._scaler.mean_.astype(np.float32)
-            self._scaler_scale_f32 = self._scaler.scale_.astype(np.float32)
-
-            # Initial fit with explicit classes
-            self._clf.partial_fit(X_scaled, y_np, classes=[0, 1])
-
-            self._use_sgd = True
+        # Convert to numpy (convert to float32 first to handle bfloat16)
+        if isinstance(features, torch.Tensor):
+            X_np = features.to(dtype=torch.float32).cpu().numpy()
         else:
-            # Subsequent batches
-            if not self._use_sgd:
-                raise ValueError(
-                    "Do not combine fit() and partial_fit() for Logistic probe"
-                )
-            X_scaled = (X_np - self._scaler_mean_f32) / self._scaler_scale_f32
-            self._clf.partial_fit(X_scaled, y_np)
+            X_np = features
 
-        # Update cached tensors
-        self._coef = torch.tensor(
-            self._clf.coef_[0], device=self.device, dtype=torch.float32
-        )
+        if isinstance(labels, torch.Tensor):
+            y_np = labels.to(dtype=torch.float32).cpu().numpy()
+        else:
+            y_np = labels
 
-        # Also set tensor versions for predict_proba
-        if self._scaler_mean is None:
-            self._scaler_mean = torch.tensor(
-                self._scaler_mean_f32, device=self.device, dtype=torch.float32
+        # Initialize SGDClassifier on first batch
+        if self._model is None:
+            # alpha is inverse of C for SGD (alpha = 1 / (C * n_samples))
+            # We approximate this by using alpha = 1 / C
+            alpha = 1.0 / self.C if self.C > 0 else 0.0001
+
+            self._model = SGDClassifier(
+                loss="log_loss",  # Logistic regression
+                penalty="l2",
+                alpha=alpha,
+                max_iter=self.max_iter,
+                random_state=self.random_state,
+                learning_rate="optimal",
             )
-            self._scaler_scale = torch.tensor(
-                self._scaler_scale_f32, device=self.device, dtype=torch.float32
-            )
+            self._use_sgd = True
 
-        # Mark as fitted since we've successfully trained on at least one batch
+        # Update scaler and standardize
+        if hasattr(self._scaler, "mean_"):
+            # Scaler already fitted, just transform
+            X_scaled = self._scaler.transform(X_np)
+        else:
+            # First batch, fit scaler
+            X_scaled = self._scaler.fit_transform(X_np)
+
+        # Partial fit
+        self._model.partial_fit(X_scaled, y_np, classes=[0, 1])
         self._fitted = True
+
         return self
 
     def predict_proba(self, X: Activations | ActivationIterator) -> torch.Tensor:
-        """
-        Predict class probabilities.
+        """Predict class probabilities.
 
         Args:
             X: Activations or ActivationIterator containing features
@@ -829,73 +786,47 @@ class SklearnLogistic(BaseProbe):
 
         if isinstance(X, ActivationIterator):
             # Predict on iterator batches
-            return self._predict_iterator(X)
+            predictions = []
+            for batch_acts in X:
+                batch_probs = self.predict_proba(batch_acts)
+                predictions.append(batch_probs)
+            return torch.cat(predictions, dim=0)
 
-        # Get features based on training mode
+        # Prepare features
         features = self._prepare_features(X)
-        original_device = features.device
 
-        # Only move parameters if they're not already on the correct device
-        if self._scaler_mean.device != original_device:
-            scaler_mean = self._scaler_mean.to(original_device)
-            scaler_scale = self._scaler_scale.to(original_device)
-            coef = self._coef.to(original_device)
+        # Convert to numpy (convert to float32 first to handle bfloat16)
+        if isinstance(features, torch.Tensor):
+            X_np = features.to(dtype=torch.float32).cpu().numpy()
         else:
-            scaler_mean = self._scaler_mean
-            scaler_scale = self._scaler_scale
-            coef = self._coef
+            X_np = features
 
-        # Standardize (on the same device as features)
-        features_scaled = (features - scaler_mean) / scaler_scale
+        # Standardize features
+        X_scaled = self._scaler.transform(X_np)
 
-        # Compute logits
-        logits = features_scaled @ coef
+        # Get predictions
+        probs_np = self._model.predict_proba(X_scaled)
 
-        # Apply score aggregation if needed (aggregate logits, not probabilities)
-        if self.score_aggregation is not None and hasattr(self, "_tokens_per_sample"):
-            # Aggregate logits before applying sigmoid
-            logits = self._aggregate_scores(
-                logits.unsqueeze(-1), self.score_aggregation
-            ).squeeze(-1)
+        # Convert to torch tensor
+        probs = torch.from_numpy(probs_np).float()
 
-        # Get probabilities
-        probs_positive = torch.sigmoid(logits)
-
-        # Create 2-class probability matrix (on same device as input)
-        n_predictions = len(probs_positive)
-        probs = torch.zeros(n_predictions, 2, device=original_device)
-        probs[:, 0] = 1 - probs_positive  # P(y=0)
-        probs[:, 1] = probs_positive  # P(y=1)
+        # Aggregate token predictions to sample predictions if needed
+        if (
+            self.sequence_pooling == SequencePooling.NONE
+            and self._tokens_per_sample is not None
+        ):
+            probs = self.aggregate_token_predictions(
+                probs, self._tokens_per_sample, method="mean"
+            )
 
         return probs
 
-    def _predict_iterator(self, X: ActivationIterator) -> torch.Tensor:
-        """
-        Predict on an ActivationIterator.
-
-        Args:
-            X: ActivationIterator yielding batches
-
-        Returns:
-            Concatenated predictions for all batches
-        """
-        all_probs = []
-
-        for batch_acts in X:
-            batch_probs = self.predict_proba(batch_acts)
-            all_probs.append(batch_probs)
-
-        return torch.cat(all_probs, dim=0)
-
     def save(self, path: Path | str) -> None:
-        """
-        Save the probe to disk.
-
-        Args:
-            path: Path to save the probe
-        """
+        """Save the probe to disk."""
         if not self._fitted:
             raise RuntimeError("Cannot save unfitted probe")
+
+        import pickle
 
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -903,82 +834,48 @@ class SklearnLogistic(BaseProbe):
         # Prepare state dict
         state = {
             "layer": self.layer,
-            "sequence_aggregation": self.sequence_aggregation,
-            "score_aggregation": self.score_aggregation,
-            "l2_penalty": self.l2_penalty,
-            "device": self.device,
+            "sequence_pooling": self.sequence_pooling.value,
+            "C": self.C,
+            "max_iter": self.max_iter,
             "random_state": self.random_state,
-            "verbose": self.verbose,
-            "coef": self._coef.cpu(),
-            "scaler_mean": self._scaler.mean_,
-            "scaler_scale": self._scaler.scale_,
-            "scaler_n_samples_seen": self._scaler.n_samples_seen_,
+            "scaler": self._scaler,
+            "model": self._model,
             "use_sgd": self._use_sgd,
         }
 
-        torch.save(state, path)
+        with open(path, "wb") as f:
+            pickle.dump(state, f)
 
     @classmethod
-    def load(cls, path: Path | str, device: str | None = None) -> Self:
-        """
-        Load a probe from disk.
+    def load(cls, path: Path | str, device: str | None = None) -> "SklearnLogistic":
+        """Load a probe from disk."""
+        import pickle
 
-        Args:
-            path: Path to load the probe from
-            device: Device to load onto (None to use saved device)
-
-        Returns:
-            Loaded probe instance
-        """
         path = Path(path)
-        state = torch.load(path, map_location="cpu", weights_only=False)
+        if not path.exists():
+            raise FileNotFoundError(f"Probe file not found: {path}")
+
+        with open(path, "rb") as f:
+            state = pickle.load(f)
+
+        # Convert sequence_pooling string back to enum
+        pooling_value = state.get("sequence_pooling", "mean")
+        sequence_pooling = SequencePooling(pooling_value)
 
         # Create probe instance
         probe = cls(
             layer=state["layer"],
-            sequence_aggregation=state["sequence_aggregation"],
-            score_aggregation=state["score_aggregation"],
-            l2_penalty=state["l2_penalty"],
-            device=device or state["device"],
-            random_state=state["random_state"],
-            verbose=state.get("verbose", False),
+            sequence_pooling=sequence_pooling,
+            C=state["C"],
+            max_iter=state["max_iter"],
+            device=device,
+            random_state=state.get("random_state"),
         )
 
-        # Restore model state
-        probe._coef = state["coef"].to(probe.device)
-        probe._scaler_mean = torch.tensor(
-            state["scaler_mean"], device=probe.device, dtype=torch.float32
-        )
-        probe._scaler_scale = torch.tensor(
-            state["scaler_scale"], device=probe.device, dtype=torch.float32
-        )
-
-        # Restore scaler
-        probe._scaler.mean_ = state["scaler_mean"]
-        probe._scaler.scale_ = state["scaler_scale"]
-        probe._scaler.n_samples_seen_ = state["scaler_n_samples_seen"]
-
-        # Create appropriate classifier
-        probe._use_sgd = state["use_sgd"]
-        if probe._use_sgd:
-            probe._clf = SGDClassifier(
-                loss="log_loss",
-                alpha=probe.l2_penalty / 1000,
-                fit_intercept=False,
-                random_state=probe.random_state,
-            )
-            probe._clf.coef_ = probe._coef.cpu().numpy().reshape(1, -1)
-            probe._clf.intercept_ = np.zeros(1)
-            probe._clf.classes_ = np.array([0, 1])
-        else:
-            probe._clf = LogisticRegression(
-                C=1.0 / probe.l2_penalty,
-                fit_intercept=False,
-                random_state=probe.random_state,
-            )
-            probe._clf.coef_ = probe._coef.cpu().numpy().reshape(1, -1)
-            probe._clf.intercept_ = np.zeros(1)
-            probe._clf.classes_ = np.array([0, 1])
-
+        # Restore model and scaler
+        probe._scaler = state["scaler"]
+        probe._model = state["model"]
+        probe._use_sgd = state.get("use_sgd", False)
         probe._fitted = True
+
         return probe

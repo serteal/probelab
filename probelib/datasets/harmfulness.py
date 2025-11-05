@@ -3,6 +3,8 @@ from pathlib import Path
 import pandas as pd
 from datasets import load_dataset
 
+from ..masks import MaskFunction, user
+
 from ..types import DialogueDataType, Label, Message
 from .base import DialogueDataset
 
@@ -114,9 +116,48 @@ class BenignInstructionsDataset(DialogueDataset):
 
 
 class WildGuardMixDataset(DialogueDataset):
+    base_name = "wildguardmix"
+
+    @property
+    def default_mask(self) -> MaskFunction:
+        return user(include_padding=False)
+
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        # allenai/wildguardmix
-        raise NotImplementedError("WildGuardMixDataset is not implemented yet.")
+        split = kwargs.get("split", "train")
+        assert split in ["train", "test"]
+        if split == "test":
+            dataset_split = "wildguardtest"
+        else:
+            dataset_split = "wildguardtrain"
+        dataset = load_dataset("allenai/wildguardmix", dataset_split)[split]
+
+        dialogues = []
+        labels = []
+        metadata = {
+            "prompt_harm_label": [],
+            "response_refusal_label": [],
+            "response_harm_label": [],
+            "adversarial": [],
+            "subcategory": [],
+            "response": [],
+        }
+        for d in dataset:
+            dialogues.append(
+                [
+                    Message(role="system", content="You are a helpful, honest assistant."),
+                    Message(role="user", content=str(d["prompt"])),
+                ]
+            )
+            prompt_label = str(d["prompt_harm_label"]).lower()
+            labels.append(Label.POSITIVE if prompt_label == "harmful" else Label.NEGATIVE)
+            metadata["prompt_harm_label"].append(d["prompt_harm_label"])
+            metadata["response_refusal_label"].append(d["response_refusal_label"])
+            metadata["response_harm_label"].append(d["response_harm_label"])
+            metadata["adversarial"].append(d["adversarial"])
+            metadata["subcategory"].append(d["subcategory"])
+            metadata["response"].append(d.get("response"))
+
+        return dialogues, labels, metadata
 
 
 class XSTestResponseDataset(DialogueDataset):

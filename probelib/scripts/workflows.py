@@ -2,13 +2,16 @@
 Unified high-level workflow functions for training and evaluating probes.
 """
 
+from __future__ import annotations
+
 import functools
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 import torch
 from jaxtyping import Float, Int
 
 from ..datasets import DialogueDataset
+from ..logger import logger
 from ..metrics import (
     auroc,
     get_metric_by_name,
@@ -17,7 +20,11 @@ from ..metrics import (
 )
 from ..probes import BaseProbe
 from ..processing import collect_activations
-from ..processing.activations import ActivationIterator, Activations
+from ..processing.activations import (
+    ActivationIterator,
+    Activations,
+    detect_collection_strategy,
+)
 from ..types import Dialogue, Label
 
 if TYPE_CHECKING:
@@ -27,13 +34,38 @@ if TYPE_CHECKING:
     from ..masks import MaskFunction
 
 # Type aliases for clarity
-BaseProbeInput = Union[BaseProbe, Mapping[str, BaseProbe]]
-DataInput = Union[DialogueDataset, list[Dialogue]]
-PredictionsOutput = Union[
-    Float[torch.Tensor, "n_examples"], Mapping[str, Float[torch.Tensor, "n_examples"]]
-]
+BaseProbeInput = BaseProbe | Mapping[str, BaseProbe]
+DataInput = DialogueDataset | list[Dialogue]
+PredictionsOutput = (
+    Float[torch.Tensor, "n_examples"] | Mapping[str, Float[torch.Tensor, "n_examples"]]
+)
 MetricsDict = Mapping[str, Any]
-MetricsOutput = Union[MetricsDict, Mapping[str, MetricsDict]]
+MetricsOutput = MetricsDict | Mapping[str, MetricsDict]
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _metric_display_name(metric_fn: Callable) -> str:
+    """Create a consistent display name for metric functions/partials."""
+
+    if hasattr(metric_fn, "__name__") and metric_fn.__name__ not in {None, "<lambda>"}:
+        return metric_fn.__name__
+
+    if isinstance(metric_fn, functools.partial):
+        base = _metric_display_name(metric_fn.func)
+        arg_parts = [repr(arg) for arg in getattr(metric_fn, "args", ())]
+        kw_items = getattr(metric_fn, "keywords", {}) or {}
+        kw_parts = [f"{key}={value}" for key, value in kw_items.items()]
+        params = ", ".join(arg_parts + kw_parts)
+        return f"{base}({params})" if params else base
+
+    if hasattr(metric_fn, "__class__") and metric_fn.__class__.__name__ != "function":
+        return metric_fn.__class__.__name__
+
+    return repr(metric_fn)
 
 
 # TODO: rename to train_probes_parallel
@@ -41,18 +73,17 @@ def train_probes(
     probes: BaseProbeInput,
     model: "PreTrainedModel",
     tokenizer: "PreTrainedTokenizerBase",
-    data: DataInput,
+    dataset: DialogueDataset,
     *,
-    labels: list[Label] | Int[torch.Tensor, "n_examples"] | None = None,
-    mask: Optional["MaskFunction"] = None,
+    mask: "MaskFunction" | None = None,
     batch_size: int = 32,
-    streaming: bool = True,
+    streaming: bool = False,
     verbose: bool = True,
     **activation_kwargs: Any,
 ) -> None:
     """Train one or many probes while reusing a single activation pass.
 
-    Callers provide the probes plus model/tokenizer/data, and the function caches activations,
+    Callers provide the probes plus model/tokenizer/dataset, and the function caches activations,
     streams when datasets are large, and fans out training to each probe. It is
     intentionally thin so users can compose additional logging/loop logic around
     it without losing the shared caching benefits.
@@ -61,8 +92,8 @@ def train_probes(
         probes: Single probe or mapping name → probe instance.
         model: Language model whose activations are collected.
         tokenizer: Tokenizer aligned with the model.
-        data: Dialogue dataset or list of :class:`Dialogue` objects.
-        labels: Labels as ``Label`` enums or integer tensor.
+        dataset: DialogueDataset containing dialogues and labels.
+        mask: Optional mask function for token selection.
         batch_size: Number of sequences per activation batch.
         streaming: Whether to force streaming activations.
         verbose: Toggle progress reporting.
@@ -73,12 +104,8 @@ def train_probes(
     is_single_probe = isinstance(probes, BaseProbe)
     probes = {"_single": probes} if is_single_probe else probes
 
-    if labels is None:
-        if not isinstance(data, DialogueDataset):
-            raise ValueError("Labels are required when data is not a DialogueDataset")
-        labels = data.labels
-
-    # 2. Convert labels to tensor
+    # 2. Get labels from dataset and convert to tensor
+    labels = dataset.labels
     if isinstance(labels, list) and labels and isinstance(labels[0], Label):
         labels_tensor = torch.tensor([label.value for label in labels])
     else:
@@ -91,20 +118,34 @@ def train_probes(
     for probe in probes.values():
         all_layers.add(probe.layer)
 
-    # 4. Collect activations once for all layers
+    # 4. Auto-detect optimal collection strategy for memory efficiency
+    collection_strategy = detect_collection_strategy(probes)
+    if verbose and collection_strategy:
+        strategy_names = {
+            "mean": "pooled (mean)",
+            "max": "pooled (max)",
+            "last_token": "pooled (last_token)",
+            "ragged": "ragged",
+        }
+        logger.info(
+            f"Auto-detected collection strategy: {strategy_names.get(collection_strategy, collection_strategy)}"
+        )
+
+    # 5. Collect activations once for all layers
     activations = collect_activations(
         model=model,
         tokenizer=tokenizer,
-        data=data,
+        dataset=dataset,
         layers=sorted(all_layers),
         mask=mask,  # Pass mask for token selection
         batch_size=batch_size,
         streaming=streaming,
         verbose=verbose,
+        collection_strategy=collection_strategy,
         **activation_kwargs,
     )
 
-    # 5. Train each probe
+    # 6. Train each probe
     if isinstance(activations, ActivationIterator):
         # Streaming mode
         _train_probes_streaming(probes, activations, labels_tensor)
@@ -127,11 +168,9 @@ def _train_probes_batch(
         )
 
     for name, probe in probes.items():
-        # Get activations for this probe's layers
-        probe_acts = activations.filter_layers([probe.layer])
-
-        # Train probe
-        probe.fit(probe_acts, labels)
+        # Each probe will handle layer selection internally if needed
+        # The activations should already have the right layers collected
+        probe.fit(activations, labels)
 
 
 def _train_probes_streaming(
@@ -152,13 +191,13 @@ def evaluate_probes(
     probes: BaseProbeInput,
     model: "PreTrainedModel",
     tokenizer: "PreTrainedTokenizerBase",
-    data: DataInput,
+    dataset: DialogueDataset,
     *,
-    labels: list[Label] | Int[torch.Tensor, "n_examples"] | None = None,
-    mask: Optional["MaskFunction"] = None,
+    mask: "MaskFunction" | None = None,
     batch_size: int = 32,
     streaming: bool = True,
     metrics: list[Callable | str] | None = None,
+    bootstrap: bool | dict[str, Any] | None = None,
     verbose: bool = True,
     **activation_kwargs: Any,
 ) -> tuple[PredictionsOutput, MetricsOutput]:
@@ -166,13 +205,17 @@ def evaluate_probes(
     Unified evaluation function for single or multiple probes.
 
     Args:
-        probe_or_probes: Single BaseProbe or dict mapping names to BaseProbes
+        probes: Single BaseProbe or dict mapping names to BaseProbes
         model: Language model to extract activations from
         tokenizer: Tokenizer for the model
-        data: Either a DialogueDataset or list of Dialogue objects
-        labels: Ground truth labels for evaluation
+        dataset: DialogueDataset containing dialogues and labels
+        mask: Optional mask function for token selection
         batch_size: Batch size for activation collection
+        streaming: Whether to use streaming mode for large datasets
         metrics: List of metric functions or names (defaults to standard set)
+        bootstrap: ``None`` (default) disables bootstrap; pass ``True`` to apply
+            default bootstrap settings or a dict of keyword arguments accepted by
+            :func:`probelib.metrics.with_bootstrap` for customisation.
         verbose: Whether to show progress bars
         **activation_kwargs: Additional args passed to collect_activations
 
@@ -183,14 +226,15 @@ def evaluate_probes(
 
     Examples:
         >>> # Single probe
+        >>> dataset = pl.datasets.CircuitBreakersDataset(split="test")
         >>> predictions, metrics = evaluate_probes(
-        ...     probe, model, tokenizer, test_data, test_labels
+        ...     probe, model, tokenizer, dataset
         ... )
         >>> print(f"AUROC: {metrics['auroc']:.3f}")
 
         >>> # Multiple probes
         >>> predictions, metrics = evaluate_probes(
-        ...     probes, model, tokenizer, test_data, test_labels,
+        ...     probes, model, tokenizer, dataset,
         ...     metrics=["auroc", "balanced_accuracy"]
         ... )
         >>> print(f"Early layers AUROC: {metrics['early']['auroc']:.3f}")
@@ -199,12 +243,8 @@ def evaluate_probes(
     is_single_probe = isinstance(probes, BaseProbe)
     probes = {"_single": probes} if is_single_probe else probes
 
-    if labels is None:
-        if not isinstance(data, DialogueDataset):
-            raise ValueError("Labels are required when data is not a DialogueDataset")
-        labels = data.labels
-
-    # 2. Convert labels to tensor
+    # 2. Get labels from dataset and convert to tensor
+    labels = dataset.labels
     if isinstance(labels, list) and labels and isinstance(labels[0], Label):
         labels_tensor = torch.tensor([label.value for label in labels])
         valid_indices = None
@@ -234,6 +274,12 @@ def evaluate_probes(
                 converted_metrics.append(metric)
         metrics = converted_metrics
 
+    # Normalise bootstrap configuration
+    if isinstance(bootstrap, bool):
+        bootstrap_kwargs: dict[str, Any] | None = {} if bootstrap else None
+    else:
+        bootstrap_kwargs = bootstrap
+
     # 4. Determine all required layers
     all_layers = set()
     for probe in probes.values():
@@ -243,24 +289,38 @@ def evaluate_probes(
         else:
             all_layers.update(layers)
 
-    # 5. Collect activations (never stream for evaluation)
+    # 5. Auto-detect optimal collection strategy for memory efficiency
+    collection_strategy = detect_collection_strategy(probes)
+    if verbose and collection_strategy:
+        strategy_names = {
+            "mean": "pooled (mean)",
+            "max": "pooled (max)",
+            "last_token": "pooled (last_token)",
+            "ragged": "ragged",
+        }
+        logger.info(
+            f"Auto-detected collection strategy: {strategy_names.get(collection_strategy, collection_strategy)}"
+        )
+
+    # 6. Collect activations
     activations = collect_activations(
         model=model,
         tokenizer=tokenizer,
-        data=data,
+        dataset=dataset,
         layers=sorted(all_layers),
         mask=mask,  # Pass mask for token selection
         batch_size=batch_size,
         streaming=streaming,
         verbose=verbose,
+        collection_strategy=collection_strategy,
         **activation_kwargs,
     )
 
-    # 6. Evaluate based on activation type
+    # 7. Evaluate based on activation type
     if isinstance(activations, ActivationIterator):
         # Streaming mode
         all_predictions, all_metrics = _evaluate_probes_streaming(
-            probes, activations, labels_tensor, metrics
+            probes, activations, labels_tensor, metrics, bootstrap_kwargs
         )
     else:
         # In-memory mode
@@ -277,10 +337,10 @@ def evaluate_probes(
             activations = filtered_acts
 
         all_predictions, all_metrics = _evaluate_probes_batch(
-            probes, activations, labels_tensor, metrics
+            probes, activations, labels_tensor, metrics, bootstrap_kwargs
         )
 
-    # 7. Return in same format as input
+    # 8. Return in same format as input
     if is_single_probe:
         return all_predictions["_single"], all_metrics["_single"]
     else:
@@ -292,6 +352,7 @@ def _evaluate_probes_batch(
     activations: Activations,
     labels: torch.Tensor,
     metrics: list[Callable],
+    bootstrap_kwargs: dict[str, Any] | None,
 ) -> tuple[dict[str, torch.Tensor], dict[str, MetricsDict]]:
     """Evaluate all probes using in-memory activations."""
 
@@ -299,11 +360,9 @@ def _evaluate_probes_batch(
     all_metrics = {}
 
     for name, probe in probes.items():
-        # Get probe-specific activations
-        probe_acts = activations.filter_layers([probe.layer])
-
+        # Probes handle layer selection internally
         # Make predictions (predict_proba returns [n_samples, 2])
-        probs = probe.predict_proba(probe_acts)
+        probs = probe.predict_proba(activations)
         # Get positive class probabilities
         preds = probs[:, 1]
 
@@ -323,27 +382,15 @@ def _evaluate_probes_batch(
         )
 
         for metric_fn in metrics:
-            # Get metric name
-            if hasattr(metric_fn, "__name__"):
-                metric_name = metric_fn.__name__
-            elif hasattr(metric_fn, "func"):  # functools.partial
-                # Create name from partial function
-                base_name = metric_fn.func.__name__
-                if metric_fn.keywords:
-                    params = "_".join(f"{k}={v}" for k, v in metric_fn.keywords.items())
-                    metric_name = f"{base_name}_{params}"
-                else:
-                    metric_name = base_name
-            else:
-                metric_name = str(metric_fn)
+            metric_name = _metric_display_name(metric_fn)
+            metric_callable = metric_fn
+            if bootstrap_kwargs is not None and not getattr(
+                metric_fn, "_probelib_bootstrap", False
+            ):
+                metric_callable = with_bootstrap(**bootstrap_kwargs)(metric_fn)
 
-            # Apply bootstrap wrapper if needed
-            bootstrapped_metric = with_bootstrap(
-                n_bootstrap=1000, confidence_level=0.95, random_state=42
-            )(metric_fn)
-
-            # Compute metric with confidence intervals
-            result = bootstrapped_metric(y_true, y_pred)
+            # Compute metric (optionally bootstrapped)
+            result = metric_callable(y_true, y_pred)
             probe_metrics[metric_name] = result
 
         all_metrics[name] = probe_metrics
@@ -356,13 +403,16 @@ def _evaluate_probes_streaming(
     activation_iter: ActivationIterator,
     labels: torch.Tensor,
     metrics: list[Callable],
+    bootstrap_kwargs: dict[str, Any] | None,
 ) -> tuple[dict[str, torch.Tensor], dict[str, MetricsDict]]:
     """Evaluate all probes in streaming mode."""
 
     # Initialize prediction storage that preserves original order
     n_samples = len(labels)
+    # Use float32 for predictions to ensure compatibility
     probe_predictions = {
-        name: torch.zeros(n_samples, device=labels.device) for name in probes
+        name: torch.zeros(n_samples, device=labels.device, dtype=torch.float32)
+        for name in probes
     }
     labels_seen = set()
 
@@ -388,13 +438,16 @@ def _evaluate_probes_streaming(
 
         # Get predictions for each probe
         for name, probe in probes.items():
-            probe_batch_acts = batch_activations.filter_layers([probe.layer])
-            probs = probe.predict_proba(probe_batch_acts)
+            # Probes handle layer selection internally
+            probs = probe.predict_proba(batch_activations)
             # Get positive class probabilities and store in correct positions
             preds = probs[:, 1]
-            # Ensure preds is on the same device as probe_predictions
+            # Ensure preds is on the same device and dtype as probe_predictions
             if isinstance(preds, torch.Tensor):
-                preds = preds.to(probe_predictions[name].device)
+                # Convert to float32 for consistency
+                preds = preds.to(
+                    device=probe_predictions[name].device, dtype=torch.float32
+                )
             probe_predictions[name][batch_indices] = preds
 
     # Verify we saw all samples
@@ -420,29 +473,14 @@ def _evaluate_probes_streaming(
         )
 
         for metric_fn in metrics:
-            # Get metric name
-            if hasattr(metric_fn, "__name__"):
-                metric_name = metric_fn.__name__
-            elif hasattr(metric_fn, "func"):  # functools.partial
-                # Create name from partial function
-                base_name = metric_fn.func.__name__
-                if metric_fn.keywords:
-                    params_list = [f"{k}={v}" for k, v in metric_fn.keywords.items()]
-                    params = (
-                        ", ".join(params_list)
-                        if len(params_list) > 1
-                        else params_list[0]
-                        if params_list
-                        else ""
-                    )
-                    metric_name = f"{base_name} ({params})"
-                else:
-                    metric_name = base_name
-            else:
-                metric_name = str(metric_fn)
+            metric_name = _metric_display_name(metric_fn)
+            metric_callable = metric_fn
+            if bootstrap_kwargs is not None and not getattr(
+                metric_fn, "_probelib_bootstrap", False
+            ):
+                metric_callable = with_bootstrap(**bootstrap_kwargs)(metric_fn)
 
-            # Compute metric with confidence intervals
-            result = metric_fn(y_true, y_pred)
+            result = metric_callable(y_true, y_pred)
             probe_metrics[metric_name] = result
 
         all_metrics[name] = probe_metrics

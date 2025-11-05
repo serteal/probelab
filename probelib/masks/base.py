@@ -1,8 +1,8 @@
 """Base classes for mask functions."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Optional, Sequence
 
 from torch import Tensor
 
@@ -19,13 +19,14 @@ class TokenMetadata:
     attention_mask: Tensor  # [batch, seq_len] - 1 for real tokens, 0 for padding
 
     # Optional fields for text-based masks
-    token_to_char: Optional[dict] = None  # Maps token indices to char indices
-    char_to_token: Optional[dict] = None  # Maps char indices to token indices
-    formatted_texts: Optional[Sequence[str]] = None  # Original formatted texts
+    token_to_char: dict | None = None  # Maps token indices to char indices
+    char_to_token: Callable[[int, int], int | None] | None = None  # Maps char indices to token indices
+    formatted_texts: Sequence[str] | None = None  # Original formatted texts
 
     # Padding information
-    role_ids_no_padding: Optional[Tensor] = None  # Role IDs without padding applied
-    architecture: Optional[str] = None  # Model architecture for padding config
+    role_ids_no_padding: Tensor | None = None  # Role IDs without padding applied
+    architecture: str | None = None  # Model architecture for padding config
+    special_token_ids: set[int] | None = None  # Known special token ids
 
 
 class MaskFunction(ABC):

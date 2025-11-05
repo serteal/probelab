@@ -6,7 +6,8 @@ using the new mask system instead of use_for_training flags.
 """
 
 import re
-from typing import TYPE_CHECKING, Any, Optional, Sequence
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -186,6 +187,18 @@ def build_token_metadata(
         if first_token_id in bos_token_ids:
             role_ids_with_padding[batch_idx, 0] = role_to_id["system"]
 
+    special_token_ids: set[int] | None = None
+    if hasattr(tokenizer, "all_special_ids") and tokenizer.all_special_ids is not None:
+        try:
+            special_token_ids = {
+                int(token_id)
+                for token_id in tokenizer.all_special_ids
+                if token_id is not None
+            }
+        except TypeError:
+            # Fall back if tokenizer reports non-iterable
+            pass
+
     return TokenMetadata(
         token_ids=tokenizer_out["input_ids"],
         role_ids=role_ids_with_padding,  # Use padded version by default
@@ -198,13 +211,14 @@ def build_token_metadata(
         formatted_texts=formatted_dialogues,
         role_ids_no_padding=role_ids_no_padding,  # Store unpadded version
         architecture=model_family,  # Store architecture info
+        special_token_ids=special_token_ids,
     )
 
 
 def tokenize_dialogues(
     tokenizer: "PreTrainedTokenizerBase",
     dialogues: Sequence[Dialogue],
-    mask: Optional[MaskFunction] = None,
+    mask: MaskFunction | None = None,
     device: torch.device | str = "cpu",
     dataset: DialogueDataset | None = None,
     add_generation_prompt: bool = False,
@@ -246,12 +260,32 @@ def tokenize_dialogues(
         for d in dialogue_dicts
     ]
 
-    # Apply chat template
-    formatted_dialogues = tokenizer.apply_chat_template(
-        dialogue_dicts,
-        tokenize=False,
-        add_generation_prompt=add_generation_prompt,
-    )
+    # Apply chat template if available, otherwise use simple formatting
+    if hasattr(tokenizer, 'chat_template') and tokenizer.chat_template is not None:
+        formatted_dialogues = tokenizer.apply_chat_template(
+            dialogue_dicts,
+            tokenize=False,
+            add_generation_prompt=add_generation_prompt,
+        )
+    else:
+        # Fallback for models without chat templates (e.g., LLAMA-2)
+        # For simple single-turn dialogues, just use the content directly
+        formatted_dialogues = []
+        for dialogue_dict in dialogue_dicts:
+            if len(dialogue_dict) == 1 and dialogue_dict[0]["role"] == "user":
+                # Single user message - just use the content
+                formatted_dialogues.append(dialogue_dict[0]["content"])
+            else:
+                # Multi-turn dialogue - format as simple text
+                formatted = ""
+                for msg in dialogue_dict:
+                    if msg["role"] == "system":
+                        formatted += f"System: {msg['content']}\n\n"
+                    elif msg["role"] == "user":
+                        formatted += f"User: {msg['content']}\n\n"
+                    elif msg["role"] == "assistant":
+                        formatted += f"Assistant: {msg['content']}\n\n"
+                formatted_dialogues.append(formatted.strip())
 
     default_tokenize_kwargs: dict[str, Any] = {
         "return_tensors": "pt",
@@ -287,9 +321,7 @@ def tokenize_dialogues(
         # Use dataset's default mask
         mask_fn = dataset.default_mask
         logger.info(
-            "No mask provided; using default mask %s from dataset %s",
-            mask_fn.__class__.__name__,
-            dataset.__class__.__name__,
+            f"No mask provided; using default mask {mask_fn} from dataset {dataset}",
         )
         metadata = build_token_metadata(
             processed_dialogues, formatted_dialogues, tokenizer, token_dict
@@ -297,10 +329,8 @@ def tokenize_dialogues(
         detection_mask = mask_fn.evaluate(dialogues, metadata)
         token_dict["detection_mask"] = detection_mask
     else:
-        # No mask - all tokens are False (backward compat)
-        token_dict["detection_mask"] = torch.zeros_like(
-            token_dict["attention_mask"], dtype=torch.bool
-        )
+        # No mask - default to selecting all real (non-padding) tokens.
+        token_dict["detection_mask"] = token_dict["attention_mask"].bool()
 
     return token_dict  # type: ignore
 
@@ -308,7 +338,7 @@ def tokenize_dialogues(
 def tokenize_dataset(
     dataset: DialogueDataset,
     tokenizer: "PreTrainedTokenizerBase",
-    mask: Optional[MaskFunction] = None,
+    mask: MaskFunction | None = None,
     device: torch.device | str = "cpu",
     **tokenize_kwargs: Any,
 ) -> dict[str, torch.Tensor]:

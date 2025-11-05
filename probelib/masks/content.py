@@ -1,6 +1,6 @@
 """Content-type mask functions for token selection."""
 
-from typing import Sequence, Set, Optional
+from collections.abc import Sequence
 
 import torch
 from torch import Tensor
@@ -12,14 +12,16 @@ from .base import MaskFunction, TokenMetadata
 class SpecialTokensMask(MaskFunction):
     """Mask that selects special tokens (e.g., <bos>, <eos>, <pad>, etc.)."""
 
-    def __init__(self, special_token_ids: Optional[Set[int]] = None):
+    def __init__(self, special_token_ids: set[int] | None = None):
         """
         Args:
             special_token_ids: Optional set of special token IDs.
                              If None, will be determined from tokenizer.
         """
         self.special_token_ids = special_token_ids
-        self._cached_ids: Optional[Set[int]] = special_token_ids
+        self._cached_ids: set[int] | None = (
+            set(special_token_ids) if special_token_ids is not None else None
+        )
         self._initialized = False
 
     def evaluate(
@@ -31,58 +33,27 @@ class SpecialTokensMask(MaskFunction):
         batch_size, seq_len = metadata.attention_mask.shape
         token_ids = metadata.token_ids
 
-        # Initialize cached IDs only once
         if not self._initialized:
             if self._cached_ids is None:
-                # Use a more efficient approach with known special token IDs
-                # Common special tokens across models
-                self._cached_ids = {
-                    0,  # Padding token
-                    1,  # BOS/CLS token
-                    2,  # EOS/SEP/BOS token (Gemma)
-                    3,  # UNK token
-                    # Add high-value tokens that are often special
-                    106,
-                    107,  # Common for <start_of_turn>, <end_of_turn>
-                    128000,
-                    128001,
-                    128256,  # Llama3 special tokens
-                }
-
-                # Look for special tokens in first sequence only (fast heuristic)
-                if metadata.formatted_texts and len(metadata.formatted_texts) > 0:
-                    # Quick pattern check on first 100 chars
-                    text_sample = metadata.formatted_texts[0][:200]
-
-                    # If we see XML-like tokens, add likely candidates
-                    if "<" in text_sample and ">" in text_sample:
-                        # Add tokens that are likely special based on position
-                        # Check tokens at known special positions
-                        for i in [0, 1, 2]:  # First few tokens
-                            if i < seq_len:
-                                self._cached_ids.add(token_ids[0, i].item())
-
-                        # Check tokens around role transitions (often special)
-                        if metadata.role_ids is not None:
-                            role_changes = (
-                                metadata.role_ids[0, :-1] != metadata.role_ids[0, 1:]
-                            )
-                            change_indices = torch.where(role_changes)[0]
-                            for idx in change_indices[:5]:  # First few transitions
-                                if idx < seq_len - 1:
-                                    self._cached_ids.add(token_ids[0, idx].item())
-                                    self._cached_ids.add(token_ids[0, idx + 1].item())
-
+                if metadata.special_token_ids:
+                    self._cached_ids = {
+                        int(token_id) for token_id in metadata.special_token_ids
+                    }
+                else:
+                    self._cached_ids = self._infer_special_ids(token_ids, metadata)
             self._initialized = True
 
-        # Create mask for special tokens
-        mask = torch.zeros_like(metadata.attention_mask, dtype=torch.bool)
+        if not self._cached_ids:
+            return torch.zeros_like(metadata.attention_mask, dtype=torch.bool)
 
-        # Vectorized comparison for efficiency
-        for special_id in self._cached_ids:
-            mask |= token_ids == special_id
+        special_tensor = torch.tensor(
+            list(self._cached_ids),
+            device=token_ids.device,
+            dtype=token_ids.dtype,
+        )
 
-        # Apply attention mask
+        mask = torch.isin(token_ids, special_tensor)
+
         mask = mask & metadata.attention_mask.bool()
         return mask
 
@@ -91,8 +62,41 @@ class SpecialTokensMask(MaskFunction):
             return f"SpecialTokensMask(special_token_ids={self.special_token_ids})"
         return "SpecialTokensMask()"
 
+    def _infer_special_ids(
+        self, token_ids: Tensor, metadata: TokenMetadata
+    ) -> set[int]:
+        """Fallback heuristic for models without reported special IDs."""
+        inferred: set[int] = {
+            0,
+            1,
+            2,
+            3,
+            106,
+            107,
+            128000,
+            128001,
+            128256,
+        }
+
+        if metadata.formatted_texts and len(metadata.formatted_texts) > 0:
+            text_sample = metadata.formatted_texts[0][:200]
+            if "<" in text_sample and ">" in text_sample:
+                for i in [0, 1, 2]:
+                    if i < token_ids.shape[1]:
+                        inferred.add(int(token_ids[0, i].item()))
+
+                if metadata.role_ids is not None:
+                    role_changes = metadata.role_ids[0, :-1] != metadata.role_ids[0, 1:]
+                    change_indices = torch.where(role_changes)[0]
+                    for idx in change_indices[:5]:
+                        if idx < token_ids.shape[1] - 1:
+                            inferred.add(int(token_ids[0, idx].item()))
+                            inferred.add(int(token_ids[0, idx + 1].item()))
+
+        return inferred
+
 
 # Convenience function
-def special_tokens(special_token_ids: Optional[Set[int]] = None) -> SpecialTokensMask:
+def special_tokens(special_token_ids: set[int] | None = None) -> SpecialTokensMask:
     """Create a mask for special tokens."""
     return SpecialTokensMask(special_token_ids)
