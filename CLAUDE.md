@@ -27,7 +27,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 from probelib import Message, Dialogue, Label
 
 # Activation handling
-from probelib import HookedModel, Activations, ActivationCollector, collect_activations
+from probelib import HookedModel, Activations, collect_activations
 
 # Probes
 from probelib.probes import BaseProbe, Logistic, MLP, Attention
@@ -384,34 +384,7 @@ probelib/
    )
    ```
 
-3. **Reusable Activation Collection with ActivationCollector**
-
-   ```python
-   # Create collector once with common settings
-   collector = pl.ActivationCollector(
-       model=model,
-       tokenizer=tokenizer,
-       layers=[16, 20, 24],
-       batch_size=32,
-       verbose=True
-   )
-
-   # Reuse across multiple datasets without repeating parameters
-   train_acts = collector.collect(train_dataset)
-   test_acts = collector.collect(test_dataset)
-   val_acts = collector.collect(val_dataset)
-
-   # Explicit collection modes
-   dense = collector.collect_dense(dataset)           # Full sequences
-   pooled = collector.collect_pooled(dataset, "mean") # Memory efficient (440x reduction)
-   streaming = collector.collect_streaming(large_dataset)  # Iterator for huge datasets
-
-   # Compare with function-based approach (more verbose):
-   # acts = pl.collect_activations(model, tokenizer, dataset, layers=[16, 20, 24], batch_size=32)
-   # Instead: collector.collect(dataset)  # Much cleaner for repeated use!
-   ```
-
-4. **Streaming for Large Datasets**
+3. **Streaming for Large Datasets**
    ```python
    # Streaming mode for memory efficiency
    pl.scripts.train_probes(
@@ -423,7 +396,7 @@ probelib/
    )
    ```
 
-5. **Evaluation with Custom Metrics**
+4. **Evaluation with Custom Metrics**
    ```python
    from probelib.scripts import evaluate_probes
    import functools
@@ -441,7 +414,7 @@ probelib/
    )
    ```
 
-6. **Using Masks for Fine-Grained Control**
+5. **Using Masks for Fine-Grained Control**
    ```python
    # Only detect on last assistant message
    mask = pl.masks.AndMask(
@@ -458,7 +431,7 @@ probelib/
    )
    ```
 
-7. **Integration with External Frameworks (inspect_ai/control-arena)**
+6. **Integration with External Frameworks (inspect_ai/control-arena)**
    ```python
    # Receive data from external framework
    hidden_states = message.metadata["hidden_states"]  # HF nested tuple format
@@ -477,7 +450,7 @@ probelib/
    suspicion_score = probe.predict_proba(acts)[0, 1]
    ```
 
-8. **Manual Activation Manipulation**
+7. **Manual Activation Manipulation**
    ```python
    # Collect activations
    acts = pl.collect_activations(
@@ -498,7 +471,7 @@ probelib/
    mid_layers = acts.select(layers=[8, 16])  # Keeps LAYER axis
    ```
 
-9. **Using Different Hook Points**
+8. **Using Different Hook Points**
    ```python
    # Extract activations before layernorm (earlier in computation)
    acts_pre = pl.collect_activations(

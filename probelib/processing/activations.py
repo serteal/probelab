@@ -1429,14 +1429,13 @@ def collect_activations(
     dataset: DialogueDataset,
     *,
     layers: int | list[int],
-    batch_size: int,
-    mask: "MaskFunction" | None = None,
-    add_generation_prompt: bool = False,
+    mask: "MaskFunction",  # Now required, no default
+    batch_size: int = 32,
     streaming: Literal[False] = False,
-    verbose: bool = False,
     hook_point: Literal["pre_layernorm", "post_block"] = "post_block",
+    add_generation_prompt: bool = False,
     detach_activations: bool = True,
-    **tokenize_kwargs: Any,
+    verbose: bool = True,
 ) -> Activations: ...
 
 
@@ -1448,14 +1447,13 @@ def collect_activations(
     dataset: DialogueDataset,
     *,
     layers: int | list[int],
-    batch_size: int,
-    mask: "MaskFunction" | None = None,
-    add_generation_prompt: bool = False,
+    mask: "MaskFunction",  # Now required, no default
+    batch_size: int = 32,
     streaming: Literal[True],
-    verbose: bool = False,
     hook_point: Literal["pre_layernorm", "post_block"] = "post_block",
+    add_generation_prompt: bool = False,
     detach_activations: bool = True,
-    **tokenize_kwargs: Any,
+    verbose: bool = True,
 ) -> ActivationIterator: ...
 
 
@@ -1465,22 +1463,18 @@ def collect_activations(
     dataset: DialogueDataset,
     *,
     layers: int | list[int],
-    batch_size: int,
-    mask: "MaskFunction" | None = None,
-    add_generation_prompt: bool = False,
+    mask: "MaskFunction",  # Now required, no default
+    batch_size: int = 32,
     streaming: bool = False,
-    verbose: bool = False,
     hook_point: Literal["pre_layernorm", "post_block"] = "post_block",
+    add_generation_prompt: bool = False,
     detach_activations: bool = True,
-    **tokenize_kwargs: Any,
+    verbose: bool = True,
 ) -> Activations | ActivationIterator:
     """Entry point for activation collection from datasets.
 
-    The function tokenizes once, applies any mask exactly once, and then either
-    returns a materialized :class:`Activations` tensor or a streaming iterator
-    that yields compatible ``Activations`` batches. Callers only need to specify
-    *what* to collect (layers, mask, batch size); the helper handles padding
-    strategy, device placement, and hook management under the hood.
+    Collects activations from specified layers using an explicit mask function.
+    All parameters are explicit - no auto-detection or silent defaults.
 
     Aggregation (pooling over sequences or layers) should be done using Pipeline
     preprocessing transformers (e.g., AggregateSequences, AggregateLayers) after
@@ -1490,45 +1484,48 @@ def collect_activations(
         model: Model providing hidden states.
         tokenizer: Tokenizer aligned with ``model``.
         dataset: DialogueDataset containing dialogues and labels.
-        layers: Layer index or indices to record.
-        batch_size: Number of sequences per activation batch.
-        mask: Optional token mask. ``None`` applies ``dataset.default_mask``;
-            pass an explicit mask such as ``masks.all()`` to override.
-        verbose: Toggle progress reporting.
-        add_generation_prompt: Whether to append generation tokens before
-            tokenization.
+        layers: Layer index or indices to record. Required - no auto-detection.
+        mask: Mask function determining which tokens to detect. Required - no defaults.
+              Use ``masks.all()`` to detect all non-padding tokens explicitly.
+        batch_size: Number of sequences per activation batch. Default: 32.
         streaming: When ``True`` yield batches lazily, otherwise load all
-            activations into memory.
+            activations into memory. Default: False.
         hook_point: Where to extract activations from the model:
-            - "post_block" (default): After transformer block output.
-              Aligns with HuggingFace hidden_states semantics.
-            - "pre_layernorm": Before layer normalization (legacy behavior).
-              Captures pre-normalized representations.
+            - "post_block" (default): After transformer block + final layernorm.
+            - "pre_layernorm": Before layer normalization (earlier in computation).
+        add_generation_prompt: Whether to append generation tokens before
+            tokenization. Default: False.
         detach_activations: Whether to detach activations from the computation graph.
-            - True (default): Detach for memory efficiency (use for probe training/evaluation)
+            - True (default): Detach for memory efficiency (probe training/evaluation)
             - False: Keep gradients (enables differentiable probe predictions)
-        **tokenize_kwargs: Extra tokenizer arguments.
+        verbose: Toggle progress reporting. Default: True.
 
     Returns:
         - Activations: Dense collection with full sequences [layers, batch, seq, hidden]
         - ActivationIterator: For streaming mode
 
     Examples:
-        # Collect activations (always dense - preserves sequences)
+        >>> import probelib as pl
         >>> dataset = pl.datasets.CircuitBreakersDataset()
-        >>> acts = collect_activations(model, tokenizer, dataset, layers=20, batch_size=8)
-        >>> isinstance(acts, Activations)  # True
-        >>> acts.shape  # [1, 30000, 512, 4096]
+        >>>
+        >>> # Explicit mask - no silent defaults
+        >>> acts = collect_activations(
+        ...     model=model,
+        ...     tokenizer=tokenizer,
+        ...     dataset=dataset,
+        ...     layers=[16, 20, 24],  # Explicit layers
+        ...     mask=pl.masks.assistant(),  # Explicit mask
+        ...     batch_size=32,
+        ... )
+        >>> acts.shape  # [3, batch_size, seq_len, hidden_dim]
 
         # Use Pipeline preprocessing for aggregation
-        >>> from probelib.preprocessing import SelectLayer, AggregateSequences
-        >>> from probelib import Pipeline
-        >>> pipeline = Pipeline([
-        ...     ("select", SelectLayer(20)),
-        ...     ("aggregate", AggregateSequences("mean")),
-        ...     ("probe", Logistic()),
+        >>> pipeline = pl.Pipeline([
+        ...     ("select", pl.preprocessing.SelectLayer(20)),
+        ...     ("aggregate", pl.preprocessing.AggregateSequences("mean")),
+        ...     ("probe", pl.probes.Logistic()),
         ... ])
-        >>> pipeline.fit(acts, labels)
+        >>> pipeline.fit(acts, dataset.labels)
     """
     if isinstance(layers, int):
         layers = [layers]
@@ -1539,22 +1536,15 @@ def collect_activations(
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # Prepare tokenization kwargs
-    default_tokenize_kwargs = {
-        "return_tensors": "pt",
-        "padding": True,
-    }
-    default_tokenize_kwargs.update(tokenize_kwargs)
-
     # Tokenize all dialogues once (key optimization)
     tokenized_inputs = tokenize_dialogues(
         tokenizer=tokenizer,
         dialogues=dialogues,
-        mask=mask,  # Pass mask if provided
+        mask=mask,  # Mask is now required
         device="cpu",
-        dataset=dataset,  # Pass dataset for default mask
         add_generation_prompt=add_generation_prompt,
-        **default_tokenize_kwargs,
+        return_tensors="pt",
+        padding=True,
     )
 
     n_samples = tokenized_inputs["input_ids"].shape[0]

@@ -11,7 +11,7 @@ This library provides tools for:
 from . import datasets, masks, metrics, preprocessing, probes, processing, scripts
 from .models import HookedModel
 from .pipeline import Pipeline
-from .processing import Activations, ActivationCollector, collect_activations
+from .processing import Activations, collect_activations
 from .types import Dialogue, Label, Message
 from .visualization import print_metrics, visualize_mask
 
@@ -22,7 +22,6 @@ __all__ = [
     "Label",
     "Dialogue",
     "collect_activations",
-    "ActivationCollector",
     "HookedModel",
     "Activations",
     "Pipeline",
