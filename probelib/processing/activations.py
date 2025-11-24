@@ -1070,7 +1070,7 @@ def streaming_activations(
     batch_size: int = 8,
     verbose: bool = False,
     hook_point: Literal["pre_layernorm", "post_block"] = "post_block",
-    detach_activations: bool = False,
+    detach_activations: bool = True,
 ) -> Generator[Activations, None, None]:
     """
     Generator that yields Activations batches with all optimizations preserved.
@@ -1139,7 +1139,7 @@ def batch_activations(
     batch_size: int = 8,
     verbose: bool = False,
     hook_point: Literal["pre_layernorm", "post_block"] = "post_block",
-    detach_activations: bool = False,
+    detach_activations: bool = True,
 ) -> Activations:
     """
     Collect all activations at once into a single Activations object.
@@ -1267,7 +1267,7 @@ def batch_activations_pooled(
     pooling_method: Literal["mean", "max", "last_token"],
     verbose: bool = False,
     hook_point: Literal["pre_layernorm", "post_block"] = "post_block",
-    detach_activations: bool = False,
+    detach_activations: bool = True,
 ) -> Activations:
     """Collect and pool in one pass.
 
@@ -1369,7 +1369,7 @@ class ActivationIterator:
         verbose: bool,
         num_batches: int,
         hook_point: Literal["pre_layernorm", "post_block"] = "post_block",
-        detach_activations: bool = False,
+        detach_activations: bool = True,
     ):
         """
         Initialize the regenerable iterator.
@@ -1418,28 +1418,7 @@ class ActivationIterator:
         return self._layers
 
 
-def detect_collection_strategy(probes: dict[str, "BaseProbe"]) -> str | None:
-    """Auto-detect optimal strategy from probe requirements.
-
-    Returns:
-        - "mean", "max", "last_token": Pool during collection
-        - None: Dense collection (default - used when sequences needed or mixed pooling)
-    """
-    from ..probes.base import BaseProbe  # Import here to avoid circular dependency
-
-    # Check if any probe requires sequences
-    if any(p.requires_sequences for p in probes.values()):
-        return None  # Dense collection preserves sequences
-
-    # Check if all probes use the same pooling method
-    pooling_methods = {p.preferred_pooling for p in probes.values() if p.preferred_pooling}
-
-    if len(pooling_methods) == 1:
-        return list(pooling_methods)[0]  # "mean", "max", or "last_token"
-    elif len(pooling_methods) > 1:
-        return None  # Multiple methods need sequences - use dense
-    else:
-        return None  # Default to dense
+# Note: detect_collection_strategy removed - aggregation now handled by pipeline preprocessing
 
 
 # Adds overlading for correct return type inference from collect_activations
@@ -1456,8 +1435,7 @@ def collect_activations(
     streaming: Literal[False] = False,
     verbose: bool = False,
     hook_point: Literal["pre_layernorm", "post_block"] = "post_block",
-    collection_strategy: Literal["mean", "max", "last_token"] | None = None,
-    detach_activations: bool = False,
+    detach_activations: bool = True,
     **tokenize_kwargs: Any,
 ) -> Activations: ...
 
@@ -1476,8 +1454,7 @@ def collect_activations(
     streaming: Literal[True],
     verbose: bool = False,
     hook_point: Literal["pre_layernorm", "post_block"] = "post_block",
-    collection_strategy: Literal["mean", "max", "last_token"] | None = None,
-    detach_activations: bool = False,
+    detach_activations: bool = True,
     **tokenize_kwargs: Any,
 ) -> ActivationIterator: ...
 
@@ -1494,8 +1471,7 @@ def collect_activations(
     streaming: bool = False,
     verbose: bool = False,
     hook_point: Literal["pre_layernorm", "post_block"] = "post_block",
-    collection_strategy: Literal["mean", "max", "last_token"] | None = None,
-    detach_activations: bool = False,
+    detach_activations: bool = True,
     **tokenize_kwargs: Any,
 ) -> Activations | ActivationIterator:
     """Entry point for activation collection from datasets.
@@ -1505,6 +1481,10 @@ def collect_activations(
     that yields compatible ``Activations`` batches. Callers only need to specify
     *what* to collect (layers, mask, batch size); the helper handles padding
     strategy, device placement, and hook management under the hood.
+
+    Aggregation (pooling over sequences or layers) should be done using Pipeline
+    preprocessing transformers (e.g., AggregateSequences, AggregateLayers) after
+    collection.
 
     Args:
         model: Model providing hidden states.
@@ -1524,33 +1504,31 @@ def collect_activations(
               Aligns with HuggingFace hidden_states semantics.
             - "pre_layernorm": Before layer normalization (legacy behavior).
               Captures pre-normalized representations.
-        collection_strategy: How to collect activations:
-            - None: Dense collection (default) - stores full sequences
-            - "mean", "max", "last_token": Pool during collection → Activations
-              (440x memory reduction: 240GB → 480MB, no sequence dimension)
         detach_activations: Whether to detach activations from the computation graph.
-            - False (default): Keep gradients (enables differentiable probe predictions)
-            - True: Detach for memory efficiency (use for probe training/evaluation)
+            - True (default): Detach for memory efficiency (use for probe training/evaluation)
+            - False: Keep gradients (enables differentiable probe predictions)
         **tokenize_kwargs: Extra tokenizer arguments.
 
     Returns:
-        - Activations: For dense or pooled collection
+        - Activations: Dense collection with full sequences [layers, batch, seq, hidden]
         - ActivationIterator: For streaming mode
 
     Examples:
-        # Default: dense collection
+        # Collect activations (always dense - preserves sequences)
         >>> dataset = pl.datasets.CircuitBreakersDataset()
         >>> acts = collect_activations(model, tokenizer, dataset, layers=20, batch_size=8)
         >>> isinstance(acts, Activations)  # True
         >>> acts.shape  # [1, 30000, 512, 4096]
 
-        # Pooled collection (440x memory reduction)
-        >>> acts = collect_activations(
-        ...     model, tokenizer, dataset, layers=20, batch_size=8,
-        ...     collection_strategy="mean"
-        ... )
-        >>> isinstance(acts, Activations)  # True
-        >>> acts.shape  # [1, 30000, 4096] - no sequence dimension
+        # Use Pipeline preprocessing for aggregation
+        >>> from probelib.preprocessing import SelectLayer, AggregateSequences
+        >>> from probelib import Pipeline
+        >>> pipeline = Pipeline([
+        ...     ("select", SelectLayer(20)),
+        ...     ("aggregate", AggregateSequences("mean")),
+        ...     ("probe", Logistic()),
+        ... ])
+        >>> pipeline.fit(acts, labels)
     """
     if isinstance(layers, int):
         layers = [layers]
@@ -1596,17 +1574,9 @@ def collect_activations(
             detach_activations=detach_activations,
         )
     else:
-        # Route based on collection strategy
-        if collection_strategy in ("mean", "max", "last_token"):
-            return batch_activations_pooled(
-                model, tokenizer, tokenized_inputs, layers,
-                batch_size, collection_strategy, verbose, hook_point,
-                detach_activations
-            )
-        else:
-            # Default: dense collection
-            return batch_activations(
-                model, tokenizer, tokenized_inputs, layers,
-                batch_size, verbose, hook_point,
-                detach_activations
-            )
+        # Always use dense collection - aggregation handled by pipeline preprocessing
+        return batch_activations(
+            model, tokenizer, tokenized_inputs, layers,
+            batch_size, verbose, hook_point,
+            detach_activations
+        )

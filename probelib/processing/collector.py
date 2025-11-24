@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 
     from ..datasets import DialogueDataset
     from ..masks import MaskFunction
-    from ..types import Dialogue
 
 
 class ActivationCollector:
@@ -153,11 +152,10 @@ class ActivationCollector:
 
     def collect(
         self,
-        dataset: "DialogueDataset | list[Dialogue]",
+        dataset: "DialogueDataset",
         *,
         mask: "MaskFunction | None" = None,
         streaming: bool | Literal["auto"] = "auto",
-        collection_strategy: Literal["mean", "max", "last_token"] | None = None,
         add_generation_prompt: bool = False,
         **kwargs: Any,
     ) -> Activations | ActivationIterator:
@@ -167,8 +165,12 @@ class ActivationCollector:
         It provides sensible defaults and auto-detection while allowing full
         customization via parameters.
 
+        Note: Aggregation (pooling) should be done using Pipeline preprocessing
+        transformers after collection. Use ``collect_pooled()`` for a convenience
+        method that pools immediately.
+
         Args:
-            dataset: Dataset containing dialogues, or list of Dialogue objects.
+            dataset: Dataset containing dialogues.
             mask: Optional mask for token selection. If None, uses
                 ``dataset.default_mask`` if dataset is a DialogueDataset.
             streaming: Collection mode:
@@ -176,16 +178,11 @@ class ActivationCollector:
                   (streaming if len(dataset) > 10,000)
                 - ``True``: Force streaming mode (returns ActivationIterator)
                 - ``False``: Force batch mode (returns Activations)
-            collection_strategy: Memory-efficient collection:
-                - ``None`` (default): Dense collection with full sequences
-                - ``"mean"``: Pool sequences with mean (440x memory reduction)
-                - ``"max"``: Pool sequences with max
-                - ``"last_token"``: Use only last token
             add_generation_prompt: Whether to append generation tokens.
             **kwargs: Additional arguments passed to ``collect_activations()``.
 
         Returns:
-            - ``Activations``: For dense/pooled batch collection
+            - ``Activations``: Dense collection with full sequences [layers, batch, seq, hidden]
             - ``ActivationIterator``: For streaming collection
 
         Examples:
@@ -196,10 +193,6 @@ class ActivationCollector:
             Force batch collection:
 
             >>> acts = collector.collect(dataset, streaming=False)
-
-            Memory-efficient pooled collection:
-
-            >>> acts = collector.collect(dataset, collection_strategy="mean")
 
             Custom mask override:
 
@@ -223,7 +216,7 @@ class ActivationCollector:
         if mask is None and isinstance(dataset, DialogueDataset):
             mask = dataset.default_mask
 
-        # Delegate to collect_activations function
+        # Delegate to collect_activations function (always dense collection)
         return collect_activations(
             model=self.model,
             tokenizer=self.tokenizer,
@@ -234,7 +227,6 @@ class ActivationCollector:
             streaming=streaming,
             verbose=self.verbose,
             hook_point=self.hook_point,
-            collection_strategy=collection_strategy,
             detach_activations=self.detach_activations,
             add_generation_prompt=add_generation_prompt,
             **kwargs,
@@ -242,15 +234,15 @@ class ActivationCollector:
 
     def collect_dense(
         self,
-        dataset: "DialogueDataset | list[Dialogue]",
+        dataset: "DialogueDataset",
         mask: "MaskFunction | None" = None,
         **kwargs: Any,
     ) -> Activations:
         """Collect activations with full sequences (dense mode).
 
-        This method explicitly disables streaming and pooling to ensure you get
-        full sequence activations with shape ``[layers, batch, seq, hidden]``.
-        Use this when you need access to individual token representations.
+        This method explicitly disables streaming to ensure you get full sequence
+        activations with shape ``[layers, batch, seq, hidden]``. Use this when
+        you need access to individual token representations.
 
         Args:
             dataset: Dataset containing dialogues.
@@ -266,26 +258,30 @@ class ActivationCollector:
             >>> print(acts.shape)  # [3, 1000, 512, 4096]
         """
         result = self.collect(
-            dataset, mask=mask, streaming=False, collection_strategy=None, **kwargs
+            dataset, mask=mask, streaming=False, **kwargs
         )
         assert isinstance(result, Activations), "Expected Activations, got Iterator"
         return result
 
     def collect_pooled(
         self,
-        dataset: "DialogueDataset | list[Dialogue]",
+        dataset: "DialogueDataset",
         mask: "MaskFunction | None" = None,
         method: Literal["mean", "max", "last_token"] = "mean",
         **kwargs: Any,
     ) -> Activations:
-        """Collect activations with pre-pooling (memory efficient).
+        """Collect activations and pool over sequences (memory efficient).
 
-        This method pools sequences during collection, resulting in activations
-        with shape ``[layers, batch, hidden]`` (no sequence dimension). This
-        provides ~440x memory reduction compared to dense collection.
+        This method collects dense activations then immediately pools over the
+        sequence dimension, resulting in activations with shape
+        ``[layers, batch, hidden]`` (no sequence dimension). This provides
+        ~440x memory reduction compared to dense collection.
 
         Use this when you only need sequence-level representations and want to
         minimize memory usage.
+
+        Note: For more flexibility (e.g., pooling only certain layers), use
+        Pipeline preprocessing transformers instead.
 
         Args:
             dataset: Dataset containing dialogues.
@@ -307,19 +303,21 @@ class ActivationCollector:
             >>> # 440x memory reduction!
             >>> # Dense: 240 GB → Pooled: 540 MB
         """
+        # Collect dense activations
         result = self.collect(
             dataset,
             mask=mask,
             streaming=False,
-            collection_strategy=method,
             **kwargs,
         )
         assert isinstance(result, Activations), "Expected Activations, got Iterator"
-        return result
+
+        # Pool over sequence dimension
+        return result.pool(dim="sequence", method=method, use_detection_mask=True)
 
     def collect_streaming(
         self,
-        dataset: "DialogueDataset | list[Dialogue]",
+        dataset: "DialogueDataset",
         mask: "MaskFunction | None" = None,
         **kwargs: Any,
     ) -> ActivationIterator:

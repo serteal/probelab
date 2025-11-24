@@ -4,14 +4,14 @@ probelib: A library for training classifiers on LLM activations.
 This library provides tools for:
 - Dataset handling
 - Activation collection using hooked and pruned models
-- Probe training and evaluation
+- Pipeline-based preprocessing and probe training
 - Standard evaluation metrics
 """
 
-from . import datasets, masks, metrics, probes, processing, scripts
+from . import datasets, masks, metrics, preprocessing, probes, processing, scripts
 from .models import HookedModel
+from .pipeline import Pipeline
 from .processing import Activations, ActivationCollector, collect_activations
-from .processing.activations import SequencePooling, detect_collection_strategy
 from .types import Dialogue, Label, Message
 from .visualization import print_metrics, visualize_mask
 
@@ -23,16 +23,16 @@ __all__ = [
     "Dialogue",
     "collect_activations",
     "ActivationCollector",
-    "detect_collection_strategy",
     "HookedModel",
     "Activations",
+    "Pipeline",
     "print_metrics",
     "visualize_mask",
     "scripts",
     "probes",
+    "preprocessing",
     "datasets",
     "processing",
     "metrics",
     "masks",
-    "SequencePooling",
 ]
