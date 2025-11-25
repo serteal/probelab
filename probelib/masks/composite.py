@@ -51,20 +51,63 @@ class OrMask(MaskFunction):
 
 
 class NotMask(MaskFunction):
-    """Logical NOT of a mask."""
+    """Logical NOT of a mask with explicit padding control.
 
-    def __init__(self, mask: MaskFunction):
+    Args:
+        mask: Mask function to negate.
+        keep_padding_masked: If True (default), padding tokens remain masked
+            after negation. If False, padding tokens may be selected if they
+            weren't in the original mask. Default: True.
+
+    Examples:
+        Default behavior (padding stays masked):
+
+        >>> not_assistant = ~pl.masks.assistant()  # Padding remains masked
+        >>> # Equivalent to:
+        >>> not_assistant = pl.masks.NotMask(pl.masks.assistant(), keep_padding_masked=True)
+
+        Include padding in negation:
+
+        >>> not_assistant = pl.masks.NotMask(pl.masks.assistant(), keep_padding_masked=False)
+    """
+
+    def __init__(self, mask: MaskFunction, *, keep_padding_masked: bool = True):
+        """Initialize NotMask with explicit padding behavior.
+
+        Args:
+            mask: Mask function to negate.
+            keep_padding_masked: If True, padding tokens stay masked even after
+                negation. If False, padding may be selected after negation.
+        """
         self.mask = mask
+        self.keep_padding_masked = keep_padding_masked
 
     def evaluate(
         self,
         dialogues: Sequence[Dialogue],
         metadata: TokenMetadata,
     ) -> Tensor:
-        """Return negation of mask."""
+        """Return negation of mask with explicit padding handling.
+
+        Args:
+            dialogues: Original dialogues.
+            metadata: Token metadata including attention mask.
+
+        Returns:
+            Boolean tensor with negated mask. If keep_padding_masked=True,
+            padding tokens are explicitly excluded from the result.
+        """
         mask_result = self.mask.evaluate(dialogues, metadata)
-        # Only negate within attention mask (don't select padding)
-        return (~mask_result) & metadata.attention_mask.bool()
+        negated = ~mask_result
+
+        # Explicitly handle padding based on configuration
+        if self.keep_padding_masked:
+            return negated & metadata.attention_mask.bool()
+        else:
+            return negated
 
     def __repr__(self) -> str:
-        return f"(~{self.mask})"
+        if self.keep_padding_masked:
+            return f"(~{self.mask})"
+        else:
+            return f"(~{self.mask}, keep_padding=False)"

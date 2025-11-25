@@ -36,6 +36,9 @@ class MaskFunction(ABC):
     can implement rich selection logic without repeating tokenization work. The
     boolean operators (``&``, ``|``, ``~``) return composite masks, allowing
     callers to build complex conditions from small, well-tested pieces.
+
+    Masks can be called directly (``mask(dialogues, metadata)``) or via the
+    ``evaluate()`` method - both are equivalent.
     """
 
     def __and__(self, other: "MaskFunction") -> "MaskFunction":
@@ -51,7 +54,11 @@ class MaskFunction(ABC):
         return OrMask(self, other)
 
     def __invert__(self) -> "MaskFunction":
-        """Logical NOT."""
+        """Logical NOT.
+
+        Note: The returned NotMask automatically excludes padding tokens.
+        Use NotMask(mask, keep_padding_masked=False) if you need padding included.
+        """
         from .composite import NotMask
 
         return NotMask(self)
@@ -62,8 +69,7 @@ class MaskFunction(ABC):
         dialogues: Sequence[Dialogue],
         metadata: TokenMetadata,
     ) -> Tensor:
-        """
-        Evaluate mask on tokenized dialogues.
+        """Evaluate mask on tokenized dialogues.
 
         Args:
             dialogues: Original dialogues
@@ -73,6 +79,22 @@ class MaskFunction(ABC):
             Boolean tensor [batch_size, seq_len] with True for selected tokens
         """
         pass
+
+    def __call__(
+        self,
+        dialogues: Sequence[Dialogue],
+        metadata: TokenMetadata,
+    ) -> Tensor:
+        """Pythonic alias for evaluate() - allows mask(dialogues, metadata).
+
+        Args:
+            dialogues: Original dialogues
+            metadata: Token metadata for efficient evaluation
+
+        Returns:
+            Boolean tensor [batch_size, seq_len] with True for selected tokens
+        """
+        return self.evaluate(dialogues, metadata)
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}()"

@@ -17,7 +17,19 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelib as pl
+from probelib.datasets.base import DialogueDataset
 from probelib.processing.activations import collect_activations, get_batches
+from probelib.types import Dialogue, Label
+
+
+class _TestDialogueDataset(DialogueDataset):
+    """Simple concrete DialogueDataset for testing."""
+
+    base_name = "test_dataset"
+
+    def _get_dialogues(self) -> tuple[list[Dialogue], list[Label], dict | None]:
+        # Not used - we pass dialogues directly to __init__
+        return [], [], None
 
 
 def _require_cuda():
@@ -67,6 +79,13 @@ def test_collect_activations_matches_hidden_states_llama3():
         ],
     ]
 
+    # Wrap in _TestDialogueDataset (disable shuffle for deterministic comparison)
+    dataset = _TestDialogueDataset(
+        dialogues=dialogues,
+        labels=[pl.Label.POSITIVE, pl.Label.NEGATIVE],  # Dummy labels
+        shuffle_upon_init=False,
+    )
+
     # Tokenize with assistant mask to produce detection_mask
     tokenized = pl.processing.tokenize_dialogues(
         tokenizer=tokenizer,
@@ -81,7 +100,7 @@ def test_collect_activations_matches_hidden_states_llama3():
     acts = collect_activations(
         model=model,
         tokenizer=tokenizer,
-        dataset=dialogues,
+        dataset=dataset,
         layers=layers,
         batch_size=2,
         streaming=False,
@@ -133,7 +152,7 @@ def test_collect_activations_matches_hidden_states_llama3():
     acts_iter = collect_activations(
         model=model,
         tokenizer=tokenizer,
-        data=dialogues,
+        dataset=dataset,
         layers=layers,
         batch_size=2,
         streaming=True,
@@ -184,6 +203,13 @@ def test_collect_activations_matches_hidden_states_gemma2():
         ],
     ]
 
+    # Wrap in _TestDialogueDataset (disable shuffle for deterministic comparison)
+    dataset = _TestDialogueDataset(
+        dialogues=dialogues,
+        labels=[pl.Label.POSITIVE, pl.Label.NEGATIVE],  # Dummy labels
+        shuffle_upon_init=False,
+    )
+
     tokenized = pl.processing.tokenize_dialogues(
         tokenizer=tokenizer,
         dialogues=dialogues,
@@ -196,7 +222,7 @@ def test_collect_activations_matches_hidden_states_gemma2():
     acts = collect_activations(
         model=model,
         tokenizer=tokenizer,
-        data=dialogues,
+        dataset=dataset,
         layers=layers,
         batch_size=2,
         streaming=False,
@@ -245,7 +271,7 @@ def test_collect_activations_matches_hidden_states_gemma2():
     acts_iter = collect_activations(
         model=model,
         tokenizer=tokenizer,
-        data=dialogues,
+        dataset=dataset,
         layers=layers,
         batch_size=2,
         streaming=True,

@@ -9,7 +9,45 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal
 
-Role = Literal["system", "user", "assistant"]
+
+class Role(str, Enum):
+    """Message roles in a dialogue.
+
+    Inherits from str so Role values can be used in string operations
+    and compared directly with strings for backward compatibility.
+    """
+
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class HookPoint(str, Enum):
+    """Where to extract activations from the model.
+
+    PRE_LAYERNORM: Before layer normalization (input to layernorm)
+                   Earlier in computation, less processed
+
+    POST_BLOCK: After transformer block + final layernorm
+               Matches HuggingFace hidden_states semantics
+               Default recommended for most use cases
+    """
+
+    PRE_LAYERNORM = "pre_layernorm"
+    POST_BLOCK = "post_block"
+
+
+class AggregationMethod(str, Enum):
+    """Methods for aggregating activations over sequences or layers.
+
+    MEAN: Average across dimension (most common)
+    MAX: Maximum value across dimension
+    LAST_TOKEN: Take the last token in sequence (for sequence aggregation only)
+    """
+
+    MEAN = "mean"
+    MAX = "max"
+    LAST_TOKEN = "last_token"
 
 
 @dataclass
@@ -18,12 +56,30 @@ class Message:
     A single message in a dialogue.
 
     Attributes:
-        role: The role of the message sender (system, user, assistant)
+        role: The role of the message sender (Role enum or string: "system", "user", "assistant")
         content: The content of the message
+
+    Examples:
+        >>> # Using enum (recommended)
+        >>> msg = Message(role=Role.ASSISTANT, content="Hello")
+
+        >>> # Using string (also supported)
+        >>> msg = Message(role="assistant", content="Hello")
     """
 
-    role: Role
+    role: Role | str
     content: str
+
+    def __post_init__(self):
+        """Convert string roles to Role enum."""
+        if isinstance(self.role, str):
+            try:
+                self.role = Role(self.role)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid role: {self.role}. "
+                    f"Must be one of: {[r.value for r in Role]}"
+                )
 
 
 # Type alias for a dialogue (sequence of messages)

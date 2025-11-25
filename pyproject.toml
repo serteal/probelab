@@ -4,11 +4,34 @@ build-backend = "hatchling.build"
 
 [project]
 name = "probelib"
-version = "0.1.0"
+version = "0.0.1"
 description = "A library for training activation monitors on language models."
 readme = "README.md"
+license = "Apache-2.0"
 authors = [{ name = "Alex Serrano", email = "alex.serrano.terre@gmail.com" }]
 requires-python = ">=3.11"
+keywords = [
+    "machine-learning",
+    "deep-learning",
+    "pytorch",
+    "transformers",
+    "llm",
+    "interpretability",
+    "probing",
+    "activations",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
 dependencies = [
     "accelerate>=1.10.0",
     "datasets>=3.6.0",
@@ -25,6 +48,11 @@ dependencies = [
     "torch-geometric>=2.5.0",
     "transformers>=4.55.4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/serteal/probelib"
+Repository = "https://github.com/serteal/probelib"
+Issues = "https://github.com/serteal/probelib/issues"
 
 [dependency-groups]
 dev = [

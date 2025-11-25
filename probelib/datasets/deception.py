@@ -719,7 +719,7 @@ class AIAuditDataset(DialogueDataset):
         if self.variant == "reasoning":
             # inject an assistant message that starts with "Reasoning: """ at the end of the
             # dialogue
-            dialogue.append(Message("assistant", 'Reasoning: """', False))
+            dialogue.append(Message("assistant", 'Reasoning: """'))
 
         return dialogue
 
@@ -1040,7 +1040,7 @@ class WerewolfDataset(DialogueDataset):
                 "claim a role (i.e. Villager, Seer, Mason, Minion or Werewolf) in your answer.",
             ]
         )
-        return Message("user", text, False)
+        return Message("user", text)
 
     @staticmethod
     def get_rules_text() -> str:
@@ -1106,19 +1106,15 @@ class TruthfulQADataset(DialogueDataset):
 
             # Truthful dialogue
             truthful_dialogue: Dialogue = [
-                Message("user", question, False),
-                Message(
-                    "assistant", cast(str, row["Examples: True"].split(";")[0]), True
-                ),
+                Message("user", question),
+                Message("assistant", cast(str, row["Examples: True"].split(";")[0])),
             ]
             all_dialogues.append(truthful_dialogue)
 
             # Deceptive dialogue
             deceptive_dialogue: Dialogue = [
-                Message("user", question, False),
-                Message(
-                    "assistant", cast(str, row["Examples: False"].split(";")[0]), True
-                ),
+                Message("user", question),
+                Message("assistant", cast(str, row["Examples: False"].split(";")[0])),
             ]
             all_dialogues.append(deceptive_dialogue)
 
@@ -1189,19 +1185,17 @@ class AILiarDataset(DialogueDataset):
                 instruction = raw_dialogue[
                     "deceive_instruction" if deceptive else "normal_instruction"
                 ]
-                dialogue.append(Message("system", instruction, False))
+                dialogue.append(Message("system", instruction))
                 dialogue.append(
                     Message(
                         "user",
                         raw_dialogue["question_prefix"] + raw_dialogue["question"],
-                        False,
                     )
                 )
                 dialogue.append(
                     Message(
                         "assistant",
                         raw_dialogue["answer_prefix"] + raw_dialogue["answer"],
-                        True,
                     )
                 )
 
@@ -1209,28 +1203,24 @@ class AILiarDataset(DialogueDataset):
                 instruction = raw_dialogue[
                     "deceive_instruction" if deceptive else "normal_instruction"
                 ]
-                dialogue.append(Message("system", instruction, False))
+                dialogue.append(Message("system", instruction))
                 dialogue.append(
                     Message(
                         "user",
                         raw_dialogue["question_prefix"] + raw_dialogue["question"],
-                        False,
                     )
                 )
-                dialogue.append(
-                    Message("assistant", raw_dialogue["answer_prefix"], True)
-                )
+                dialogue.append(Message("assistant", raw_dialogue["answer_prefix"]))
 
             case "mc":
                 instruction = raw_dialogue[
                     "deceive_instruction" if deceptive else "normal_instruction"
                 ]
-                dialogue.append(Message("system", instruction, False))
+                dialogue.append(Message("system", instruction))
                 dialogue.append(
                     Message(
                         "user",
                         raw_dialogue["question_prefix"] + raw_dialogue["question"],
-                        False,
                     )
                 )
                 choices = [raw_dialogue["answer"], raw_dialogue["other_answer"]]
@@ -1241,7 +1231,6 @@ class AILiarDataset(DialogueDataset):
                     Message(
                         "user",
                         f"\n\nChoices:\n(A) {choices[0]}\n(B) {choices[1]}",
-                        False,
                     )
                 )
                 dialogue.append(
@@ -1251,23 +1240,21 @@ class AILiarDataset(DialogueDataset):
                         + " Answer: ("
                         + correct_choice
                         + ")",
-                        True,
                     )
                 )
 
             case "normal_instruction" | "deceive_instruction":
                 instruction = raw_dialogue["normal_instruction"]
                 answer = raw_dialogue["other_answer" if deceptive else "answer"]
-                dialogue.append(Message("system", instruction, False))
+                dialogue.append(Message("system", instruction))
                 dialogue.append(
                     Message(
                         "user",
                         raw_dialogue["question_prefix"] + raw_dialogue["question"],
-                        False,
                     )
                 )
                 dialogue.append(
-                    Message("assistant", raw_dialogue["answer_prefix"] + answer, True)
+                    Message("assistant", raw_dialogue["answer_prefix"] + answer)
                 )
 
             case _:

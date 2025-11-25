@@ -176,7 +176,6 @@ class XSTestResponseDataset(DialogueDataset):
                     ),
                 ]
             )
-            # TODO: have analysed and this seems correct, but needs further check
             labels.append(Label.POSITIVE if d["label"] == "harmful" else Label.NEGATIVE)
         return dialogues, labels, None
 

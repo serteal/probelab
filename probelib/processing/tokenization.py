@@ -67,12 +67,10 @@ def build_token_metadata(
     batch_size, seq_len = tokenizer_out["input_ids"].shape
     device = tokenizer_out["input_ids"].device
 
-    # Initialize metadata tensors
-    # Use -1 as default to indicate "no role" (not system!)
+    # -1 indicates no role/message (e.g., special tokens)
     role_ids_no_padding = torch.full(
         (batch_size, seq_len), -1, dtype=torch.int8, device=device
     )
-    # Initialize with -1 to indicate tokens not belonging to any message (e.g., special tokens)
     message_boundaries = torch.full(
         (batch_size, seq_len), -1, dtype=torch.int32, device=device
     )
@@ -85,14 +83,11 @@ def build_token_metadata(
     if hasattr(tokenizer, "bos_token_id") and tokenizer.bos_token_id is not None:
         bos_token_ids.add(tokenizer.bos_token_id)
 
-    # Get model family for regex patterns and padding
     model_family = get_model_family(tokenizer)
     prefix_pattern = _get_prefix_pattern(model_family)
-    # Get architecture handler and its padding configuration
     arch = ArchitectureRegistry.get_architecture_by_name(model_family)
     padding_config = arch.get_token_padding()
 
-    # Process each dialogue
     for batch_idx, dialogue in enumerate(dialogues):
         char_idx = 0
         formatted_text = formatted_dialogues[batch_idx]
@@ -136,29 +131,22 @@ def build_token_metadata(
 
                 exclusive_end = min(seq_len, end_tok_inclusive + 1)
 
-                # Set role and message IDs for content tokens only (no padding)
                 role_id = role_to_id[message.role]
                 role_ids_no_padding[batch_idx, start_tok_idx:exclusive_end] = role_id
                 message_boundaries[batch_idx, start_tok_idx:exclusive_end] = msg_idx
 
             char_idx = end_char_idx
 
-    # Create padded version of role_ids using efficient vectorized operations
     role_ids_with_padding = role_ids_no_padding.clone()
 
-    # Only apply padding if padding config exists
     if padding_config.left > 0 or padding_config.right > 0:
         for batch_idx in range(batch_size):
-            # Process each role efficiently
             for role_id in [0, 1, 2]:  # system, user, assistant
-                # Find where this role appears
                 role_mask = role_ids_no_padding[batch_idx] == role_id
 
                 if not role_mask.any():
                     continue
 
-                # Find boundaries of role regions using diff
-                # Pad with False to detect edges
                 padded_mask = torch.cat(
                     [
                         torch.tensor([False], device=device),
@@ -167,18 +155,13 @@ def build_token_metadata(
                     ]
                 )
 
-                # Find starts and ends of continuous regions
                 diff = padded_mask[1:].int() - padded_mask[:-1].int()
                 starts = torch.where(diff == 1)[0]
                 ends = torch.where(diff == -1)[0]
 
-                # Apply padding to each region
                 for start, end in zip(starts, ends):
-                    # Apply left and right padding
                     padded_start = max(0, start - padding_config.left)
                     padded_end = min(seq_len, end + padding_config.right)
-
-                    # Set the padded region to this role
                     role_ids_with_padding[batch_idx, padded_start:padded_end] = role_id
 
     # Mark BOS tokens as system only in the padded view (include_padding=True)
@@ -218,32 +201,24 @@ def build_token_metadata(
 def tokenize_dialogues(
     tokenizer: "PreTrainedTokenizerBase",
     dialogues: Sequence[Dialogue],
-    mask: MaskFunction | None = None,
+    mask: MaskFunction,
     device: torch.device | str = "cpu",
-    dataset: DialogueDataset | None = None,
     add_generation_prompt: bool = False,
     **tokenize_kwargs: Any,
 ) -> dict[str, torch.Tensor]:
-    """Unified tokenization with optional masking.
-
-    When ``mask`` is ``None`` and a ``DialogueDataset`` is provided, the
-    dataset's ``default_mask`` is applied automatically. Callers that want to
-    disable masking entirely should pass an explicit mask (e.g. ``masks.all()``).
+    """Tokenize dialogues with explicit mask for detection control.
 
     Args:
         tokenizer: HuggingFace tokenizer bound to the model.
         dialogues: Sequence of dialogues to tokenize.
-        mask: Mask function to apply. ``None`` defers to ``dataset.default_mask``
-            when available, otherwise no masking is applied.
+        mask: Mask function determining which tokens to detect. Required.
+            Use ``masks.all()`` to detect all non-padding tokens.
         device: Device to place tensors on.
-        dataset: Optional dataset used to resolve a default mask.
         add_generation_prompt: Whether to append the model's generation prompt.
         **tokenize_kwargs: Additional tokenizer arguments forwarded verbatim.
 
     Returns:
-        Tokenized tensors, including ``detection_mask`` that reflects either the
-        supplied mask, the dataset default, or an all-False mask when masking is
-        disabled.
+        Dictionary with tokenized tensors including ``detection_mask``.
     """
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -307,30 +282,14 @@ def tokenize_dialogues(
     if "attention_mask" not in token_dict:
         raise ValueError("Tokenizer output must include attention mask")
 
-    # Apply mask if provided
-    if mask is not None:
-        # Build metadata for mask evaluation
-        metadata = build_token_metadata(
-            processed_dialogues, formatted_dialogues, tokenizer, token_dict
-        )
+    # Build metadata for mask evaluation
+    metadata = build_token_metadata(
+        processed_dialogues, formatted_dialogues, tokenizer, token_dict
+    )
 
-        # Evaluate mask
-        detection_mask = mask.evaluate(dialogues, metadata)
-        token_dict["detection_mask"] = detection_mask
-    elif dataset is not None and hasattr(dataset, "default_mask"):
-        # Use dataset's default mask
-        mask_fn = dataset.default_mask
-        logger.info(
-            f"No mask provided; using default mask {mask_fn} from dataset {dataset}",
-        )
-        metadata = build_token_metadata(
-            processed_dialogues, formatted_dialogues, tokenizer, token_dict
-        )
-        detection_mask = mask_fn.evaluate(dialogues, metadata)
-        token_dict["detection_mask"] = detection_mask
-    else:
-        # No mask - default to selecting all real (non-padding) tokens.
-        token_dict["detection_mask"] = token_dict["attention_mask"].bool()
+    # Evaluate mask and create detection_mask
+    detection_mask = mask.evaluate(dialogues, metadata)
+    token_dict["detection_mask"] = detection_mask
 
     return token_dict  # type: ignore
 
@@ -338,19 +297,17 @@ def tokenize_dialogues(
 def tokenize_dataset(
     dataset: DialogueDataset,
     tokenizer: "PreTrainedTokenizerBase",
-    mask: MaskFunction | None = None,
+    mask: MaskFunction,
     device: torch.device | str = "cpu",
     **tokenize_kwargs: Any,
 ) -> dict[str, torch.Tensor]:
-    """Tokenize a dataset while respecting default masking rules.
-
-    See :func:`tokenize_dialogues` for details on how dataset defaults are
-    applied when ``mask`` is ``None``.
+    """Tokenize a dataset with explicit mask for detection control.
 
     Args:
         dataset: DialogueDataset to tokenize.
         tokenizer: HuggingFace tokenizer aligned with the model.
-        mask: Optional mask override. ``None`` defers to ``dataset.default_mask``.
+        mask: Mask function determining which tokens to detect. Required.
+            Use ``masks.all()`` to detect all non-padding tokens.
         device: Device to place tensors on.
         **tokenize_kwargs: Additional tokenizer arguments.
 
@@ -362,7 +319,6 @@ def tokenize_dataset(
         dialogues=dataset.dialogues,
         mask=mask,
         device=device,
-        dataset=dataset,
         **tokenize_kwargs,
     )
 

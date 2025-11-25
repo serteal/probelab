@@ -8,7 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 
-from ..processing.activations import ActivationIterator, Activations, SequencePooling
+from ..processing.activations import Activations, Axis
+from ..processing.scores import Scores
 from .base import BaseProbe
 
 
@@ -43,14 +44,43 @@ class _MLPNetwork(nn.Module):
 class MLP(BaseProbe):
     """Multi-layer perceptron probe for binary classification.
 
-    This probe uses a simple MLP with one hidden layer. It supports
-    both batch training and streaming updates via partial_fit.
+    This probe adapts to input dimensionality:
+    - If X has SEQ axis: Trains on tokens, returns token-level scores
+    - If X has no SEQ axis: Trains on sequences, returns sequence-level scores
+
+    Uses AdamW optimizer for training over multiple epochs.
+
+    Args:
+        hidden_dim: Number of hidden units in the MLP
+        dropout: Dropout rate (None for no dropout)
+        activation: Activation function ("relu" or "gelu")
+        learning_rate: Learning rate for optimizer
+        weight_decay: L2 regularization strength
+        n_epochs: Maximum number of training epochs
+        batch_size: Batch size for training
+        device: Device for computation (auto-detected if None)
+        random_state: Random seed for reproducibility
+        verbose: Whether to print progress information
+
+    Example:
+        >>> # Sequence-level (with preprocessing)
+        >>> pipeline = Pipeline([
+        ...     ("select", SelectLayer(16)),
+        ...     ("agg", AggregateSequences("mean")),
+        ...     ("probe", MLP(hidden_dim=128)),
+        ... ])
+        >>> pipeline.fit(acts, labels)
+
+        >>> # Token-level (no aggregation)
+        >>> pipeline = Pipeline([
+        ...     ("select", SelectLayer(16)),
+        ...     ("probe", MLP(hidden_dim=128)),
+        ...     ("agg_scores", AggregateTokenScores("mean")),
+        ... ])
     """
 
     def __init__(
         self,
-        layer: int | None = None,
-        sequence_pooling: SequencePooling = SequencePooling.MEAN,
         hidden_dim: int = 128,
         dropout: float | None = None,
         activation: Literal["relu", "gelu"] = "relu",
@@ -65,8 +95,6 @@ class MLP(BaseProbe):
         """Initialize MLP probe.
 
         Args:
-            layer: Optional layer index for train_probes compatibility
-            sequence_pooling: How to pool sequences before training
             hidden_dim: Number of hidden units
             dropout: Dropout rate (None for no dropout)
             activation: Activation function ("relu" or "gelu")
@@ -79,8 +107,6 @@ class MLP(BaseProbe):
             verbose: Whether to print progress information
         """
         super().__init__(
-            layer=layer,
-            sequence_pooling=sequence_pooling,
             device=device,
             random_state=random_state,
             verbose=verbose,
@@ -101,10 +127,10 @@ class MLP(BaseProbe):
         self._network = None
         self._optimizer = None
         self._d_model = None
-        self._streaming_steps = 0
+        self._trained_on_tokens = False
 
-        # This probe requires gradients
-        self._requires_grad = True
+        # Streaming state
+        self._streaming_steps = 0
 
         # Set random seed
         if random_state is not None:
@@ -132,32 +158,66 @@ class MLP(BaseProbe):
             weight_decay=self.weight_decay,
         )
 
-    def fit(self, X: Activations | ActivationIterator, y: list | torch.Tensor) -> "MLP":
-        """Fit the probe on training data.
+    def fit(self, X: Activations, y: list | torch.Tensor) -> "MLP":
+        """Fit the probe on activations.
+
+        Adapts to input dimensionality:
+        - If X has SEQ axis: Trains on individual tokens
+        - Otherwise: Trains on sequence-level features
 
         Args:
-            X: Activations or ActivationIterator containing features
-            y: Labels for training
+            X: Activations to train on
+            y: Labels [batch] or [batch, seq]
 
         Returns:
             self: Fitted probe instance
-        """
-        if isinstance(X, ActivationIterator):
-            # Use streaming for iterators
-            labels = self._prepare_labels(y)
-            for batch_acts in X:
-                batch_idx = torch.tensor(
-                    batch_acts.batch_indices, device=labels.device, dtype=torch.long
-                )
-                batch_labels = labels.index_select(0, batch_idx)
-                self.partial_fit(batch_acts, batch_labels)
-            return self
 
-        # Prepare features and labels
-        features = self._prepare_features(X)
-        labels = self._prepare_labels(
-            y, expand_for_tokens=(self.sequence_pooling == SequencePooling.NONE)
-        )
+        Raises:
+            ValueError: If X has unexpected axes (e.g., LAYER axis)
+        """
+        # Convert labels to tensor
+        y_tensor = self._to_tensor(y)
+
+        # Check for LAYER axis
+        if X.has_axis(Axis.LAYER):
+            raise ValueError(
+                "MLP probe expects single layer activations. "
+                "Use SelectLayer transformer in pipeline before probe."
+            )
+
+        # Adapt based on SEQ axis
+        if X.has_axis(Axis.SEQ):
+            # TOKEN-LEVEL training
+            features, tokens_per_sample = X.extract_tokens()  # [n_tokens, hidden]
+
+            # Handle labels (ensure device compatibility)
+            if y_tensor.ndim == 1:
+                # Labels are [batch] → expand to [n_tokens]
+                labels = torch.repeat_interleave(y_tensor, tokens_per_sample.cpu())
+            elif y_tensor.ndim == 2:
+                # Labels are [batch, seq] → extract tokens
+                labels = y_tensor[X.detection_mask.cpu().bool()]
+            else:
+                raise ValueError(
+                    f"Invalid label shape: {y_tensor.shape}. "
+                    f"Expected [batch] or [batch, seq]"
+                )
+
+            self._trained_on_tokens = True
+            self._tokens_per_sample = tokens_per_sample
+        else:
+            # SEQUENCE-LEVEL training
+            features = X.activations  # [batch, hidden]
+            labels = y_tensor  # [batch]
+
+            if labels.ndim != 1:
+                raise ValueError(
+                    f"Expected 1D labels for sequence-level training, "
+                    f"got shape {labels.shape}"
+                )
+
+            self._trained_on_tokens = False
+            self._tokens_per_sample = None
 
         # Skip if no features
         if features.shape[0] == 0:
@@ -211,115 +271,137 @@ class MLP(BaseProbe):
         return self
 
     def partial_fit(self, X: Activations, y: list | torch.Tensor) -> "MLP":
-        """Incrementally fit the probe on a batch of samples.
+        """Perform single gradient step for streaming/online learning.
 
         Args:
-            X: Activations containing features for this batch
-            y: Labels for this batch
+            X: Batch of activations
+            y: Batch of labels
 
         Returns:
-            self: Partially fitted probe instance
+            self: Updated probe instance
         """
-        # Prepare features and labels
-        features = self._prepare_features(X)
-        labels = self._prepare_labels(
-            y, expand_for_tokens=(self.sequence_pooling == SequencePooling.NONE)
-        )
+        # Convert labels to tensor
+        y_tensor = self._to_tensor(y)
+
+        # Check for LAYER axis
+        if X.has_axis(Axis.LAYER):
+            raise ValueError(
+                "MLP probe expects single layer activations. "
+                "Use SelectLayer transformer in pipeline before probe."
+            )
+
+        # Extract features based on dimensionality
+        if X.has_axis(Axis.SEQ):
+            # Token-level training
+            features, tokens_per_sample = X.extract_tokens()
+
+            # Expand labels if needed (ensure device compatibility)
+            if y_tensor.ndim == 1:
+                labels = torch.repeat_interleave(y_tensor, tokens_per_sample.cpu())
+            elif y_tensor.ndim == 2:
+                labels = y_tensor[X.detection_mask.cpu().bool()]
+            else:
+                raise ValueError(f"Invalid label shape: {y_tensor.shape}")
+
+            self._trained_on_tokens = True
+            self._tokens_per_sample = tokens_per_sample
+        else:
+            # Sequence-level training
+            features = X.activations
+            labels = y_tensor
+            self._trained_on_tokens = False
+            self._tokens_per_sample = None
 
         # Skip empty batches
         if features.shape[0] == 0:
-            if self.verbose:
-                print("Skipping batch with no features")
             return self
 
-        # Move to device and convert to float32 to avoid numerical issues
+        # Move to device
         features = features.to(self.device, dtype=torch.float32)
-        labels = labels.to(self.device).float()  # Labels should be float for BCE loss
+        labels = labels.to(self.device, dtype=torch.float32)
 
-        # Initialize network if this is the first batch
+        # Initialize network if needed
         if self._network is None:
-            self._init_network(features.shape[1], dtype=torch.float32)
+            self._init_network(features.shape[1])
 
-        # Single optimization step on this batch
+        # Single gradient step
         self._network.train()
         self._optimizer.zero_grad()
-        outputs = self._network(features)
-        loss = F.binary_cross_entropy_with_logits(outputs, labels)
+        logits = self._network(features)
+        loss = F.binary_cross_entropy_with_logits(logits, labels)
         loss.backward()
         self._optimizer.step()
 
         self._streaming_steps += 1
-        if self.verbose and self._streaming_steps % 10 == 0:
-            print(f"Streaming step {self._streaming_steps}: loss={loss.item():.4f}")
-
-        self._network.eval()
         self._fitted = True
         return self
 
-    def predict_proba(
-        self, X: Activations | ActivationIterator, *, logits: bool = False
-    ) -> torch.Tensor:
-        """Predict class probabilities or logits.
+    def predict_proba(self, X: Activations) -> Scores:
+        """Predict class probabilities.
+
+        Returns Scores object matching input dimensionality:
+        - If X has SEQ axis: Returns token-level Scores [batch, seq, 2]
+        - Otherwise: Returns sequence-level Scores [batch, 2]
 
         Args:
-            X: Activations or ActivationIterator containing features
-            logits: If True, return raw logits instead of probabilities.
-                Useful for adversarial training to avoid sigmoid saturation.
+            X: Activations to predict on
 
         Returns:
-            If logits=False (default): Tensor of shape (n_samples, 2) with probabilities
-            If logits=True: Tensor of shape (n_samples,) with raw logits
+            Scores object with predictions
+
+        Raises:
+            ValueError: If probe not fitted or X has unexpected axes
         """
         if not self._fitted:
             raise RuntimeError("Probe must be fitted before prediction")
 
-        if isinstance(X, ActivationIterator):
-            # Predict on iterator batches
-            predictions = []
-            for batch_acts in X:
-                batch_probs = self.predict_proba(batch_acts, logits=logits)
-                predictions.append(batch_probs)
-            return torch.cat(predictions, dim=0)
+        # Check for LAYER axis
+        if X.has_axis(Axis.LAYER):
+            raise ValueError(
+                "Expected single layer activations. "
+                "Use SelectLayer transformer in pipeline."
+            )
 
-        # Prepare features and convert to float32 for consistency
-        features = self._prepare_features(X)
+        # Extract features based on dimensionality
+        if X.has_axis(Axis.SEQ):
+            # Token-level prediction
+            features, tokens_per_sample = X.extract_tokens()  # [n_tokens, hidden]
+            is_token_level = True
+        else:
+            # Sequence-level prediction
+            features = X.activations  # [batch, hidden]
+            tokens_per_sample = None
+            is_token_level = False
+
+        # Move to device and convert to float32 for consistency
         features = features.to(self.device, dtype=torch.float32)
 
         # Get predictions
         self._network.eval()
-        raw_logits = self._network(features)
+        with torch.no_grad():
+            logits = self._network(features)
+            probs_positive = torch.sigmoid(logits)
 
-        # Return logits directly if requested
-        if logits:
-            # Aggregate token predictions to sample predictions if needed
-            if (
-                self.sequence_pooling == SequencePooling.NONE
-                and self._tokens_per_sample is not None
-            ):
-                raw_logits = self.aggregate_token_predictions(
-                    raw_logits.unsqueeze(-1), self._tokens_per_sample, method="mean"
-                ).squeeze(-1)
-            return raw_logits
+            # Create 2-class probability matrix
+            probs = torch.stack([1 - probs_positive, probs_positive], dim=-1)
 
-        # Otherwise return probabilities
-        probs_positive = torch.sigmoid(raw_logits)
-
-        # Create 2-class probability matrix
-        probs = torch.stack([1 - probs_positive, probs_positive], dim=-1)
-
-        # Aggregate token predictions to sample predictions if needed
-        if (
-            self.sequence_pooling == SequencePooling.NONE
-            and self._tokens_per_sample is not None
-        ):
-            probs = self.aggregate_token_predictions(
-                probs, self._tokens_per_sample, method="mean"
+        # Wrap in Scores object
+        if is_token_level:
+            return Scores.from_token_scores(
+                probs, tokens_per_sample, batch_indices=X.batch_indices
             )
-
-        return probs
+        else:
+            return Scores.from_sequence_scores(probs, batch_indices=X.batch_indices)
 
     def save(self, path: Path | str) -> None:
-        """Save the probe to disk."""
+        """Save the probe to disk.
+
+        Args:
+            path: File path to save the probe
+
+        Raises:
+            RuntimeError: If probe not fitted
+        """
         if not self._fitted:
             raise RuntimeError("Cannot save unfitted probe")
 
@@ -328,8 +410,6 @@ class MLP(BaseProbe):
 
         # Prepare state dict
         state = {
-            "layer": self.layer,
-            "sequence_pooling": self.sequence_pooling.value,  # Save enum value
             "hidden_dim": self.hidden_dim,
             "dropout": self.dropout,
             "activation": self.activation,
@@ -337,34 +417,35 @@ class MLP(BaseProbe):
             "weight_decay": self.weight_decay,
             "n_epochs": self.n_epochs,
             "batch_size": self.batch_size,
+            "device": self.device,
+            "random_state": self.random_state,
+            "verbose": self.verbose,
             "d_model": self._d_model,
             "network_state": self._network.state_dict(),
-            "random_state": self.random_state,
+            "trained_on_tokens": self._trained_on_tokens,
         }
 
         torch.save(state, path)
 
+        if self.verbose:
+            print(f"Probe saved to {path}")
+
     @classmethod
     def load(cls, path: Path | str, device: str | None = None) -> "MLP":
-        """Load a probe from disk."""
+        """Load a probe from disk.
+
+        Args:
+            path: File path to load the probe from
+            device: Device to load the probe onto (auto-detected if None)
+
+        Returns:
+            Loaded probe instance
+        """
         path = Path(path)
-        if not path.exists():
-            raise FileNotFoundError(f"Probe file not found: {path}")
-
-        # Load state dict
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        state = torch.load(path, map_location=device)
-
-        # Convert sequence_pooling string back to enum
-        pooling_value = state.get("sequence_pooling", "mean")
-        sequence_pooling = SequencePooling(pooling_value)
+        state = torch.load(path, map_location="cpu")
 
         # Create probe instance
         probe = cls(
-            layer=state["layer"],
-            sequence_pooling=sequence_pooling,
             hidden_dim=state["hidden_dim"],
             dropout=state.get("dropout"),
             activation=state["activation"],
@@ -372,13 +453,25 @@ class MLP(BaseProbe):
             weight_decay=state["weight_decay"],
             n_epochs=state["n_epochs"],
             batch_size=state["batch_size"],
-            device=device,
+            device=device or state.get("device"),
             random_state=state.get("random_state"),
+            verbose=state.get("verbose", False),
         )
 
         # Initialize network and load state
-        probe._init_network(state["d_model"])
+        probe._d_model = state["d_model"]
+        probe._init_network(probe._d_model)
         probe._network.load_state_dict(state["network_state"])
+        probe._network.eval()
+
+        # Restore training state
+        probe._trained_on_tokens = state.get("trained_on_tokens", False)
         probe._fitted = True
 
         return probe
+
+    def __repr__(self) -> str:
+        """String representation of the probe."""
+        fitted_str = "fitted" if self._fitted else "not fitted"
+        token_str = ", token-level" if self._trained_on_tokens else ""
+        return f"MLP(hidden_dim={self.hidden_dim}, {fitted_str}{token_str})"

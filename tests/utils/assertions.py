@@ -145,6 +145,7 @@ def assert_tokenization_equal(
     actual = pl.processing.tokenize_dialogues(
         tokenizer=tok,
         dialogues=dialogues,
+        mask=pl.masks.all(),
         device=device,
         add_generation_prompt=add_generation_prompt,
         **tokenize_kwargs,
@@ -203,6 +204,7 @@ def assert_collect_activations_equal(
     tokenized = pl.processing.tokenize_dialogues(
         tokenizer=tok,
         dialogues=dialogues,
+        mask=pl.masks.all(),
         device=model.device,
         add_generation_prompt=add_generation_prompt,
         **tokenize_kwargs,
@@ -214,6 +216,7 @@ def assert_collect_activations_equal(
         tokenizer=tok,
         data=dialogues,
         layers=layers,
+        mask=pl.masks.all(),
         batch_size=batch_size,
         streaming=False,
         verbose=False,
@@ -262,6 +265,7 @@ def assert_collect_activations_equal(
             tokenizer=tok,
             data=dialogues,
             layers=layers,
+            mask=pl.masks.all(),
             batch_size=batch_size,
             streaming=True,
             verbose=False,

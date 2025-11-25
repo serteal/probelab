@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from probelib.datasets.base import DialogueDataset
+from probelib.masks import all as all_tokens
 from probelib.processing.tokenization import (
     _get_prefix_pattern,
     get_model_family,
@@ -156,17 +157,14 @@ class TestGetModelFamily:
             tokenizer.name_or_path = name
             assert get_model_family(tokenizer) == "gemma"
 
-    def test_unknown_family_default(self):
-        """Test default fallback for unknown model families."""
+    def test_unknown_family_raises_error(self):
+        """Test that unknown model families raise an error."""
         tokenizer = Mock()
         tokenizer.name_or_path = "unknown/model-name"
 
-        # Should default to llama and log debug message
-        with patch("probelib.models.architectures.logger.debug") as mock_debug:
-            family = get_model_family(tokenizer)
-            assert family == "llama"
-            mock_debug.assert_called_once()
-            assert "Unknown model family" in str(mock_debug.call_args)
+        # Should raise ValueError for unsupported architectures
+        with pytest.raises(ValueError, match="Unable to detect architecture"):
+            get_model_family(tokenizer)
 
     def test_case_insensitive(self):
         """Test that model family detection is case insensitive."""
@@ -231,6 +229,22 @@ class TestGetPrefixPattern:
             assert match is not None, f"Failed to match: {case}"
 
 
+class MockBatchEncoding(dict):
+    """Mock BatchEncoding that supports char_to_token method."""
+
+    def __init__(self, data: dict, seq_len: int = 3):
+        super().__init__(data)
+        self._seq_len = seq_len
+
+    def char_to_token(self, batch_idx: int, char_idx: int) -> int | None:
+        """Map character index to token index."""
+        # Simple mapping: ~10 chars per token
+        token_idx = char_idx // 10
+        if token_idx >= self._seq_len:
+            return None
+        return token_idx
+
+
 class TestTokenizeDialogues:
     """Test tokenize_dialogues function."""
 
@@ -242,21 +256,28 @@ class TestTokenizeDialogues:
         tokenizer.eos_token_id = 1
         tokenizer.name_or_path = "meta-llama/Llama-2-7b"
         tokenizer.padding_side = "right"
+        tokenizer.chat_template = "mock_template"
+        tokenizer.all_special_ids = [0, 1]
 
         # Mock apply_chat_template
         tokenizer.apply_chat_template = Mock(
             return_value=[
-                "User: Hello\nAssistant: Hi",
-                "User: Test\nAssistant: Response",
+                "<|start_header_id|>user<|end_header_id|>\n\nHello<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nHi",
+                "<|start_header_id|>user<|end_header_id|>\n\nTest<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nResponse",
             ]
         )
 
-        # Mock tokenizer call
-        tokenizer_output = {
-            "input_ids": torch.tensor([[1, 2, 3], [4, 5, 6]]),
-            "attention_mask": torch.tensor([[1, 1, 1], [1, 1, 0]]),
-        }
-        tokenizer.return_value = tokenizer_output
+        # Mock tokenizer call to return BatchEncoding-like object
+        def tokenizer_call(*args, **kwargs):
+            n_samples = len(args[0]) if args else 2
+            seq_len = 20
+            data = {
+                "input_ids": torch.randint(2, 1000, (n_samples, seq_len)),
+                "attention_mask": torch.ones(n_samples, seq_len),
+            }
+            return MockBatchEncoding(data, seq_len=seq_len)
+
+        tokenizer.side_effect = tokenizer_call
 
         return tokenizer
 
@@ -280,18 +301,20 @@ class TestTokenizeDialogues:
         result = tokenize_dialogues(
             tokenizer=mock_tokenizer,
             dialogues=dialogues,
+            mask=all_tokens(),
             device="cpu",
         )
 
         assert "input_ids" in result
         assert "attention_mask" in result
         assert "detection_mask" in result
-        assert result["input_ids"].shape == (2, 3)
-        assert result["attention_mask"].shape == (2, 3)
-        assert result["detection_mask"].shape == (2, 3)
+        # Check shapes match (seq_len determined by mock)
+        assert result["input_ids"].shape[0] == 2
+        assert result["attention_mask"].shape == result["input_ids"].shape
+        assert result["detection_mask"].shape == result["input_ids"].shape
 
-    def test_default_mask_selects_all_tokens(self, mock_tokenizer):
-        """When no mask is provided, all real tokens should be selected."""
+    def test_all_mask_selects_all_tokens(self, mock_tokenizer):
+        """Test that all() mask selects all real tokens."""
         dialogues = [
             Dialogue(
                 [
@@ -304,6 +327,7 @@ class TestTokenizeDialogues:
         result = tokenize_dialogues(
             tokenizer=mock_tokenizer,
             dialogues=dialogues,
+            mask=all_tokens(),
             device="cpu",
         )
 
@@ -326,6 +350,7 @@ class TestTokenizeDialogues:
         tokenize_dialogues(
             tokenizer=mock_tokenizer,
             dialogues=dialogues,
+            mask=all_tokens(),
             device="cpu",
         )
 
@@ -344,6 +369,7 @@ class TestTokenizeDialogues:
         result = tokenize_dialogues(
             tokenizer=mock_tokenizer,
             dialogues=dialogues,
+            mask=all_tokens(),
             device="cpu",
         )
 
@@ -358,6 +384,7 @@ class TestTokenizeDialogues:
         tokenize_dialogues(
             tokenizer=mock_tokenizer,
             dialogues=dialogues,
+            mask=all_tokens(),
             max_length=512,
             truncation=True,
         )
@@ -371,7 +398,11 @@ class TestTokenizeDialogues:
 
     def test_missing_attention_mask_error(self, mock_tokenizer):
         """Test error when tokenizer doesn't return attention mask."""
-        mock_tokenizer.return_value = {"input_ids": torch.tensor([[1, 2, 3]])}
+        # Override side_effect to return dict without attention_mask
+        mock_tokenizer.side_effect = None
+        mock_tokenizer.return_value = MockBatchEncoding(
+            {"input_ids": torch.tensor([[1, 2, 3]])}, seq_len=3
+        )
 
         dialogues = [Dialogue([Message(role="user", content="Test")])]
 
@@ -381,6 +412,7 @@ class TestTokenizeDialogues:
             tokenize_dialogues(
                 tokenizer=mock_tokenizer,
                 dialogues=dialogues,
+                mask=all_tokens(),
             )
 
     def test_generation_prompt_options(self, mock_tokenizer):
@@ -391,6 +423,7 @@ class TestTokenizeDialogues:
         tokenize_dialogues(
             tokenizer=mock_tokenizer,
             dialogues=dialogues,
+            mask=all_tokens(),
             add_generation_prompt=True,
         )
 
@@ -416,6 +449,7 @@ class TestTokenizeDataset:
 
         mock_tokenizer = Mock()
         mock_tokenizer.name_or_path = "llama"
+        mask = all_tokens()
 
         with patch(
             "probelib.processing.tokenization.tokenize_dialogues"
@@ -426,6 +460,7 @@ class TestTokenizeDataset:
             result = tokenize_dataset(
                 dataset=dataset,
                 tokenizer=mock_tokenizer,
+                mask=mask,
                 device="cuda",
                 max_length=512,
             )
@@ -437,8 +472,8 @@ class TestTokenizeDataset:
         call_kwargs = mock_tokenize.call_args[1]
         assert call_kwargs["tokenizer"] == mock_tokenizer
         assert call_kwargs["dialogues"] == dataset.dialogues
+        assert call_kwargs["mask"] == mask
         assert call_kwargs["device"] == "cuda"
-        assert call_kwargs["dataset"] == dataset
         assert call_kwargs["max_length"] == 512
 
 
@@ -548,7 +583,7 @@ class TestIntegration:
         tokenizer.side_effect = tokenizer_mock
 
         # Run tokenization
-        result = tokenize_dataset(dataset, tokenizer)
+        result = tokenize_dataset(dataset, tokenizer, mask=all_tokens())
 
         # Verify structure
         assert "input_ids" in result

@@ -6,13 +6,14 @@ from pathlib import Path
 import pytest
 import torch
 
+from probelib import Pipeline
+from probelib.preprocessing import SelectLayer, Pool
 from probelib.probes.logistic import Logistic
 from probelib.processing.activations import (
     ActivationIterator,
     Activations,
 )
-from probelib.types import Label
-from probelib.processing import SequencePooling
+from probelib.types import Label, AggregationMethod
 
 
 class MockActivationIterator(ActivationIterator):
@@ -115,66 +116,69 @@ class TestLogistic:
 
     def test_initialization(self):
         """Test probe initialization."""
-        probe = Logistic(
-            layer=5,
-            sequence_pooling=SequencePooling.MEAN,
-            C=10.0,  # C is inverse of l2_penalty (C=10 ≈ l2_penalty=0.1)
-            device="cpu",
-            random_state=42,
-            verbose=False,
-        )
+        pipeline = Pipeline([
+            ("select", SelectLayer(5)),
+            ("agg", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic(
+                C=10.0,  # C is inverse of l2_penalty (C=10 ≈ l2_penalty=0.1)
+                device="cpu",
+                random_state=42,
+                verbose=False,
+            )),
+        ])
 
-        assert probe.layer == 5
-        assert probe.sequence_pooling == SequencePooling.MEAN
-        # score_aggregation no longer exists
-        assert probe.C == 10.0
-        assert probe.device == "cpu"
-        assert probe.random_state == 42
-        assert probe._fitted is False
+        assert pipeline["select"].layer == 5
+        assert pipeline["agg"].method == AggregationMethod.MEAN
+        assert pipeline["probe"].C == 10.0
+        assert pipeline["probe"].device == "cpu"
+        assert pipeline["probe"].random_state == 42
+        assert pipeline["probe"]._fitted is False
 
     def test_fit_with_aggregation(self):
         """Test fitting with sequence aggregation."""
         activations, labels = create_separable_data(n_samples=20)
 
-        probe = Logistic(
-            layer=0,
-            sequence_pooling=SequencePooling.MEAN,
-            device="cpu",
-        )
+        pipeline = Pipeline([
+            ("select", SelectLayer(0)),
+            ("agg", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic(device="cpu")),
+        ])
 
-        fitted_probe = probe.fit(activations, labels)
+        fitted_pipeline = pipeline.fit(activations, labels)
 
-        assert fitted_probe is probe  # Should return self
-        assert probe._fitted is True
-        assert probe._network is not None
-        assert probe._network.linear.weight.shape == (1, 8)  # [1, d_model]
+        assert fitted_pipeline is pipeline  # Should return self
+        assert pipeline["probe"]._fitted is True
+        assert pipeline["probe"]._network is not None
+        assert pipeline["probe"]._network.linear.weight.shape == (1, 8)  # [1, d_model]
 
     def test_fit_token_level(self):
-        """Test fitting at token level."""
+        """Test fitting at token level with score aggregation."""
         activations, labels = create_separable_data(n_samples=10, seq_len=5)
 
-        probe = Logistic(
-            layer=0,
-            sequence_pooling=SequencePooling.NONE,  # Token-level training with score aggregation
-            device="cpu",
-        )
+        pipeline = Pipeline([
+            ("select", SelectLayer(0)),
+            ("probe", Logistic(device="cpu")),
+            ("agg_scores", Pool(dim="sequence", method="mean")),
+        ])
 
-        probe.fit(activations, labels)
+        pipeline.fit(activations, labels)
 
-        assert probe._fitted is True
-        assert probe._network is not None
+        assert pipeline["probe"]._fitted is True
+        assert pipeline["probe"]._network is not None
 
     def test_predict_proba(self):
         """Test probability prediction."""
         activations, labels = create_separable_data(n_samples=20)
 
-        probe = Logistic(
-            layer=0, sequence_pooling=SequencePooling.MEAN, device="cpu", random_state=42
-        )
-        probe.fit(activations, labels)
+        pipeline = Pipeline([
+            ("select", SelectLayer(0)),
+            ("agg", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic(device="cpu", random_state=42)),
+        ])
+        pipeline.fit(activations, labels)
 
         # Predict on same data
-        probs = probe.predict_proba(activations)
+        probs = pipeline.predict_proba(activations)
 
         assert probs.shape == (20, 2)
         assert torch.all(probs >= 0) and torch.all(probs <= 1)
@@ -190,84 +194,28 @@ class TestLogistic:
     def test_predict_before_fit(self):
         """Test that prediction fails before fitting."""
         activations = create_test_activations()
-        probe = Logistic(layer=0, sequence_pooling=SequencePooling.MEAN, device="cpu")
+        pipeline = Pipeline([
+            ("select", SelectLayer(0)),
+            ("agg", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic(device="cpu")),
+        ])
 
-        with pytest.raises(RuntimeError, match="Probe must be fitted"):
-            probe.predict_proba(activations)
-
-    def test_partial_fit(self):
-        """Test incremental fitting."""
-        # Create data in batches
-        batch1_acts, batch1_labels = create_separable_data(n_samples=10)
-        batch2_acts, batch2_labels = create_separable_data(n_samples=10)
-
-        probe = Logistic(
-            layer=0, sequence_pooling=SequencePooling.MEAN, device="cpu", random_state=42
-        )
-
-        # Fit on first batch
-        probe.partial_fit(batch1_acts, batch1_labels)
-        assert probe._fitted is True
-
-        # Update with second batch
-        probe.partial_fit(batch2_acts, batch2_labels)
-        assert probe._fitted is True
-
-        # Should still make reasonable predictions
-        probs = probe.predict_proba(batch1_acts)
-        assert probs.shape == (10, 2)
-
-    def test_fit_with_iterator(self):
-        """Test fitting with an ActivationIterator."""
-        # Create batches
-        batch1_acts, _ = create_separable_data(n_samples=10)
-        batch2_acts, _ = create_separable_data(n_samples=10)
-
-        # Create iterator
-        iterator = MockActivationIterator([batch1_acts, batch2_acts])
-
-        # All labels
-        labels = [Label.POSITIVE] * 10 + [Label.NEGATIVE] * 10
-
-        probe = Logistic(layer=0, sequence_pooling=SequencePooling.MEAN, device="cpu")
-        probe.fit(iterator, labels)
-
-        assert probe._fitted is True
-
-    def test_predict_with_iterator(self):
-        """Test prediction with an ActivationIterator."""
-        # Train probe first
-        train_acts, train_labels = create_separable_data(n_samples=20)
-        probe = Logistic(
-            layer=0, sequence_pooling=SequencePooling.MEAN, device="cpu", random_state=42
-        )
-        probe.fit(train_acts, train_labels)
-
-        # Create test iterator
-        test_batch1, _ = create_separable_data(n_samples=10)
-        test_batch2, _ = create_separable_data(n_samples=10)
-        test_iterator = MockActivationIterator([test_batch1, test_batch2])
-
-        # Predict
-        probs = probe.predict_proba(test_iterator)
-
-        assert probs.shape == (20, 2)
-        assert torch.all(probs >= 0) and torch.all(probs <= 1)
+        with pytest.raises(ValueError, match="Pipeline must be fitted"):
+            pipeline.predict_proba(activations)
 
     def test_different_aggregations(self):
         """Test different aggregation methods."""
         activations, labels = create_separable_data(n_samples=20)
 
-        for method in ["mean", "max", "last_token"]:
-            probe = Logistic(
-                layer=0,
-                sequence_pooling=SequencePooling(method),
-                device="cpu",
-                random_state=42,
-            )
+        for method in [AggregationMethod.MEAN, AggregationMethod.MAX, AggregationMethod.LAST_TOKEN]:
+            pipeline = Pipeline([
+                ("select", SelectLayer(0)),
+                ("pool", Pool(dim="sequence", method=method)),
+                ("probe", Logistic(device="cpu", random_state=42)),
+            ])
 
-            probe.fit(activations, labels)
-            probs = probe.predict_proba(activations)
+            pipeline.fit(activations, labels)
+            probs = pipeline.predict_proba(activations)
 
             assert probs.shape == (20, 2)
             assert torch.all(probs >= 0) and torch.all(probs <= 1)
@@ -276,41 +224,43 @@ class TestLogistic:
         """Test saving and loading probe."""
         activations, labels = create_separable_data(n_samples=20)
 
-        # Train probe
-        probe = Logistic(
-            layer=0,  # Match the layer in test data
-            sequence_pooling=SequencePooling.MAX,
-            C=2.0,  # C=2.0 ≈ l2_penalty=0.5
-            device="cpu",
-            random_state=42,
-        )
-        probe.fit(activations, labels)
+        # Train pipeline
+        pipeline = Pipeline([
+            ("select", SelectLayer(0)),
+            ("agg", Pool(dim="sequence", method="max")),
+            ("probe", Logistic(C=2.0, device="cpu", random_state=42)),
+        ])
+        pipeline.fit(activations, labels)
 
         # Get predictions before saving
-        probs_before = probe.predict_proba(activations)
+        probs_before = pipeline.predict_proba(activations)
 
-        # Save and load
+        # Save and load probe
         with tempfile.TemporaryDirectory() as tmpdir:
             save_path = Path(tmpdir) / "probe.pt"
-            probe.save(save_path)
+            pipeline["probe"].save(save_path)
 
             loaded_probe = Logistic.load(save_path)
 
             # Check attributes preserved
-            assert loaded_probe.layer == 0
-            assert loaded_probe.sequence_pooling == SequencePooling.MAX
-            # score_aggregation no longer exists
             assert loaded_probe.C == 2.0
             assert loaded_probe._fitted is True
 
-            # Check predictions are the same (move to same device if needed)
-            probs_after = loaded_probe.predict_proba(activations)
+            # Create new pipeline with loaded probe
+            loaded_pipeline = Pipeline([
+                ("select", SelectLayer(0)),
+                ("agg", Pool(dim="sequence", method="max")),
+                ("probe", loaded_probe),
+            ])
+
+            # Check predictions are the same
+            probs_after = loaded_pipeline.predict_proba(activations)
             probs_before = probs_before.to(probs_after.device)
             assert torch.allclose(probs_before, probs_after, atol=1e-6)
 
     def test_save_unfitted_probe(self):
         """Test that saving unfitted probe raises error."""
-        probe = Logistic(layer=0, sequence_pooling=SequencePooling.MEAN, device="cpu")
+        probe = Logistic(device="cpu")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             save_path = Path(tmpdir) / "probe.pt"
@@ -322,12 +272,16 @@ class TestLogistic:
         activations, labels = create_separable_data(n_samples=20)
 
         # Train on CPU
-        probe = Logistic(layer=0, sequence_pooling=SequencePooling.MEAN, device="cpu")
-        probe.fit(activations, labels)
+        pipeline = Pipeline([
+            ("select", SelectLayer(0)),
+            ("agg", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic(device="cpu")),
+        ])
+        pipeline.fit(activations, labels)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             save_path = Path(tmpdir) / "probe.pt"
-            probe.save(save_path)
+            pipeline["probe"].save(save_path)
 
             # Load to different device (still CPU in tests)
             loaded_probe = Logistic.load(save_path, device="cpu")
@@ -340,43 +294,13 @@ class TestLogistic:
         # GPU version doesn't check for single class
         # (handled by PyTorch loss function)
 
-        # Test with wrong layer
-        probe = Logistic(layer=5, sequence_pooling=SequencePooling.MEAN, device="cpu")
+        # Test with wrong layer - should error during transform
+        pipeline = Pipeline([
+            ("select", SelectLayer(5)),
+            ("agg", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic(device="cpu")),
+        ])
         with pytest.raises(ValueError, match="Layer 5 is not available"):
-            probe.fit(activations, [Label.POSITIVE] * 5 + [Label.NEGATIVE] * 5)
+            pipeline.fit(activations, [Label.POSITIVE] * 5 + [Label.NEGATIVE] * 5)
 
-    def test_partial_fit_after_fit(self):
-        """Test that partial_fit after regular fit works."""
-        batch1_acts, batch1_labels = create_separable_data(n_samples=10)
-        batch2_acts, batch2_labels = create_separable_data(n_samples=10)
-
-        probe = Logistic(layer=0, sequence_pooling=SequencePooling.MEAN, device="cpu")
-
-        # First do regular fit
-        probe.fit(batch1_acts, batch1_labels)
-
-        # Then do partial fit - GPU version allows this
-        probe.partial_fit(batch2_acts, batch2_labels)
-        assert probe._fitted is True
-
-    def test_token_level_prediction_aggregation(self):
-        """Test that token-level predictions are properly aggregated."""
-        activations, labels = create_separable_data(n_samples=10, seq_len=5)
-
-        # Test each aggregation method
-        for method in ["mean", "max", "last_token"]:
-            probe = Logistic(
-                layer=0,
-                sequence_pooling=SequencePooling.NONE,  # Token-level training
-                device="cpu",
-                random_state=42,
-            )
-
-            probe.fit(activations, labels)
-            probs = probe.predict_proba(activations)
-
-            # Should get sample-level predictions even though trained on tokens
-            assert probs.shape == (10, 2)
-            assert torch.all(probs >= 0) and torch.all(probs <= 1)
-            assert torch.allclose(probs.sum(dim=1), torch.ones(10))
 

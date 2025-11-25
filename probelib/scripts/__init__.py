@@ -1,8 +1,17 @@
 """High-level pipeline functions for training and evaluation."""
 
-from .workflows import evaluate_probes, train_probes
+from .workflows import (
+    evaluate_from_model,
+    evaluate_pipelines,
+    train_from_model,
+    train_pipelines,
+    train_pipelines_streaming,
+)
 
 __all__ = [
-    "train_probes",
-    "evaluate_probes",
+    "train_pipelines",
+    "train_pipelines_streaming",
+    "train_from_model",
+    "evaluate_pipelines",
+    "evaluate_from_model",
 ]
