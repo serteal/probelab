@@ -86,7 +86,7 @@ def benchmark_probe_training_with_masks(
         def train_probe_with_mask():
             pipeline = Pipeline([
                 ("select", SelectLayer(layers[0])),
-                ("agg", Pool(axis="sequence", method="mean")),
+                ("agg", Pool(dim="sequence", method="mean")),
                 ("probe", pl.probes.Logistic()),
             ])
             return pl.scripts.train_from_model(
@@ -119,12 +119,12 @@ def benchmark_probe_training_with_masks(
         pipelines = {
             "logistic": Pipeline([
                 ("select", SelectLayer(layers[0])),
-                ("agg", Pool(axis="sequence", method="mean")),
+                ("agg", Pool(dim="sequence", method="mean")),
                 ("probe", pl.probes.Logistic()),
             ]),
             "mlp": Pipeline([
                 ("select", SelectLayer(layers[0])),
-                ("agg", Pool(axis="sequence", method="mean")),
+                ("agg", Pool(dim="sequence", method="mean")),
                 ("probe", pl.probes.MLP()),
             ]),
             "attention": Pipeline([

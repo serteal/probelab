@@ -37,6 +37,27 @@ if TYPE_CHECKING:
     from ..masks import MaskFunction
 
 
+def _ensure_on_device(
+    batch_inputs: dict[str, torch.Tensor],
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    """Move batch inputs to device if not already there.
+
+    Args:
+        batch_inputs: Dictionary of input tensors
+        device: Target device
+
+    Returns:
+        Dictionary with tensors on the target device
+    """
+    if batch_inputs["input_ids"].device == device:
+        return batch_inputs
+    return {
+        k: v.to(device) if isinstance(v, torch.Tensor) else v
+        for k, v in batch_inputs.items()
+    }
+
+
 def get_batches(
     inputs: dict[str, torch.Tensor],
     batch_size: int,
@@ -980,6 +1001,11 @@ class Activations:
     def _reduce_sequence(
         self, method: AggregationMethod | str
     ) -> torch.Tensor:
+        """Reduce sequence dimension using specified method.
+
+        Uses torch.no_grad() since this is a pure aggregation operation
+        that doesn't need gradient tracking.
+        """
         # Normalize method to enum
         if isinstance(method, str):
             try:
@@ -990,76 +1016,71 @@ class Activations:
                     f"Supported: {[m.value for m in AggregationMethod]}"
                 )
 
-        seq_meta = self._require_sequence_meta()
-        detection = seq_meta.detection_mask
-        mask_bool = detection.bool()
-        mask_float = mask_bool.to(dtype=self.activations.dtype)
+        with torch.no_grad():
+            seq_meta = self._require_sequence_meta()
+            detection = seq_meta.detection_mask
+            mask_bool = detection.bool()
+            mask_float = mask_bool.to(dtype=self.activations.dtype)
 
-        batch_dim = self._axis_positions[Axis.BATCH]
-        seq_dim = self._axis_positions[Axis.SEQ]
-        rank = self.activations.ndim
+            batch_dim = self._axis_positions[Axis.BATCH]
+            seq_dim = self._axis_positions[Axis.SEQ]
+            rank = self.activations.ndim
 
-        other_dims = [idx for idx in range(rank) if idx not in (batch_dim, seq_dim)]
-        permute = [batch_dim, seq_dim] + other_dims
-        acts = self.activations.permute(permute)
+            other_dims = [idx for idx in range(rank) if idx not in (batch_dim, seq_dim)]
+            permute = [batch_dim, seq_dim] + other_dims
+            acts = self.activations.permute(permute)
 
-        mask_view = mask_float.view(
-            mask_float.shape[0],
-            mask_float.shape[1],
-            *([1] * (acts.ndim - 2)),
-        )
-
-        if method == AggregationMethod.MEAN:
-            masked = acts * mask_view
-            counts = mask_view.sum(dim=1).clamp_min(1.0)
-            reduced = masked.sum(dim=1) / counts
-        elif method == AggregationMethod.MAX:
-            mask_bool_view = mask_bool.view(
-                mask_bool.shape[0],
-                mask_bool.shape[1],
+            mask_view = mask_float.view(
+                mask_float.shape[0],
+                mask_float.shape[1],
                 *([1] * (acts.ndim - 2)),
             )
-            masked = acts.masked_fill(~mask_bool_view, float("-inf"))
-            reduced = masked.max(dim=1).values
 
-            no_valid = ~mask_bool.any(dim=1)
-            if no_valid.any():
-                reduced = reduced.clone()
-                no_valid_view = no_valid.view(
-                    no_valid.shape[0],
-                    *([1] * (reduced.ndim - 1)),
-                ).expand_as(reduced)
-                reduced.masked_fill_(no_valid_view, 0.0)
-        else:
-            valid_counts = mask_bool.sum(dim=1)
-            no_valid = valid_counts == 0
-            last_indices = torch.clamp(valid_counts - 1, min=0).to(dtype=torch.long)
+            if method == AggregationMethod.MEAN:
+                masked = acts * mask_view
+                counts = mask_view.sum(dim=1).clamp_min(1.0)
+                reduced = masked.sum(dim=1) / counts
+            elif method == AggregationMethod.MAX:
+                mask_bool_view = mask_bool.view(
+                    mask_bool.shape[0],
+                    mask_bool.shape[1],
+                    *([1] * (acts.ndim - 2)),
+                )
+                masked = acts.masked_fill(~mask_bool_view, float("-inf"))
+                reduced = masked.max(dim=1).values
 
-            gather_index = last_indices.view(
-                mask_bool.shape[0],
-                1,
-                *([1] * (acts.ndim - 2)),
-            ).expand(mask_bool.shape[0], 1, *acts.shape[2:])
+                # Handle empty sequences (no valid tokens)
+                no_valid = ~mask_bool.any(dim=1)
+                if no_valid.any():
+                    # Use direct indexing instead of clone + masked_fill_
+                    reduced[no_valid] = 0.0
+            else:
+                valid_counts = mask_bool.sum(dim=1)
+                no_valid = valid_counts == 0
+                last_indices = torch.clamp(valid_counts - 1, min=0).to(dtype=torch.long)
 
-            reduced = torch.take_along_dim(acts, gather_index, dim=1).squeeze(1)
-            if no_valid.any():
-                reduced = reduced.clone()
-                no_valid_view = no_valid.view(
-                    no_valid.shape[0],
-                    *([1] * (reduced.ndim - 1)),
-                ).expand_as(reduced)
-                reduced.masked_fill_(no_valid_view, 0.0)
+                gather_index = last_indices.view(
+                    mask_bool.shape[0],
+                    1,
+                    *([1] * (acts.ndim - 2)),
+                ).expand(mask_bool.shape[0], 1, *acts.shape[2:])
 
-        remaining_axes = tuple(axis for axis in self.axes if axis not in (Axis.SEQ,))
-        permuted_axes = (Axis.BATCH,) + tuple(
-            axis for axis in self.axes if axis not in (Axis.BATCH, Axis.SEQ)
-        )
+                reduced = torch.take_along_dim(acts, gather_index, dim=1).squeeze(1)
+                # Handle empty sequences
+                if no_valid.any():
+                    # Use direct indexing instead of clone + masked_fill_
+                    reduced[no_valid] = 0.0
 
-        permute_back = [permuted_axes.index(axis) for axis in remaining_axes]
-        if permute_back != list(range(len(remaining_axes))):
-            reduced = reduced.permute(permute_back)
+            remaining_axes = tuple(axis for axis in self.axes if axis not in (Axis.SEQ,))
+            permuted_axes = (Axis.BATCH,) + tuple(
+                axis for axis in self.axes if axis not in (Axis.BATCH, Axis.SEQ)
+            )
 
-        return reduced
+            permute_back = [permuted_axes.index(axis) for axis in remaining_axes]
+            if permute_back != list(range(len(remaining_axes))):
+                reduced = reduced.permute(permute_back)
+
+            return reduced
 
 
 
@@ -1115,11 +1136,7 @@ def streaming_activations(
             )
 
         for batch_inputs, batch_indices in batch_iter:
-            if batch_inputs["input_ids"].device != model.device:
-                batch_inputs = {
-                    k: v.to(model.device) if isinstance(v, torch.Tensor) else v
-                    for k, v in batch_inputs.items()
-                }
+            batch_inputs = _ensure_on_device(batch_inputs, model.device)
             yield Activations(
                 activations=hooked_model.get_activations(batch_inputs),
                 axes=_DEFAULT_AXES,
@@ -1187,11 +1204,7 @@ def batch_activations(
                 )
 
             for batch_inputs, batch_indices in batches:
-                # Move to device if needed
-                if batch_inputs["input_ids"].device != model.device:
-                    batch_inputs = {
-                        k: v.to(model.device) for k, v in batch_inputs.items()
-                    }
+                batch_inputs = _ensure_on_device(batch_inputs, model.device)
 
                 seq_len = batch_inputs["input_ids"].shape[1]
                 batch_acts = hooked_model.get_activations(batch_inputs)
@@ -1218,19 +1231,19 @@ def batch_activations(
                     total=(n_samples + batch_size - 1) // batch_size,
                 )
 
-            for batch_inputs, batch_indices in batches:
-                # Move to device if needed
-                if batch_inputs["input_ids"].device != model.device:
-                    batch_inputs = {
-                        k: v.to(model.device) for k, v in batch_inputs.items()
-                    }
+            for batch_idx, (batch_inputs, batch_indices) in enumerate(batches):
+                batch_inputs = _ensure_on_device(batch_inputs, model.device)
 
                 batch_acts = hooked_model.get_activations(batch_inputs)
                 batch_acts = batch_acts.to("cpu", non_blocking=True)
                 batch_list.append(batch_acts)
                 indices_list.append(batch_indices)
 
-        # Synchronize and create full tensor
+                # Periodic sync to prevent memory buffering
+                if (batch_idx + 1) % 10 == 0 and torch.cuda.is_available():
+                    torch.cuda.synchronize()
+
+        # Final synchronization
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
@@ -1314,11 +1327,7 @@ def batch_activations_pooled(
             batches = tqdm(batches, desc=f"Collecting ({pooling_method.value} pooled)", total=num_batches)
 
         for batch_idx, (batch_inputs, batch_indices) in enumerate(batches):
-            # Move inputs to GPU
-            batch_inputs_gpu = {
-                k: v.to(model.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
-                for k, v in batch_inputs.items()
-            }
+            batch_inputs_gpu = _ensure_on_device(batch_inputs, model.device)
 
             # Get batch activations [n_layers, batch_size, seq_len, hidden]
             batch_acts = hooked_model.get_activations(batch_inputs_gpu)

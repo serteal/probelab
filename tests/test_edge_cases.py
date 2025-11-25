@@ -200,7 +200,7 @@ class TestStreamingEdgeCases:
 
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -250,7 +250,7 @@ class TestStreamingEdgeCases:
 
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -315,7 +315,7 @@ class TestStreamingEdgeCases:
 
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -368,7 +368,7 @@ class TestStreamingEdgeCases:
 
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -401,7 +401,7 @@ class TestProbeEdgeCases:
         # Can't train with single class - PyTorch implementation may not raise
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -435,7 +435,7 @@ class TestProbeEdgeCases:
 
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
         pipeline.fit(activations, labels)
@@ -461,7 +461,7 @@ class TestProbeEdgeCases:
         # Request non-existent layer 5
         pipeline = Pipeline([
             ("select", SelectLayer(5)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -486,7 +486,7 @@ class TestProbeEdgeCases:
 
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
         pipeline.fit(activations, labels)
@@ -516,7 +516,7 @@ class TestProbeEdgeCases:
         # Test with very small hidden dimension
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", MLP(hidden_dim=1)),
         ])
         pipeline.fit(activations, labels)
@@ -525,7 +525,7 @@ class TestProbeEdgeCases:
         # Test with very large hidden dimension
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", MLP(hidden_dim=1024)),
         ])
         pipeline.fit(activations, labels)
@@ -534,7 +534,7 @@ class TestProbeEdgeCases:
         # Test with high dropout
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", MLP(dropout=0.9)),
         ])
         pipeline.fit(activations, labels)
@@ -627,7 +627,7 @@ class TestBoundaryConditions:
         # Should handle high dimensions (might be slow)
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
         pipeline.fit(activations, labels)
@@ -657,7 +657,7 @@ class TestBoundaryConditions:
         for layer in [0, 1, 2]:
             pipeline = Pipeline([
                 ("select", SelectLayer(layer)),
-                ("agg", Pool(axis="sequence", method="mean")),
+                ("agg", Pool(dim="sequence", method="mean")),
                 ("probe", Logistic()),
             ])
             pipeline.fit(activations, labels)
@@ -691,7 +691,7 @@ class TestBoundaryConditions:
 
             pipeline = Pipeline([
                 ("select", SelectLayer(0)),
-                ("agg", Pool(axis="sequence", method="mean")),
+                ("agg", Pool(dim="sequence", method="mean")),
                 ("probe", Logistic()),
             ])
             pipeline.fit(activations, labels)
@@ -703,7 +703,7 @@ class TestBoundaryConditions:
             # Test overwriting existing file
             pipeline2 = Pipeline([
                 ("select", SelectLayer(0)),
-                ("agg", Pool(axis="sequence", method="mean")),
+                ("agg", Pool(dim="sequence", method="mean")),
                 ("probe", MLP()),
             ])
             pipeline2.fit(activations, labels)

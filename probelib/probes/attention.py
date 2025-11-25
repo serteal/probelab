@@ -452,7 +452,7 @@ class Attention(BaseProbe):
         if not X.has_axis(Axis.SEQ):
             raise ValueError(
                 "Attention probe requires sequences (SEQ axis). "
-                "Do not use Pool(axis='sequence') before this probe."
+                "Do not use Pool(dim='sequence') before this probe."
             )
 
         # Extract sequences and detection mask

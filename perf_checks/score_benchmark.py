@@ -21,14 +21,14 @@ pipelines = {
     "logistic": pl.Pipeline(
         [
             ("select", pl.preprocessing.SelectLayer(40)),
-            ("pool", pl.preprocessing.Pool(axis="sequence", method="mean")),
+            ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
             ("probe", pl.probes.Logistic(C=0.01)),
         ]
     ),
     "mlp": pl.Pipeline(
         [
             ("select", pl.preprocessing.SelectLayer(40)),
-            ("pool", pl.preprocessing.Pool(axis="sequence", method="mean")),
+            ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
             ("probe", pl.probes.MLP()),
         ]
     ),

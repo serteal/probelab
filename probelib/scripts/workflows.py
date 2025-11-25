@@ -62,7 +62,7 @@ def _detect_collection_strategy_from_pipelines(
 
         method: str | None = None
         for name, transformer in pipeline._pre_steps:
-            if isinstance(transformer, Pool) and transformer.axis == "sequence":
+            if isinstance(transformer, Pool) and transformer.dim == "sequence":
                 method = transformer.method.value  # "mean", "max", or "last_token"
                 break
 
@@ -83,7 +83,7 @@ def _create_pipeline_without_pooling(pipeline: Pipeline) -> Pipeline:
     """Create a copy of the pipeline with sequence Pool removed.
 
     Used when collection_strategy already pooled the activations, so we
-    skip the redundant Pool(axis="sequence") step.
+    skip the redundant Pool(dim="sequence") step.
 
     Args:
         pipeline: Original pipeline
@@ -93,7 +93,7 @@ def _create_pipeline_without_pooling(pipeline: Pipeline) -> Pipeline:
     """
     new_steps = []
     for name, step in pipeline.steps:
-        if isinstance(step, Pool) and step.axis == "sequence":
+        if isinstance(step, Pool) and step.dim == "sequence":
             continue  # Skip - already done during collection
         new_steps.append((name, step))
     return Pipeline(new_steps)
@@ -154,7 +154,7 @@ def train_pipelines(
         >>> # Step 2: Train pipeline(s) on activations
         >>> pipeline = pl.Pipeline([
         ...     ("select", pl.preprocessing.SelectLayer(16)),
-        ...     ("agg", pl.preprocessing.Pool(axis="sequence", method="mean")),
+        ...     ("agg", pl.preprocessing.Pool(dim="sequence", method="mean")),
         ...     ("probe", pl.probes.Logistic()),
         ... ])
         >>> pl.train_pipelines(pipeline, acts, train_dataset.labels)
@@ -259,7 +259,7 @@ def train_from_model(
     separately.
 
     **Optimization**: When all pipelines use the same sequence aggregation method
-    (e.g., Pool(axis="sequence", method="mean")), activations are pooled during collection
+    (e.g., Pool(dim="sequence", method="mean")), activations are pooled during collection
     for ~440x memory reduction and ~2x throughput improvement.
 
     Args:
@@ -323,7 +323,7 @@ def train_from_model(
             verbose=verbose,
         )
     else:
-        # If we used pooled collection, create modified pipelines without Pool(axis="sequence")
+        # If we used pooled collection, create modified pipelines without Pool(dim="sequence")
         if collection_strategy is not None:
             is_single_pipeline = isinstance(pipelines, Pipeline)
             if is_single_pipeline:
@@ -463,7 +463,7 @@ def evaluate_from_model(
     separately.
 
     **Optimization**: When all pipelines use the same sequence aggregation method
-    (e.g., Pool(axis="sequence", method="mean")), activations are pooled during collection
+    (e.g., Pool(dim="sequence", method="mean")), activations are pooled during collection
     for ~440x memory reduction and ~2x throughput improvement.
 
     Args:
@@ -518,7 +518,7 @@ def evaluate_from_model(
             "Use streaming=False or implement evaluate_pipelines_streaming()."
         )
     else:
-        # If we used pooled collection, create modified pipelines without Pool(axis="sequence")
+        # If we used pooled collection, create modified pipelines without Pool(dim="sequence")
         if collection_strategy is not None:
             is_single_pipeline = isinstance(pipelines, Pipeline)
             if is_single_pipeline:

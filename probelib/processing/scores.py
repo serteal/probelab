@@ -147,23 +147,23 @@ class Scores:
 
     def pool(
         self,
-        axis: Literal["sequence"],
+        dim: Literal["sequence"] = "sequence",
         method: AggregationMethod | str = "mean",
     ) -> "Scores":
-        """Pool over the specified axis.
+        """Pool over the specified dimension.
 
         Args:
-            axis: Axis to pool over ("sequence" for SEQ dimension)
+            dim: Dimension to pool over ("sequence" for SEQ dimension)
             method: Pooling method - "mean", "max", or "last_token"
 
         Returns:
             New Scores with reduced dimensionality
 
         Raises:
-            ValueError: If axis not present or invalid method
+            ValueError: If dimension not present or invalid method
         """
-        if axis != "sequence":
-            raise ValueError(f"Only 'sequence' axis pooling is supported, got {axis!r}")
+        if dim != "sequence":
+            raise ValueError(f"Only 'sequence' dimension pooling is supported, got {dim!r}")
 
         if not self.has_axis(ScoreAxis.SEQ):
             raise ValueError("Scores don't have SEQ axis to pool over")
@@ -198,38 +198,64 @@ class Scores:
         )
 
     def _pool_variable_length(self, method: AggregationMethod) -> torch.Tensor:
-        """Pool with variable-length sequences using tokens_per_sample."""
-        batch_size = self.scores.shape[0]
-        n_classes = self.scores.shape[-1]
-        pooled = torch.zeros(
-            batch_size, n_classes, device=self.scores.device, dtype=self.scores.dtype
-        )
+        """Pool with variable-length sequences using tokens_per_sample.
 
-        for i, n_tokens in enumerate(self.tokens_per_sample.tolist()):
-            n_tokens = int(n_tokens)
-            if n_tokens == 0:
-                continue
+        Uses vectorized operations for efficiency instead of Python loops.
+        """
+        with torch.no_grad():
+            batch_size = self.scores.shape[0]
+            seq_len = self.scores.shape[1]
+            n_classes = self.scores.shape[-1]
 
-            token_scores = self.scores[i, :n_tokens]  # [n_tokens, n_classes]
+            # Create mask from tokens_per_sample: [batch, seq]
+            seq_indices = torch.arange(seq_len, device=self.scores.device)
+            mask = seq_indices.unsqueeze(0) < self.tokens_per_sample.unsqueeze(1)
 
             if method == AggregationMethod.MEAN:
-                pooled[i] = token_scores.mean(dim=0)
-            elif method == AggregationMethod.MAX:
-                pooled[i] = token_scores.max(dim=0).values
-            elif method == AggregationMethod.LAST_TOKEN:
-                pooled[i] = token_scores[-1]
+                # Masked mean: sum valid tokens / count
+                mask_expanded = mask.unsqueeze(-1).to(self.scores.dtype)  # [batch, seq, 1]
+                masked_scores = self.scores * mask_expanded
+                counts = self.tokens_per_sample.clamp(min=1).unsqueeze(-1).to(self.scores.dtype)  # [batch, 1]
+                pooled = masked_scores.sum(dim=1) / counts  # [batch, n_classes]
 
-        return pooled
+            elif method == AggregationMethod.MAX:
+                # Masked max: fill invalid with -inf, take max
+                mask_expanded = mask.unsqueeze(-1)  # [batch, seq, 1]
+                masked_scores = self.scores.masked_fill(~mask_expanded, float("-inf"))
+                pooled = masked_scores.max(dim=1).values  # [batch, n_classes]
+                # Handle empty sequences (all -inf -> 0)
+                empty_mask = self.tokens_per_sample == 0
+                if empty_mask.any():
+                    pooled[empty_mask] = 0.0
+
+            elif method == AggregationMethod.LAST_TOKEN:
+                # Gather last valid token for each sample
+                last_indices = (self.tokens_per_sample - 1).clamp(min=0).long()  # [batch]
+                # Expand for gather: [batch, 1, n_classes]
+                gather_idx = last_indices.view(batch_size, 1, 1).expand(batch_size, 1, n_classes)
+                pooled = self.scores.gather(dim=1, index=gather_idx).squeeze(1)  # [batch, n_classes]
+                # Handle empty sequences
+                empty_mask = self.tokens_per_sample == 0
+                if empty_mask.any():
+                    pooled[empty_mask] = 0.0
+
+            else:
+                raise ValueError(f"Unknown pooling method: {method}")
+
+            return pooled
 
     def _pool_fixed_length(self, method: AggregationMethod, seq_idx: int) -> torch.Tensor:
         """Pool fixed-length sequences over the given axis."""
-        if method == AggregationMethod.MEAN:
-            return self.scores.mean(dim=seq_idx)
-        elif method == AggregationMethod.MAX:
-            return self.scores.max(dim=seq_idx).values
-        elif method == AggregationMethod.LAST_TOKEN:
-            # Select last position along sequence axis
-            return self.scores.select(dim=seq_idx, index=-1)
+        with torch.no_grad():
+            if method == AggregationMethod.MEAN:
+                return self.scores.mean(dim=seq_idx)
+            elif method == AggregationMethod.MAX:
+                return self.scores.max(dim=seq_idx).values
+            elif method == AggregationMethod.LAST_TOKEN:
+                # Select last position along sequence axis
+                return self.scores.select(dim=seq_idx, index=-1)
+            else:
+                raise ValueError(f"Unknown pooling method: {method}")
 
     def to(self, device: torch.device | str) -> "Scores":
         """Move scores to device."""

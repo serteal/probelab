@@ -34,7 +34,7 @@ class BaseProbe(ABC):
         >>>
         >>> pipeline = Pipeline([
         ...     ("select", SelectLayer(16)),
-        ...     ("pool", Pool(axis="sequence", method="mean")),
+        ...     ("pool", Pool(dim="sequence", method="mean")),
         ...     ("probe", Logistic()),
         ... ])
         >>> pipeline.fit(activations, labels)

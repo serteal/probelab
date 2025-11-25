@@ -146,17 +146,21 @@ def benchmark_probe_training(
     def train_pipeline_full(probe_class, use_aggregation=True):
         def inner_train_pipeline_full():
             if use_aggregation:
-                pipeline = Pipeline([
-                    ("select", SelectLayer(layers[0])),
-                    ("agg", Pool(axis="sequence", method="mean")),
-                    ("probe", probe_class()),
-                ])
+                pipeline = Pipeline(
+                    [
+                        ("select", SelectLayer(layers[0])),
+                        ("agg", Pool(dim="sequence", method="mean")),
+                        ("probe", probe_class()),
+                    ]
+                )
             else:
                 # Token-level: no aggregation before probe
-                pipeline = Pipeline([
-                    ("select", SelectLayer(layers[0])),
-                    ("probe", probe_class()),
-                ])
+                pipeline = Pipeline(
+                    [
+                        ("select", SelectLayer(layers[0])),
+                        ("probe", probe_class()),
+                    ]
+                )
             return pl.scripts.train_from_model(
                 pipelines=pipeline,
                 model=model,
@@ -165,7 +169,7 @@ def benchmark_probe_training(
                 layers=layers,
                 mask=pl.masks.assistant(),
                 batch_size=batch_size,
-                streaming=False,  # Batch mode for direct comparison
+                streaming=True,  # Batch mode for direct comparison
                 verbose=False,
             )
 
@@ -218,11 +222,13 @@ def benchmark_probe_training(
 
     def train_10_pipelines_full():
         pipelines = {
-            f"logistic_{i}": Pipeline([
-                ("select", SelectLayer(layers[0])),
-                ("agg", Pool(axis="sequence", method="mean")),
-                ("probe", pl.probes.Logistic()),
-            ])
+            f"logistic_{i}": Pipeline(
+                [
+                    ("select", SelectLayer(layers[0])),
+                    ("agg", Pool(dim="sequence", method="mean")),
+                    ("probe", pl.probes.Logistic()),
+                ]
+            )
             for i in range(10)
         }
         return pl.scripts.train_from_model(
@@ -251,17 +257,21 @@ def benchmark_probe_training(
     def train_pipeline_streaming(probe_class, use_aggregation=True):
         def inner_train_pipeline_streaming():
             if use_aggregation:
-                pipeline = Pipeline([
-                    ("select", SelectLayer(layers[0])),
-                    ("agg", Pool(axis="sequence", method="mean")),
-                    ("probe", probe_class()),
-                ])
+                pipeline = Pipeline(
+                    [
+                        ("select", SelectLayer(layers[0])),
+                        ("agg", Pool(dim="sequence", method="mean")),
+                        ("probe", probe_class()),
+                    ]
+                )
             else:
                 # Token-level: no aggregation before probe
-                pipeline = Pipeline([
-                    ("select", SelectLayer(layers[0])),
-                    ("probe", probe_class()),
-                ])
+                pipeline = Pipeline(
+                    [
+                        ("select", SelectLayer(layers[0])),
+                        ("probe", probe_class()),
+                    ]
+                )
             return pl.scripts.train_from_model(
                 pipelines=pipeline,
                 model=model,

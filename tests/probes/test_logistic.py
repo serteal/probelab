@@ -118,7 +118,7 @@ class TestLogistic:
         """Test probe initialization."""
         pipeline = Pipeline([
             ("select", SelectLayer(5)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic(
                 C=10.0,  # C is inverse of l2_penalty (C=10 ≈ l2_penalty=0.1)
                 device="cpu",
@@ -140,7 +140,7 @@ class TestLogistic:
 
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic(device="cpu")),
         ])
 
@@ -158,7 +158,7 @@ class TestLogistic:
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
             ("probe", Logistic(device="cpu")),
-            ("agg_scores", Pool(axis="sequence", method="mean")),
+            ("agg_scores", Pool(dim="sequence", method="mean")),
         ])
 
         pipeline.fit(activations, labels)
@@ -172,7 +172,7 @@ class TestLogistic:
 
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic(device="cpu", random_state=42)),
         ])
         pipeline.fit(activations, labels)
@@ -196,7 +196,7 @@ class TestLogistic:
         activations = create_test_activations()
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic(device="cpu")),
         ])
 
@@ -210,7 +210,7 @@ class TestLogistic:
         for method in [AggregationMethod.MEAN, AggregationMethod.MAX, AggregationMethod.LAST_TOKEN]:
             pipeline = Pipeline([
                 ("select", SelectLayer(0)),
-                ("pool", Pool(axis="sequence", method=method)),
+                ("pool", Pool(dim="sequence", method=method)),
                 ("probe", Logistic(device="cpu", random_state=42)),
             ])
 
@@ -227,7 +227,7 @@ class TestLogistic:
         # Train pipeline
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="max")),
+            ("agg", Pool(dim="sequence", method="max")),
             ("probe", Logistic(C=2.0, device="cpu", random_state=42)),
         ])
         pipeline.fit(activations, labels)
@@ -249,7 +249,7 @@ class TestLogistic:
             # Create new pipeline with loaded probe
             loaded_pipeline = Pipeline([
                 ("select", SelectLayer(0)),
-                ("agg", Pool(axis="sequence", method="max")),
+                ("agg", Pool(dim="sequence", method="max")),
                 ("probe", loaded_probe),
             ])
 
@@ -274,7 +274,7 @@ class TestLogistic:
         # Train on CPU
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic(device="cpu")),
         ])
         pipeline.fit(activations, labels)
@@ -297,7 +297,7 @@ class TestLogistic:
         # Test with wrong layer - should error during transform
         pipeline = Pipeline([
             ("select", SelectLayer(5)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", Logistic(device="cpu")),
         ])
         with pytest.raises(ValueError, match="Layer 5 is not available"):

@@ -29,7 +29,7 @@ class Pipeline:
         >>> # Pre-probe pooling (sequence-level training)
         >>> pipeline = Pipeline([
         ...     ("select", SelectLayer(16)),
-        ...     ("pool", Pool(axis="sequence", method="mean")),
+        ...     ("pool", Pool(dim="sequence", method="mean")),
         ...     ("probe", Logistic()),
         ... ])
         >>> pipeline.fit(acts_train, labels_train)
@@ -39,7 +39,7 @@ class Pipeline:
         >>> pipeline = Pipeline([
         ...     ("select", SelectLayer(16)),
         ...     ("probe", Logistic()),  # Returns token-level Scores
-        ...     ("pool", Pool(axis="sequence", method="mean")),  # Aggregate to sequence
+        ...     ("pool", Pool(dim="sequence", method="mean")),  # Aggregate to sequence
         ... ])
     """
 
@@ -166,7 +166,7 @@ class Pipeline:
         if self._post_steps:
             raise NotImplementedError(
                 "Streaming (partial_fit) is not supported with post-probe transforms. "
-                "Use Pool(axis='sequence') before the probe instead."
+                "Use Pool(dim='sequence') before the probe instead."
             )
 
         # Check probe supports partial_fit
@@ -180,12 +180,10 @@ class Pipeline:
         X_transformed = X
         for name, transformer in self._pre_steps:
             # Most pre-transformers are stateless
-            # If they have partial_fit, use it; otherwise just transform
+            # If they have partial_fit, use it then transform; otherwise just transform
             if hasattr(transformer, "partial_fit"):
-                X_transformed = transformer.partial_fit(X_transformed, y)
-            else:
-                # Stateless transform
-                X_transformed = transformer.transform(X_transformed)
+                transformer.partial_fit(X_transformed, y)
+            X_transformed = transformer.transform(X_transformed)
 
         # Partial fit probe
         self._probe.partial_fit(X_transformed, y)
@@ -234,7 +232,7 @@ class Pipeline:
         if self._post_steps:
             raise NotImplementedError(
                 "Streaming (fit_streaming) is not supported with post-probe transforms. "
-                "Use Pool(axis='sequence') before the probe instead."
+                "Use Pool(dim='sequence') before the probe instead."
             )
 
         # Check probe supports partial_fit

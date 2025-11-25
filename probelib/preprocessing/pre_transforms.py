@@ -1,5 +1,7 @@
 """Pre-probe transformers that operate on Activations."""
 
+from typing import overload
+
 import torch
 
 from ..processing.activations import Activations, Axis
@@ -70,36 +72,36 @@ class SelectLayers(PreTransformer):
 class Pool(PreTransformer):
     """Unified pooling transform for Activations and Scores.
 
-    Pools over a specified axis using the given method. Works as both
+    Pools over a specified dimension using the given method. Works as both
     a PreTransformer (on Activations) and PostTransformer (on Scores).
 
     Args:
-        axis: Axis to pool over
+        dim: Dimension to pool over
             - "sequence": Pool over sequence/token dimension
             - "layer": Pool over layer dimension (Activations only)
         method: Pooling method
             - "mean": Average pooling
             - "max": Max pooling
-            - "last_token": Use last token (sequence axis only)
+            - "last_token": Use last token (sequence dimension only)
 
     Examples:
         >>> # Pre-probe: pool activations over sequence
-        >>> pool = Pool(axis="sequence", method="mean")
+        >>> pool = Pool(dim="sequence", method="mean")
         >>> pooled_acts = pool.transform(activations)
 
         >>> # Post-probe: pool token scores to sequence scores
-        >>> pool = Pool(axis="sequence", method="max")
+        >>> pool = Pool(dim="sequence", method="max")
         >>> seq_scores = pool.transform(token_scores)
 
         >>> # Pool over layers
-        >>> pool = Pool(axis="layer", method="mean")
+        >>> pool = Pool(dim="layer", method="mean")
         >>> pooled_acts = pool.transform(multi_layer_acts)
     """
 
-    def __init__(self, axis: str, method: str = "mean"):
-        valid_axes = {"sequence", "layer"}
-        if axis not in valid_axes:
-            raise ValueError(f"axis must be one of {valid_axes}, got {axis!r}")
+    def __init__(self, dim: str, method: str = "mean"):
+        valid_dims = {"sequence", "layer"}
+        if dim not in valid_dims:
+            raise ValueError(f"dim must be one of {valid_dims}, got {dim!r}")
 
         # Normalize method to enum for validation
         if isinstance(method, str):
@@ -112,14 +114,20 @@ class Pool(PreTransformer):
         else:
             method_enum = method
 
-        if axis == "layer" and method_enum == AggregationMethod.LAST_TOKEN:
-            raise ValueError("last_token method not supported for layer axis")
+        if dim == "layer" and method_enum == AggregationMethod.LAST_TOKEN:
+            raise ValueError("last_token method not supported for layer dimension")
 
-        self.axis = axis
+        self.dim = dim
         self.method = method_enum
 
+    @overload
+    def transform(self, X: Activations) -> Activations: ...
+
+    @overload
+    def transform(self, X: Scores) -> Scores: ...
+
     def transform(self, X: Activations | Scores) -> Activations | Scores:
-        """Pool over the specified axis.
+        """Pool over the specified dimension.
 
         Args:
             X: Activations or Scores to pool
@@ -136,23 +144,23 @@ class Pool(PreTransformer):
 
     def _transform_activations(self, X: Activations) -> Activations:
         """Pool activations."""
-        if self.axis == "sequence":
+        if self.dim == "sequence":
             if not X.has_axis(Axis.SEQ):
                 return X  # Already pooled
             return X.pool(dim="sequence", method=self.method)
-        elif self.axis == "layer":
+        elif self.dim == "layer":
             if not X.has_axis(Axis.LAYER):
                 return X  # Already pooled
             return X.pool(dim="layer", method=self.method)
 
     def _transform_scores(self, X: Scores) -> Scores:
         """Pool scores."""
-        if self.axis == "layer":
-            raise ValueError("Scores don't have a layer axis")
-        return X.pool(axis=self.axis, method=self.method)
+        if self.dim == "layer":
+            raise ValueError("Scores don't have a layer dimension")
+        return X.pool(dim=self.dim, method=self.method)
 
     def __repr__(self) -> str:
-        return f"Pool(axis={self.axis!r}, method={self.method.value!r})"
+        return f"Pool(dim={self.dim!r}, method={self.method.value!r})"
 
 
 class Normalize(PreTransformer):
@@ -217,8 +225,8 @@ class Normalize(PreTransformer):
 
         return self
 
-    def partial_fit(self, X: Activations, y=None) -> Activations:
-        """Update running statistics and transform.
+    def partial_fit(self, X: Activations, y=None) -> "Normalize":
+        """Update running statistics incrementally.
 
         Uses Welford's online algorithm for numerically stable
         incremental mean and variance computation.
@@ -228,11 +236,11 @@ class Normalize(PreTransformer):
             y: Unused (for sklearn compatibility)
 
         Returns:
-            Transformed activations (normalized with current statistics)
+            self: The fitted transformer (sklearn convention)
         """
         if self._frozen:
-            # Statistics locked, just transform
-            return self.transform(X)
+            # Statistics locked, no update needed
+            return self
 
         tensor = X.activations
 
@@ -277,8 +285,7 @@ class Normalize(PreTransformer):
         self.std_ = torch.sqrt(self._running_var).clamp(min=self.eps).unsqueeze(0)
         self._fitted = True
 
-        # Transform with current statistics
-        return self.transform(X)
+        return self
 
     def freeze(self) -> "Normalize":
         """Freeze statistics for remaining epochs.

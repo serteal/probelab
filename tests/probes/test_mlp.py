@@ -64,7 +64,7 @@ class TestMLP:
         """Test probe initialization."""
         pipeline = Pipeline([
             ("select", SelectLayer(5)),
-            ("agg", Pool(axis="sequence", method="max")),
+            ("agg", Pool(dim="sequence", method="max")),
             ("probe", MLP(
                 hidden_dim=256,
                 dropout=0.2,
@@ -95,7 +95,7 @@ class TestMLP:
 
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", MLP(hidden_dim=16, n_epochs=50, device="cpu", random_state=42)),
         ])
 
@@ -112,7 +112,7 @@ class TestMLP:
 
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", MLP(hidden_dim=32, n_epochs=100, device="cpu", random_state=42)),
         ])
         pipeline.fit(activations, labels)
@@ -134,7 +134,7 @@ class TestMLP:
         activations = create_test_activations()
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", MLP(device="cpu")),
         ])
 
@@ -148,7 +148,7 @@ class TestMLP:
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
             ("probe", MLP(hidden_dim=16, n_epochs=50, device="cpu", random_state=42)),
-            ("agg_scores", Pool(axis="sequence", method="mean")),
+            ("agg_scores", Pool(dim="sequence", method="mean")),
         ])
 
         pipeline.fit(activations, labels)
@@ -164,7 +164,7 @@ class TestMLP:
         for method in [AggregationMethod.MEAN, AggregationMethod.MAX, AggregationMethod.LAST_TOKEN]:
             pipeline = Pipeline([
                 ("select", SelectLayer(0)),
-                ("pool", Pool(axis="sequence", method=method)),
+                ("pool", Pool(dim="sequence", method=method)),
                 ("probe", MLP(hidden_dim=16, n_epochs=50, device="cpu", random_state=42)),
             ])
             pipeline.fit(activations, labels)
@@ -178,7 +178,7 @@ class TestMLP:
 
         pipeline = Pipeline([
             ("select", SelectLayer(0)),
-            ("agg", Pool(axis="sequence", method="mean")),
+            ("agg", Pool(dim="sequence", method="mean")),
             ("probe", MLP(
                 hidden_dim=32,
                 dropout=0.1,
@@ -205,7 +205,7 @@ class TestMLP:
             # Create new pipeline with loaded probe
             loaded_pipeline = Pipeline([
                 ("select", SelectLayer(0)),
-                ("agg", Pool(axis="sequence", method="mean")),
+                ("agg", Pool(dim="sequence", method="mean")),
                 ("probe", loaded_probe),
             ])
 
@@ -220,7 +220,7 @@ class TestMLP:
         for activation in ["relu", "gelu"]:
             pipeline = Pipeline([
                 ("select", SelectLayer(0)),
-                ("agg", Pool(axis="sequence", method="mean")),
+                ("agg", Pool(dim="sequence", method="mean")),
                 ("probe", MLP(
                     hidden_dim=16,
                     activation=activation,
