@@ -1,10 +1,10 @@
 """Pre-probe transformers that operate on Activations."""
 
-from typing import Literal
-
 import torch
 
 from ..processing.activations import Activations, Axis
+from ..processing.scores import Scores
+from ..types import AggregationMethod
 from .base import PreTransformer
 
 
@@ -67,72 +67,92 @@ class SelectLayers(PreTransformer):
         return f"SelectLayers(layers={self.layers})"
 
 
-class AggregateSequences(PreTransformer):
-    """Pool over the sequence dimension, removing the SEQ axis.
+class Pool(PreTransformer):
+    """Unified pooling transform for Activations and Scores.
 
-    This transformer aggregates token-level activations into a single
-    sequence-level representation, reducing dimensionality from
-    [batch, seq, hidden] to [batch, hidden].
+    Pools over a specified axis using the given method. Works as both
+    a PreTransformer (on Activations) and PostTransformer (on Scores).
 
     Args:
-        method: Pooling method:
-            - "mean": Average pooling over detected tokens
-            - "max": Max pooling over detected tokens
-            - "last_token": Use the last detected token
+        axis: Axis to pool over
+            - "sequence": Pool over sequence/token dimension
+            - "layer": Pool over layer dimension (Activations only)
+        method: Pooling method
+            - "mean": Average pooling
+            - "max": Max pooling
+            - "last_token": Use last token (sequence axis only)
 
-    Example:
-        >>> transform = AggregateSequences("mean")
-        >>> acts = transform.transform(acts)  # [batch, hidden]
+    Examples:
+        >>> # Pre-probe: pool activations over sequence
+        >>> pool = Pool(axis="sequence", method="mean")
+        >>> pooled_acts = pool.transform(activations)
+
+        >>> # Post-probe: pool token scores to sequence scores
+        >>> pool = Pool(axis="sequence", method="max")
+        >>> seq_scores = pool.transform(token_scores)
+
+        >>> # Pool over layers
+        >>> pool = Pool(axis="layer", method="mean")
+        >>> pooled_acts = pool.transform(multi_layer_acts)
     """
 
-    def __init__(self, method: Literal["mean", "max", "last_token"] = "mean"):
-        if method not in {"mean", "max", "last_token"}:
-            raise ValueError(
-                f"Invalid aggregation method: {method}. "
-                f"Must be one of: 'mean', 'max', 'last_token'"
-            )
-        self.method = method
+    def __init__(self, axis: str, method: str = "mean"):
+        valid_axes = {"sequence", "layer"}
+        if axis not in valid_axes:
+            raise ValueError(f"axis must be one of {valid_axes}, got {axis!r}")
 
-    def transform(self, X: Activations) -> Activations:
-        """Pool over sequence dimension if present."""
-        if X.has_axis(Axis.SEQ):
+        # Normalize method to enum for validation
+        if isinstance(method, str):
+            try:
+                method_enum = AggregationMethod(method)
+            except ValueError:
+                raise ValueError(
+                    f"method must be one of {[m.value for m in AggregationMethod]}, got {method!r}"
+                )
+        else:
+            method_enum = method
+
+        if axis == "layer" and method_enum == AggregationMethod.LAST_TOKEN:
+            raise ValueError("last_token method not supported for layer axis")
+
+        self.axis = axis
+        self.method = method_enum
+
+    def transform(self, X: Activations | Scores) -> Activations | Scores:
+        """Pool over the specified axis.
+
+        Args:
+            X: Activations or Scores to pool
+
+        Returns:
+            Pooled Activations or Scores with reduced dimensionality
+        """
+        if isinstance(X, Activations):
+            return self._transform_activations(X)
+        elif isinstance(X, Scores):
+            return self._transform_scores(X)
+        else:
+            raise TypeError(f"Expected Activations or Scores, got {type(X).__name__}")
+
+    def _transform_activations(self, X: Activations) -> Activations:
+        """Pool activations."""
+        if self.axis == "sequence":
+            if not X.has_axis(Axis.SEQ):
+                return X  # Already pooled
             return X.pool(dim="sequence", method=self.method)
-        return X  # Already pooled
-
-    def __repr__(self) -> str:
-        return f"AggregateSequences(method='{self.method}')"
-
-
-class AggregateLayers(PreTransformer):
-    """Pool over the layer dimension, removing the LAYER axis.
-
-    This transformer aggregates activations across multiple layers,
-    reducing dimensionality from [layers, batch, seq, hidden] to
-    [batch, seq, hidden].
-
-    Args:
-        method: Pooling method ("mean" or "max")
-
-    Example:
-        >>> transform = AggregateLayers("mean")
-        >>> acts = transform.transform(acts)  # [batch, seq, hidden]
-    """
-
-    def __init__(self, method: Literal["mean", "max"] = "mean"):
-        if method not in {"mean", "max"}:
-            raise ValueError(
-                f"Invalid aggregation method: {method}. Must be 'mean' or 'max'"
-            )
-        self.method = method
-
-    def transform(self, X: Activations) -> Activations:
-        """Pool over layer dimension if present."""
-        if X.has_axis(Axis.LAYER):
+        elif self.axis == "layer":
+            if not X.has_axis(Axis.LAYER):
+                return X  # Already pooled
             return X.pool(dim="layer", method=self.method)
-        return X  # Already pooled
+
+    def _transform_scores(self, X: Scores) -> Scores:
+        """Pool scores."""
+        if self.axis == "layer":
+            raise ValueError("Scores don't have a layer axis")
+        return X.pool(axis=self.axis, method=self.method)
 
     def __repr__(self) -> str:
-        return f"AggregateLayers(method='{self.method}')"
+        return f"Pool(axis={self.axis!r}, method={self.method.value!r})"
 
 
 class Normalize(PreTransformer):
@@ -145,6 +165,11 @@ class Normalize(PreTransformer):
     The normalization preserves the Activations structure and metadata,
     only modifying the activation tensor values.
 
+    Supports both batch and streaming (online) learning:
+    - fit(): Compute statistics from entire dataset
+    - partial_fit(): Update running statistics incrementally (Welford's algorithm)
+    - freeze(): Lock statistics for remaining epochs (call after first epoch)
+
     Args:
         eps: Small value to avoid division by zero
 
@@ -153,6 +178,12 @@ class Normalize(PreTransformer):
         >>> transform.fit(train_acts)
         >>> train_acts_norm = transform.transform(train_acts)
         >>> test_acts_norm = transform.transform(test_acts)
+
+    Example (streaming):
+        >>> transform = Normalize()
+        >>> for batch in activation_iterator:
+        ...     batch_norm = transform.partial_fit(batch)
+        >>> transform.freeze()  # Lock statistics for remaining epochs
     """
 
     def __init__(self, eps: float = 1e-8):
@@ -160,6 +191,9 @@ class Normalize(PreTransformer):
         self.mean_ = None
         self.std_ = None
         self._fitted = False
+        # Online learning state
+        self._n_samples_seen = 0
+        self._frozen = False
 
     def fit(self, X: Activations, y=None) -> "Normalize":
         """Compute normalization statistics from activations.
@@ -181,6 +215,90 @@ class Normalize(PreTransformer):
         self.std_ = tensor.std(dim=axes, keepdim=True).clamp(min=self.eps)
         self._fitted = True
 
+        return self
+
+    def partial_fit(self, X: Activations, y=None) -> Activations:
+        """Update running statistics and transform.
+
+        Uses Welford's online algorithm for numerically stable
+        incremental mean and variance computation.
+
+        Args:
+            X: Batch of activations
+            y: Unused (for sklearn compatibility)
+
+        Returns:
+            Transformed activations (normalized with current statistics)
+        """
+        if self._frozen:
+            # Statistics locked, just transform
+            return self.transform(X)
+
+        tensor = X.activations
+
+        # Flatten to [samples, features] for statistics computation
+        # Keep original shape for proper broadcasting during transform
+        original_shape = tensor.shape
+        flat = tensor.reshape(-1, tensor.shape[-1])
+        batch_size = flat.shape[0]
+
+        batch_mean = flat.mean(dim=0)
+        batch_var = flat.var(dim=0, unbiased=False)
+
+        if self._n_samples_seen == 0:
+            # First batch - initialize statistics
+            self.mean_ = batch_mean.unsqueeze(0)
+            # Store variance internally, compute std on demand
+            self._running_var = batch_var
+            self._n_samples_seen = batch_size
+        else:
+            # Welford's online algorithm for combining batch statistics
+            n = self._n_samples_seen
+            m = batch_size
+            delta = batch_mean - self.mean_.squeeze(0)
+
+            # Update mean
+            new_mean = self.mean_.squeeze(0) + delta * m / (n + m)
+            self.mean_ = new_mean.unsqueeze(0)
+
+            # Update variance using parallel algorithm
+            # See: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+            weight_old = n / (n + m)
+            weight_new = m / (n + m)
+            new_var = (
+                weight_old * self._running_var
+                + weight_new * batch_var
+                + weight_old * weight_new * delta**2
+            )
+            self._running_var = new_var
+            self._n_samples_seen += m
+
+        # Compute std from running variance
+        self.std_ = torch.sqrt(self._running_var).clamp(min=self.eps).unsqueeze(0)
+        self._fitted = True
+
+        # Transform with current statistics
+        return self.transform(X)
+
+    def freeze(self) -> "Normalize":
+        """Freeze statistics for remaining epochs.
+
+        Call this after the first epoch to prevent non-stationarity
+        as the probe's decision boundary shifts during training.
+
+        Returns:
+            self: For method chaining
+        """
+        self._frozen = True
+        return self
+
+    def unfreeze(self) -> "Normalize":
+        """Unfreeze statistics to allow further updates.
+
+        Returns:
+            self: For method chaining
+        """
+        self._frozen = False
         return self
 
     def transform(self, X: Activations) -> Activations:
@@ -211,5 +329,12 @@ class Normalize(PreTransformer):
         )
 
     def __repr__(self) -> str:
-        fitted_str = "fitted" if self._fitted else "not fitted"
-        return f"Normalize(eps={self.eps}, {fitted_str})"
+        status_parts = []
+        if self._fitted:
+            status_parts.append("fitted")
+        else:
+            status_parts.append("not fitted")
+        if self._frozen:
+            status_parts.append("frozen")
+        status_str = ", ".join(status_parts)
+        return f"Normalize(eps={self.eps}, {status_str})"

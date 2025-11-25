@@ -6,6 +6,7 @@ import pytest
 import torch
 import torch.nn as nn
 
+import probelib as pl
 from probelib.datasets.base import DialogueDataset
 from probelib.processing.activations import (
     ActivationIterator,
@@ -716,8 +717,9 @@ class TestActivationIterator:
         iterator = collect_activations(
             model=model,
             tokenizer=mock_tokenizer,
-            data=sample_dataset,
+            dataset=sample_dataset,
             layers=layers,
+            mask=pl.masks.all(),
             batch_size=2,
             streaming=True,
             verbose=False,
@@ -749,8 +751,9 @@ class TestActivationIterator:
         iterator = collect_activations(
             model=model,
             tokenizer=mock_tokenizer,
-            data=sample_dataset,
+            dataset=sample_dataset,
             layers=layers,
+            mask=pl.masks.all(),
             batch_size=2,
             streaming=True,
         )
@@ -807,8 +810,9 @@ class TestCollectDatasetActivations:
         activations = collect_activations(
             model=model,
             tokenizer=tokenizer,
-            data=sample_dataset,  # Changed from 'dataset' to 'data'
+            dataset=sample_dataset,
             layers=layers,
+            mask=pl.masks.all(),
             batch_size=2,
             verbose=False,
         )
@@ -825,8 +829,9 @@ class TestCollectDatasetActivations:
         iterator = collect_activations(
             model=model,
             tokenizer=mock_tokenizer,
-            data=sample_dataset,  # Changed from 'dataset' to 'data'
+            dataset=sample_dataset,
             layers=[0, 1],
+            mask=pl.masks.all(),
             batch_size=2,
             streaming=True,
             verbose=False,
@@ -912,8 +917,9 @@ class TestActivationIteratorIntegration:
         iterator = collect_activations(
             model=model,
             tokenizer=tokenizer,
-            data=sample_dataset,
+            dataset=sample_dataset,
             layers=[0, 1],
+            mask=pl.masks.all(),
             batch_size=2,
             streaming=True,
             verbose=False,
@@ -959,8 +965,9 @@ class TestRealModelIntegration:
             activations = collect_activations(
                 model=model,
                 tokenizer=tokenizer,
-                data=dataset,  # Changed from 'dataset' to 'data'
+                dataset=dataset,
                 layers=[0, 1],
+                mask=pl.masks.all(),
                 batch_size=1,
                 verbose=False,
             )

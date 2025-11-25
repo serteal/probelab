@@ -6,16 +6,17 @@ from pathlib import Path
 import torch
 
 from ..processing.activations import Activations
+from ..processing.scores import Scores
 
 
 class BaseProbe(ABC):
     """Base class for probes in probelib.
 
     Probes are classifiers that operate on Activations objects and return
-    score tensors. They adapt their behavior based on the dimensionality
+    Scores objects. They adapt their behavior based on the dimensionality
     of the input activations:
-    - If activations have SEQ axis: Train/predict on tokens
-    - If activations don't have SEQ axis: Train/predict on sequences
+    - If activations have SEQ axis: Train/predict on tokens, return token-level Scores
+    - If activations don't have SEQ axis: Train/predict on sequences, return sequence-level Scores
 
     Preprocessing (layer selection, aggregation) is handled by Pipeline
     transformers, not by the probe itself.
@@ -24,6 +25,20 @@ class BaseProbe(ABC):
         device: Device for computation ('cuda', 'cpu', or None for auto-detect)
         random_state: Random seed for reproducibility
         verbose: Whether to print progress information
+
+    Example:
+        >>> # Probes should be used within a Pipeline
+        >>> from probelib import Pipeline
+        >>> from probelib.preprocessing import SelectLayer, Pool
+        >>> from probelib.probes import Logistic
+        >>>
+        >>> pipeline = Pipeline([
+        ...     ("select", SelectLayer(16)),
+        ...     ("pool", Pool(axis="sequence", method="mean")),
+        ...     ("probe", Logistic()),
+        ... ])
+        >>> pipeline.fit(activations, labels)
+        >>> predictions = pipeline.predict_proba(test_activations)
     """
 
     def __init__(
@@ -111,21 +126,21 @@ class BaseProbe(ABC):
     def predict_proba(
         self,
         X: Activations,
-    ) -> torch.Tensor:
+    ) -> Scores:
         """Predict class probabilities.
 
-        Returns scores matching input dimensionality:
-        - If X has SEQ axis: Returns [n_tokens, 2] or [batch, seq, 2]
-        - Otherwise: Returns [batch, 2]
+        Returns Scores object matching input dimensionality:
+        - If X has SEQ axis: Returns token-level Scores [batch, seq, 2]
+        - Otherwise: Returns sequence-level Scores [batch, 2]
 
-        Post-processing (e.g., aggregating token scores) should be done
-        by PostTransformers in the pipeline, not by the probe.
+        Post-processing (e.g., aggregating token scores) can be done
+        by Pool transform in the pipeline.
 
         Args:
             X: Activations to predict on
 
         Returns:
-            Predicted probabilities/scores
+            Scores object with predictions
 
         Raises:
             ValueError: If probe not fitted

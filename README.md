@@ -53,16 +53,22 @@ train_activations, test_activations = (
     for data in (train_ds, test_ds)
 )
 
-probe = pl.probes.Logistic(layer=16, score_aggregation="mean")
-probe.fit(train_activations, train_ds.labels)
-predictions = probe.predict_proba(test_activations)
+# Create a pipeline with preprocessing steps + probe
+pipeline = pl.Pipeline([
+    ("select", pl.preprocessing.SelectLayer(16)),
+    ("agg", pl.preprocessing.AggregateSequences("mean")),
+    ("probe", pl.probes.Logistic(device="cuda")),
+])
+
+pipeline.fit(train_activations, train_ds.labels)
+predictions = pipeline.predict_proba(test_activations)
 
 print(pl.metrics.auroc(test_ds.labels, predictions))
 ```
 
 ## What does `probelib` allow?
 
-### High-level, multi-probe training and evaluation
+### High-level, multi-pipeline training and evaluation
 
 ```python
 import functools
@@ -88,27 +94,39 @@ train_dataset, test_dataset = (
 # This mask selects only assistant messages and drops special tokens (eg. bos, eos, pad)
 mask = pl.masks.assistant() & ~pl.masks.special_tokens()
 
-# Train multiple single-layer per-token probes that average over the sequence dimension
-probes = {
-    "logistic": pl.probes.Logistic(layer=16, score_aggregation="mean"),
-    "mlp": pl.probes.MLP(layer=16, score_aggregation="mean"),
+# Create pipelines with preprocessing steps + probe
+# Each pipeline selects layer 16, aggregates token scores, then classifies
+pipelines = {
+    "logistic": pl.Pipeline([
+        ("select", pl.preprocessing.SelectLayer(16)),
+        ("agg", pl.preprocessing.AggregateTokenScores("mean")),
+        ("probe", pl.probes.Logistic(device="cuda")),
+    ]),
+    "mlp": pl.Pipeline([
+        ("select", pl.preprocessing.SelectLayer(16)),
+        ("agg", pl.preprocessing.AggregateTokenScores("mean")),
+        ("probe", pl.probes.MLP(device="cuda")),
+    ]),
 }
 
-pl.scripts.train_probes(
-    probes=probes,
+# Convenience function: one-step training from model
+pl.scripts.train_from_model(
+    pipelines=pipelines,
     data=train_dataset,
     model=model,
     tokenizer=tokenizer,
+    layers=[16],  # required for convenience functions
     mask=mask,
     batch_size=32,
     streaming=True,  # use streaming to train on large datasets efficiently
 )
 
-predictions, metrics = pl.scripts.evaluate_probes(
-    probes=probes,
+predictions, metrics = pl.scripts.evaluate_from_model(
+    pipelines=pipelines,
     data=test_dataset,
     model=model,
     tokenizer=tokenizer,
+    layers=[16],  # required for convenience functions
     mask=mask,
     batch_size=32,
     metrics=[
@@ -141,6 +159,7 @@ mask = (pl.masks.assistant() & pl.masks.last_token()) | pl.masks.contains("lie")
 # Optional: sanity-check what the mask selects
 pl.visualize_mask(train_dataset.dialogues[0], mask, tokenizer, force_terminal=True)
 
+# Collect activations in streaming mode
 train_stream = pl.collect_activations(
     model=model,
     tokenizer=tokenizer,
@@ -151,10 +170,17 @@ train_stream = pl.collect_activations(
     streaming=True, # stream activations so we can partial_fit on large corpora
 )
 
-probe = pl.probes.MLP(layer=12, score_aggregation="mean", hidden_dim=256)
+# Create pipeline with preprocessing + probe
+pipeline = pl.Pipeline([
+    ("select", pl.preprocessing.SelectLayer(12)),
+    ("agg", pl.preprocessing.AggregateTokenScores("mean")),
+    ("probe", pl.probes.MLP(hidden_dim=256, device="cuda")),
+])
+
+# Streaming training with pipeline.partial_fit()
 labels = torch.tensor([label.value for label in train_dataset.labels])
 for batch in train_stream:
-    probe.partial_fit(batch, labels[batch.batch_indices])
+    pipeline.partial_fit(batch, labels[batch.batch_indices])
 
 # Collect test activations in-memory and run bespoke metrics
 test_acts = pl.collect_activations(
@@ -166,7 +192,7 @@ test_acts = pl.collect_activations(
     batch_size=32,
 )
 
-scores = probe.predict_proba(test_acts)[:, 1].cpu().numpy()
+scores = pipeline.predict_proba(test_acts)[:, 1].cpu().numpy()
 y_true = torch.tensor([label.value for label in test_dataset.labels])
 auroc, lo, hi = pl.metrics.auroc(y_true, scores)
 print(f"AUROC: {auroc:.3f} (95% CI {lo:.3f}-{hi:.3f})")

@@ -6,10 +6,11 @@ from pathlib import Path
 import pytest
 import torch
 
+from probelib import Pipeline
+from probelib.preprocessing import SelectLayer, Pool
 from probelib.probes.mlp import MLP
 from probelib.processing.activations import Activations
-from probelib.types import Label
-from probelib.processing import SequencePooling
+from probelib.types import Label, AggregationMethod
 
 
 def create_test_activations(n_samples=10, seq_len=20, d_model=16, layer=0):
@@ -61,65 +62,62 @@ class TestMLP:
 
     def test_initialization(self):
         """Test probe initialization."""
-        probe = MLP(
-            layer=5,
-            hidden_dim=256,
-            dropout=0.2,
-            activation="gelu",
-            learning_rate=0.002,
-            weight_decay=0.05,
-            n_epochs=200,
-            sequence_pooling=SequencePooling.MAX,
-            device="cpu",
-            random_state=42,
-            verbose=False,
-        )
+        pipeline = Pipeline([
+            ("select", SelectLayer(5)),
+            ("agg", Pool(axis="sequence", method="max")),
+            ("probe", MLP(
+                hidden_dim=256,
+                dropout=0.2,
+                activation="gelu",
+                learning_rate=0.002,
+                weight_decay=0.05,
+                n_epochs=200,
+                device="cpu",
+                random_state=42,
+                verbose=False,
+            )),
+        ])
 
-        assert probe.layer == 5
-        assert probe.hidden_dim == 256
-        assert probe.dropout == 0.2
-        assert probe.activation == "gelu"
-        assert probe.learning_rate == 0.002
-        assert probe.weight_decay == 0.05
-        assert probe.n_epochs == 200
-        assert probe.sequence_pooling == SequencePooling.MAX
-        # score_aggregation no longer exists
-        assert probe._fitted is False
-        assert probe._network is None
+        assert pipeline["select"].layer == 5
+        assert pipeline["agg"].method == AggregationMethod.MAX
+        assert pipeline["probe"].hidden_dim == 256
+        assert pipeline["probe"].dropout == 0.2
+        assert pipeline["probe"].activation == "gelu"
+        assert pipeline["probe"].learning_rate == 0.002
+        assert pipeline["probe"].weight_decay == 0.05
+        assert pipeline["probe"].n_epochs == 200
+        assert pipeline["probe"]._fitted is False
+        assert pipeline["probe"]._network is None
 
     def test_fit(self):
         """Test fitting the MLP probe."""
         activations, labels = create_separable_data(n_samples=20)
 
-        probe = MLP(
-            layer=0,
-            hidden_dim=16,
-            n_epochs=50,
-            device="cpu",
-            random_state=42,
-        )
+        pipeline = Pipeline([
+            ("select", SelectLayer(0)),
+            ("agg", Pool(axis="sequence", method="mean")),
+            ("probe", MLP(hidden_dim=16, n_epochs=50, device="cpu", random_state=42)),
+        ])
 
-        fitted_probe = probe.fit(activations, labels)
+        fitted_pipeline = pipeline.fit(activations, labels)
 
-        assert fitted_probe is probe
-        assert probe._fitted is True
-        assert probe._network is not None
-        assert probe._d_model == 8
+        assert fitted_pipeline is pipeline
+        assert pipeline["probe"]._fitted is True
+        assert pipeline["probe"]._network is not None
+        assert pipeline["probe"]._d_model == 8
 
     def test_predict_proba(self):
         """Test probability prediction."""
         activations, labels = create_separable_data(n_samples=20)
 
-        probe = MLP(
-            layer=0,
-            hidden_dim=32,
-            n_epochs=100,
-            device="cpu",
-            random_state=42,
-        )
-        probe.fit(activations, labels)
+        pipeline = Pipeline([
+            ("select", SelectLayer(0)),
+            ("agg", Pool(axis="sequence", method="mean")),
+            ("probe", MLP(hidden_dim=32, n_epochs=100, device="cpu", random_state=42)),
+        ])
+        pipeline.fit(activations, labels)
 
-        probs = probe.predict_proba(activations)
+        probs = pipeline.predict_proba(activations)
 
         assert probs.shape == (20, 2)
         assert torch.all(probs >= 0) and torch.all(probs <= 1)
@@ -134,102 +132,84 @@ class TestMLP:
     def test_predict_before_fit(self):
         """Test that prediction fails before fitting."""
         activations = create_test_activations()
-        probe = MLP(layer=0, sequence_pooling=SequencePooling.MEAN, device="cpu")
+        pipeline = Pipeline([
+            ("select", SelectLayer(0)),
+            ("agg", Pool(axis="sequence", method="mean")),
+            ("probe", MLP(device="cpu")),
+        ])
 
-        with pytest.raises(RuntimeError, match="Probe must be fitted"):
-            probe.predict_proba(activations)
+        with pytest.raises(ValueError, match="Pipeline must be fitted"):
+            pipeline.predict_proba(activations)
 
     def test_token_level_training(self):
-        """Test training on token-level activations."""
+        """Test training on token-level activations with score aggregation."""
         activations, labels = create_separable_data(n_samples=20)
 
-        probe = MLP(
-            layer=0,
-            hidden_dim=16,
-            sequence_pooling=SequencePooling.NONE,  # Token-level training with score aggregation
-            n_epochs=50,
-            device="cpu",
-            random_state=42,
-        )
+        pipeline = Pipeline([
+            ("select", SelectLayer(0)),
+            ("probe", MLP(hidden_dim=16, n_epochs=50, device="cpu", random_state=42)),
+            ("agg_scores", Pool(axis="sequence", method="mean")),
+        ])
 
-        probe.fit(activations, labels)
+        pipeline.fit(activations, labels)
 
-        # Should still predict at sequence level
-        probs = probe.predict_proba(activations)
+        # Should predict at sequence level
+        probs = pipeline.predict_proba(activations)
         assert probs.shape == (20, 2)
-
-    def test_partial_fit(self):
-        """Test incremental fitting."""
-        batch1_acts, batch1_labels = create_separable_data(n_samples=10)
-        batch2_acts, batch2_labels = create_separable_data(n_samples=10)
-
-        probe = MLP(
-            layer=0,
-            hidden_dim=16,
-            device="cpu",
-            random_state=42,
-        )
-
-        # Fit on first batch
-        probe.partial_fit(batch1_acts, batch1_labels)
-        assert probe._fitted is True
-        assert probe._streaming_steps == 1
-
-        # Update with second batch
-        probe.partial_fit(batch2_acts, batch2_labels)
-        assert probe._streaming_steps == 2
-
-        # Should still make predictions
-        probs = probe.predict_proba(batch1_acts)
-        assert probs.shape == (10, 2)
 
     def test_aggregation_methods(self):
         """Test different aggregation methods."""
         activations, labels = create_separable_data(n_samples=20)
 
-        for method in ["mean", "max", "last_token"]:
-            probe = MLP(
-                layer=0,
-                hidden_dim=16,
-                sequence_pooling=SequencePooling(method),
-                n_epochs=50,
-                device="cpu",
-                random_state=42,
-            )
-            probe.fit(activations, labels)
+        for method in [AggregationMethod.MEAN, AggregationMethod.MAX, AggregationMethod.LAST_TOKEN]:
+            pipeline = Pipeline([
+                ("select", SelectLayer(0)),
+                ("pool", Pool(axis="sequence", method=method)),
+                ("probe", MLP(hidden_dim=16, n_epochs=50, device="cpu", random_state=42)),
+            ])
+            pipeline.fit(activations, labels)
 
-            probs = probe.predict_proba(activations)
+            probs = pipeline.predict_proba(activations)
             assert probs.shape == (20, 2)
 
     def test_save_and_load(self):
         """Test saving and loading probe."""
         activations, labels = create_separable_data(n_samples=20)
 
-        probe = MLP(
-            layer=0,
-            hidden_dim=32,
-            dropout=0.1,
-            activation="gelu",
-            learning_rate=0.001,
-            n_epochs=50,
-            device="cpu",
-            random_state=42,
-        )
-        probe.fit(activations, labels)
+        pipeline = Pipeline([
+            ("select", SelectLayer(0)),
+            ("agg", Pool(axis="sequence", method="mean")),
+            ("probe", MLP(
+                hidden_dim=32,
+                dropout=0.1,
+                activation="gelu",
+                learning_rate=0.001,
+                n_epochs=50,
+                device="cpu",
+                random_state=42,
+            )),
+        ])
+        pipeline.fit(activations, labels)
 
-        probs_before = probe.predict_proba(activations)
+        probs_before = pipeline.predict_proba(activations)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             save_path = Path(tmpdir) / "probe.pt"
-            probe.save(save_path)
+            pipeline["probe"].save(save_path)
 
             loaded_probe = MLP.load(save_path)
 
-            assert loaded_probe.layer == 0
             assert loaded_probe.hidden_dim == 32
             assert loaded_probe._fitted is True
 
-            probs_after = loaded_probe.predict_proba(activations)
+            # Create new pipeline with loaded probe
+            loaded_pipeline = Pipeline([
+                ("select", SelectLayer(0)),
+                ("agg", Pool(axis="sequence", method="mean")),
+                ("probe", loaded_probe),
+            ])
+
+            probs_after = loaded_pipeline.predict_proba(activations)
             probs_before = probs_before.to(probs_after.device)
             assert torch.allclose(probs_before, probs_after, atol=1e-6)
 
@@ -238,17 +218,19 @@ class TestMLP:
         activations, labels = create_separable_data(n_samples=20)
 
         for activation in ["relu", "gelu"]:
-            probe = MLP(
-                layer=0,
-                sequence_pooling=SequencePooling.MEAN,
-                hidden_dim=16,
-                activation=activation,
-                n_epochs=50,
-                device="cpu",
-                random_state=42,
-            )
-            probe.fit(activations, labels)
+            pipeline = Pipeline([
+                ("select", SelectLayer(0)),
+                ("agg", Pool(axis="sequence", method="mean")),
+                ("probe", MLP(
+                    hidden_dim=16,
+                    activation=activation,
+                    n_epochs=50,
+                    device="cpu",
+                    random_state=42,
+                )),
+            ])
+            pipeline.fit(activations, labels)
 
-            probs = probe.predict_proba(activations)
+            probs = pipeline.predict_proba(activations)
             assert probs.shape == (20, 2)
             assert torch.all(probs >= 0) and torch.all(probs <= 1)

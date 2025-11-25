@@ -5,50 +5,47 @@ from typing import TYPE_CHECKING
 import torch
 
 if TYPE_CHECKING:
-    from .preprocessing.base import PostTransformer, PreTransformer
+    from .preprocessing.base import PreTransformer
     from .probes.base import BaseProbe
-    from .processing.activations import Activations
+    from .processing.activations import ActivationIterator, Activations
+    from .processing.scores import Scores
 
 
 class Pipeline:
     """sklearn-style pipeline for probelib.
 
-    A Pipeline chains together a sequence of transformers with a final probe:
-    - PreTransformers: Activations → Activations (pre-processing)
+    A Pipeline chains together a sequence of transformers with a probe:
+    - Pre-probe transforms: Activations → Activations (SelectLayer, Pool, Normalize)
     - BaseProbe: Activations → Scores (classification)
-    - PostTransformers: Scores → Scores (post-processing)
+    - Post-probe transforms: Scores → Scores (Pool for score aggregation)
 
-    Exactly one step must be a BaseProbe. All steps before the probe must
-    be PreTransformers, and all steps after must be PostTransformers.
+    Exactly one step must be a BaseProbe. Pool can appear before the probe
+    (to aggregate activations) or after (to aggregate token-level scores).
 
     Args:
         steps: List of (name, transformer/probe) tuples
 
     Example:
+        >>> # Pre-probe pooling (sequence-level training)
         >>> pipeline = Pipeline([
-        ...     ("select_layer", SelectLayer(16)),
-        ...     ("aggregate", AggregateSequences("mean")),
+        ...     ("select", SelectLayer(16)),
+        ...     ("pool", Pool(axis="sequence", method="mean")),
         ...     ("probe", Logistic()),
         ... ])
         >>> pipeline.fit(acts_train, labels_train)
         >>> predictions = pipeline.predict_proba(acts_test)
 
-    Example with post-processing:
+    Example with post-probe pooling (token-level training):
         >>> pipeline = Pipeline([
-        ...     ("select_layer", SelectLayer(16)),
-        ...     ("probe", Logistic()),  # Returns token scores
-        ...     ("aggregate_scores", AggregateTokenScores("mean")),
+        ...     ("select", SelectLayer(16)),
+        ...     ("probe", Logistic()),  # Returns token-level Scores
+        ...     ("pool", Pool(axis="sequence", method="mean")),  # Aggregate to sequence
         ... ])
     """
 
     def __init__(
         self,
-        steps: list[
-            tuple[
-                str,
-                "PreTransformer | BaseProbe | PostTransformer",
-            ]
-        ],
+        steps: list[tuple[str, "PreTransformer | BaseProbe"]],
     ):
         """Initialize pipeline with steps.
 
@@ -67,7 +64,7 @@ class Pipeline:
 
     def _validate_and_split_steps(self):
         """Validate pipeline structure and split into pre/probe/post."""
-        from .preprocessing.base import PostTransformer, PreTransformer
+        from .preprocessing.base import PreTransformer
         from .probes.base import BaseProbe
 
         # Find the probe
@@ -94,11 +91,11 @@ class Pipeline:
                     f"(before probe), got {type(step).__name__}"
                 )
 
-        # Validate post-probe steps are PostTransformers
+        # Post-probe steps should also be PreTransformers (Pool works on both)
         for i, (name, step) in enumerate(self.steps[probe_idx + 1 :], start=probe_idx + 1):
-            if not isinstance(step, PostTransformer):
+            if not isinstance(step, PreTransformer):
                 raise ValueError(
-                    f"Step '{name}' (index {i}) must be a PostTransformer "
+                    f"Step '{name}' (index {i}) must be a transform "
                     f"(after probe), got {type(step).__name__}"
                 )
 
@@ -115,8 +112,7 @@ class Pipeline:
         """Fit the pipeline on training data.
 
         Pre-transformers are fit and applied in sequence, then the probe
-        is fit on the transformed activations, then post-transformers are
-        fit if needed.
+        is fit on the transformed activations.
 
         Args:
             X: Training activations
@@ -130,24 +126,170 @@ class Pipeline:
         for name, transformer in self._pre_steps:
             X_transformed = transformer.fit_transform(X_transformed, y)
 
-        # Fit probe and get training scores
+        # Fit probe
         self._probe.fit(X_transformed, y)
 
-        # If there are post-transforms, we need training scores to fit them
+        # Post-transforms (Pool on Scores) are stateless, no fitting needed
+
+        return self
+
+    def partial_fit(
+        self,
+        X: "Activations",
+        y: torch.Tensor | list,
+    ) -> "Pipeline":
+        """Incrementally fit pipeline on a batch of data.
+
+        For streaming/online learning. Call multiple times with different batches.
+        Pre-transformers are applied (assumed stateless), then probe is incrementally
+        fitted using its partial_fit() method.
+
+        **Note**: Post-transforms (Pool on Scores) are not supported with streaming.
+
+        Args:
+            X: Batch of activations
+            y: Batch of labels
+
+        Returns:
+            self: The pipeline instance
+
+        Raises:
+            NotImplementedError: If probe doesn't support partial_fit or if
+                pipeline has post-transforms
+
+        Example:
+            >>> for batch_acts in activation_iterator:
+            ...     batch_labels = labels[batch_acts.batch_indices]
+            ...     pipeline.partial_fit(batch_acts, batch_labels)
+        """
+        # Check for post-transforms
         if self._post_steps:
-            scores = self._probe.predict_proba(X_transformed)
+            raise NotImplementedError(
+                "Streaming (partial_fit) is not supported with post-probe transforms. "
+                "Use Pool(axis='sequence') before the probe instead."
+            )
 
-            # Fit and apply post-transforms
-            for name, transformer in self._post_steps:
-                # Check if this is AggregateTokenScores and set tokens_per_sample
-                from .preprocessing.post_transforms import AggregateTokenScores
+        # Check probe supports partial_fit
+        if not hasattr(self._probe, "partial_fit"):
+            raise NotImplementedError(
+                f"Probe {self._probe.__class__.__name__} doesn't support streaming. "
+                f"Use fit() with complete data instead."
+            )
 
-                if isinstance(transformer, AggregateTokenScores):
-                    # Get tokens_per_sample from the probe if it trained on tokens
-                    if hasattr(self._probe, "_tokens_per_sample"):
-                        transformer.tokens_per_sample = self._probe._tokens_per_sample
+        # Apply pre-transforms (stateless, just transform)
+        X_transformed = X
+        for name, transformer in self._pre_steps:
+            # Most pre-transformers are stateless
+            # If they have partial_fit, use it; otherwise just transform
+            if hasattr(transformer, "partial_fit"):
+                X_transformed = transformer.partial_fit(X_transformed, y)
+            else:
+                # Stateless transform
+                X_transformed = transformer.transform(X_transformed)
 
-                scores = transformer.fit_transform(scores, y)
+        # Partial fit probe
+        self._probe.partial_fit(X_transformed, y)
+
+        return self
+
+    def fit_streaming(
+        self,
+        X: "ActivationIterator",
+        y: torch.Tensor | list,
+        n_epochs: int = 50,
+        freeze_normalizer_after_epoch: int = 0,
+        verbose: bool = False,
+    ) -> "Pipeline":
+        """Fit pipeline using streaming/online learning over multiple epochs.
+
+        Iterates over activation batches multiple times (epochs),
+        calling partial_fit on each batch. This method handles:
+        - Multi-epoch training with the activation iterator
+        - Normalizer freezing after specified epoch
+        - Learning rate scheduler stepping at epoch boundaries
+
+        Args:
+            X: ActivationIterator that can be iterated multiple times
+            y: Labels for entire dataset (indexed by batch_indices)
+            n_epochs: Number of passes through the data
+            freeze_normalizer_after_epoch: Freeze Normalize statistics after this epoch
+            verbose: Print progress
+
+        Returns:
+            self: Fitted pipeline
+
+        Raises:
+            NotImplementedError: If probe doesn't support partial_fit or
+                pipeline has post-transforms
+
+        Example:
+            >>> acts_iter = pl.collect_activations(..., streaming=True)
+            >>> pipeline.fit_streaming(acts_iter, labels, n_epochs=50)
+        """
+        from .logger import logger
+        from .preprocessing.pre_transforms import Normalize
+        from .types import Label
+
+        # Check for post-transforms
+        if self._post_steps:
+            raise NotImplementedError(
+                "Streaming (fit_streaming) is not supported with post-probe transforms. "
+                "Use Pool(axis='sequence') before the probe instead."
+            )
+
+        # Check probe supports partial_fit
+        if not hasattr(self._probe, "partial_fit"):
+            raise NotImplementedError(
+                f"Probe {self._probe.__class__.__name__} doesn't support streaming. "
+                f"Use fit() with complete data instead."
+            )
+
+        # Convert labels to tensor for indexing
+        if isinstance(y, list):
+            if y and isinstance(y[0], Label):
+                y = torch.tensor([label.value for label in y])
+            else:
+                y = torch.tensor(y)
+
+        # Track whether scheduler has been initialized
+        scheduler_initialized = False
+
+        for epoch in range(n_epochs):
+            if verbose:
+                logger.info(f"Epoch {epoch + 1}/{n_epochs}")
+
+            steps_in_epoch = 0
+            for batch_acts in X:
+                # Get batch labels using batch_indices
+                batch_indices = torch.as_tensor(batch_acts.batch_indices)
+                batch_labels = y.index_select(0, batch_indices)
+
+                # Call existing partial_fit
+                self.partial_fit(batch_acts, batch_labels)
+                steps_in_epoch += 1
+
+            # Initialize scheduler after first epoch (when we know steps_per_epoch)
+            if not scheduler_initialized and hasattr(self._probe, "init_scheduler"):
+                self._probe.init_scheduler(n_epochs, steps_in_epoch)
+                scheduler_initialized = True
+
+            # Freeze normalizers after specified epoch
+            if epoch == freeze_normalizer_after_epoch:
+                for name, transformer in self._pre_steps:
+                    if isinstance(transformer, Normalize) and hasattr(transformer, "freeze"):
+                        transformer.freeze()
+                        if verbose:
+                            logger.info(f"Froze normalizer '{name}' after epoch {epoch + 1}")
+
+                # Also freeze probe's internal scaler if it has one
+                if hasattr(self._probe, "freeze_scaler"):
+                    self._probe.freeze_scaler()
+                    if verbose:
+                        logger.info(f"Froze probe scaler after epoch {epoch + 1}")
+
+            # Step LR scheduler at epoch end
+            if hasattr(self._probe, "step_scheduler"):
+                self._probe.step_scheduler()
 
         return self
 
@@ -171,27 +313,20 @@ class Pipeline:
                 "Pipeline must be fitted before predict. Call fit() first."
             )
 
-        # Apply pre-transforms
+        # Apply pre-transforms (Activations → Activations)
         X_transformed = X
         for name, transformer in self._pre_steps:
             X_transformed = transformer.transform(X_transformed)
 
-        # Get predictions from probe
-        scores = self._probe.predict_proba(X_transformed)
+        # Get predictions from probe (Activations → Scores)
+        scores: "Scores" = self._probe.predict_proba(X_transformed)
 
-        # Apply post-transforms
+        # Apply post-transforms (Scores → Scores)
         for name, transformer in self._post_steps:
-            # Check if this is AggregateTokenScores and set tokens_per_sample
-            from .preprocessing.post_transforms import AggregateTokenScores
-
-            if isinstance(transformer, AggregateTokenScores):
-                # Get tokens_per_sample from activations if needed
-                if hasattr(self._probe, "_tokens_per_sample"):
-                    transformer.tokens_per_sample = self._probe._tokens_per_sample
-
             scores = transformer.transform(scores)
 
-        return scores
+        # Return raw tensor
+        return scores.scores
 
     def predict(self, X: "Activations") -> torch.Tensor:
         """Predict class labels.

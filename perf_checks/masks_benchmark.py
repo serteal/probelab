@@ -7,6 +7,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from utils import TimingResult, measure_with_warmup, timer
 
 import probelib as pl
+from probelib import Pipeline
 from probelib.masks import (
     after,
     assistant,
@@ -16,6 +17,7 @@ from probelib.masks import (
     regex,
     user,
 )
+from probelib.preprocessing import Pool, SelectLayer
 
 torch.set_float32_matmul_precision("high")
 pl.logger.logger.setLevel(logging.WARNING)  # type: ignore
@@ -82,13 +84,17 @@ def benchmark_probe_training_with_masks(
         print(f"\nTesting mask: {description}")
 
         def train_probe_with_mask():
-            probe = pl.probes.Logistic(layer=layers[0], sequence_aggregation="mean")
-            return pl.scripts.train_probes(
-                probes=probe,
+            pipeline = Pipeline([
+                ("select", SelectLayer(layers[0])),
+                ("agg", Pool(axis="sequence", method="mean")),
+                ("probe", pl.probes.Logistic()),
+            ])
+            return pl.scripts.train_from_model(
+                pipelines=pipeline,
                 model=model,
                 tokenizer=tokenizer,
-                data=dataset,
-                labels=dataset.labels,
+                dataset=dataset,
+                layers=layers,
                 mask=mask,
                 batch_size=batch_size,
                 streaming=True,
@@ -110,19 +116,28 @@ def benchmark_probe_training_with_masks(
             | (user() & regex(r"\?$"))
             | (assistant() & after("The", inclusive=False))
         )
-        probes = {
-            "logistic": pl.probes.Logistic(
-                layer=layers[0], sequence_aggregation="mean"
-            ),
-            "mlp": pl.probes.MLP(layer=layers[0], sequence_aggregation="mean"),
-            "attention": pl.probes.Attention(layer=layers[0]),
+        pipelines = {
+            "logistic": Pipeline([
+                ("select", SelectLayer(layers[0])),
+                ("agg", Pool(axis="sequence", method="mean")),
+                ("probe", pl.probes.Logistic()),
+            ]),
+            "mlp": Pipeline([
+                ("select", SelectLayer(layers[0])),
+                ("agg", Pool(axis="sequence", method="mean")),
+                ("probe", pl.probes.MLP()),
+            ]),
+            "attention": Pipeline([
+                ("select", SelectLayer(layers[0])),
+                ("probe", pl.probes.Attention()),
+            ]),
         }
-        return pl.scripts.train_probes(
-            probes=probes,
+        return pl.scripts.train_from_model(
+            pipelines=pipelines,
             model=model,
             tokenizer=tokenizer,
-            data=dataset,
-            labels=dataset.labels,
+            dataset=dataset,
+            layers=layers,
             mask=complex_mask,
             batch_size=batch_size,
             streaming=True,

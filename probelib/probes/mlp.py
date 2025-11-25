@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from torch.optim import AdamW
 
 from ..processing.activations import Activations, Axis
+from ..processing.scores import Scores
 from .base import BaseProbe
 
 
@@ -127,6 +128,9 @@ class MLP(BaseProbe):
         self._optimizer = None
         self._d_model = None
         self._trained_on_tokens = False
+
+        # Streaming state
+        self._streaming_steps = 0
 
         # Set random seed
         if random_state is not None:
@@ -266,18 +270,84 @@ class MLP(BaseProbe):
         self._fitted = True
         return self
 
-    def predict_proba(self, X: Activations) -> torch.Tensor:
+    def partial_fit(self, X: Activations, y: list | torch.Tensor) -> "MLP":
+        """Perform single gradient step for streaming/online learning.
+
+        Args:
+            X: Batch of activations
+            y: Batch of labels
+
+        Returns:
+            self: Updated probe instance
+        """
+        # Convert labels to tensor
+        y_tensor = self._to_tensor(y)
+
+        # Check for LAYER axis
+        if X.has_axis(Axis.LAYER):
+            raise ValueError(
+                "MLP probe expects single layer activations. "
+                "Use SelectLayer transformer in pipeline before probe."
+            )
+
+        # Extract features based on dimensionality
+        if X.has_axis(Axis.SEQ):
+            # Token-level training
+            features, tokens_per_sample = X.extract_tokens()
+
+            # Expand labels if needed
+            if y_tensor.ndim == 1:
+                labels = torch.repeat_interleave(y_tensor, tokens_per_sample)
+            elif y_tensor.ndim == 2:
+                labels = y_tensor[X.detection_mask.bool()]
+            else:
+                raise ValueError(f"Invalid label shape: {y_tensor.shape}")
+
+            self._trained_on_tokens = True
+            self._tokens_per_sample = tokens_per_sample
+        else:
+            # Sequence-level training
+            features = X.activations
+            labels = y_tensor
+            self._trained_on_tokens = False
+            self._tokens_per_sample = None
+
+        # Skip empty batches
+        if features.shape[0] == 0:
+            return self
+
+        # Move to device
+        features = features.to(self.device, dtype=torch.float32)
+        labels = labels.to(self.device, dtype=torch.float32)
+
+        # Initialize network if needed
+        if self._network is None:
+            self._init_network(features.shape[1])
+
+        # Single gradient step
+        self._network.train()
+        self._optimizer.zero_grad()
+        logits = self._network(features)
+        loss = F.binary_cross_entropy_with_logits(logits, labels)
+        loss.backward()
+        self._optimizer.step()
+
+        self._streaming_steps += 1
+        self._fitted = True
+        return self
+
+    def predict_proba(self, X: Activations) -> Scores:
         """Predict class probabilities.
 
-        Returns scores matching input dimensionality:
-        - If X has SEQ axis: Returns [n_tokens, 2]
-        - Otherwise: Returns [batch, 2]
+        Returns Scores object matching input dimensionality:
+        - If X has SEQ axis: Returns token-level Scores [batch, seq, 2]
+        - Otherwise: Returns sequence-level Scores [batch, 2]
 
         Args:
             X: Activations to predict on
 
         Returns:
-            Predicted probabilities
+            Scores object with predictions
 
         Raises:
             ValueError: If probe not fitted or X has unexpected axes
@@ -295,10 +365,13 @@ class MLP(BaseProbe):
         # Extract features based on dimensionality
         if X.has_axis(Axis.SEQ):
             # Token-level prediction
-            features, _ = X.extract_tokens()  # [n_tokens, hidden]
+            features, tokens_per_sample = X.extract_tokens()  # [n_tokens, hidden]
+            is_token_level = True
         else:
             # Sequence-level prediction
             features = X.activations  # [batch, hidden]
+            tokens_per_sample = None
+            is_token_level = False
 
         # Move to device and convert to float32 for consistency
         features = features.to(self.device, dtype=torch.float32)
@@ -312,7 +385,13 @@ class MLP(BaseProbe):
             # Create 2-class probability matrix
             probs = torch.stack([1 - probs_positive, probs_positive], dim=-1)
 
-        return probs  # [n_tokens, 2] or [batch, 2]
+        # Wrap in Scores object
+        if is_token_level:
+            return Scores.from_token_scores(
+                probs, tokens_per_sample, batch_indices=X.batch_indices
+            )
+        else:
+            return Scores.from_sequence_scores(probs, batch_indices=X.batch_indices)
 
     def save(self, path: Path | str) -> None:
         """Save the probe to disk.

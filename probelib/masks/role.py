@@ -4,21 +4,30 @@ from typing import Sequence
 
 from torch import Tensor
 
-from ..types import Dialogue
+from ..types import Dialogue, Role
 from .base import MaskFunction, TokenMetadata
 
 
 class RoleMask(MaskFunction):
     """Mask for selecting tokens from messages with specific roles."""
 
-    ROLE_TO_ID = {"system": 0, "user": 1, "assistant": 2}
+    ROLE_TO_ID = {Role.SYSTEM: 0, Role.USER: 1, Role.ASSISTANT: 2}
 
-    def __init__(self, role: str, include_padding: bool = True):
+    def __init__(self, role: Role | str, include_padding: bool = True):
         """
         Args:
-            role: Role to select ("system", "user", or "assistant")
+            role: Role to select (Role.SYSTEM, Role.USER, or Role.ASSISTANT, or their string values)
             include_padding: Whether to include special tokens around messages (default: True)
         """
+        # Convert string to Role enum if needed
+        if isinstance(role, str):
+            try:
+                role = Role(role)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid role: {role}. Must be one of {[r.value for r in Role]}"
+                )
+
         if role not in self.ROLE_TO_ID:
             raise ValueError(
                 f"Invalid role: {role}. Must be one of {list(self.ROLE_TO_ID.keys())}"
@@ -56,21 +65,30 @@ class RoleMask(MaskFunction):
 
 
 # Convenience functions
-def role(role_name: str, include_padding: bool = True) -> RoleMask:
-    """Create a mask for a specific role."""
+def role(role_name: Role | str, include_padding: bool = True) -> RoleMask:
+    """Create a mask for a specific role.
+
+    Args:
+        role_name: Role enum or string ("system", "user", "assistant")
+        include_padding: Whether to include special tokens around messages
+
+    Examples:
+        >>> mask = pl.masks.role(Role.ASSISTANT)
+        >>> mask = pl.masks.role("assistant")  # String also supported
+    """
     return RoleMask(role_name, include_padding=include_padding)
 
 
 def assistant(include_padding: bool = True) -> RoleMask:
     """Create a mask for assistant messages."""
-    return RoleMask("assistant", include_padding=include_padding)
+    return RoleMask(Role.ASSISTANT, include_padding=include_padding)
 
 
 def user(include_padding: bool = True) -> RoleMask:
     """Create a mask for user messages."""
-    return RoleMask("user", include_padding=include_padding)
+    return RoleMask(Role.USER, include_padding=include_padding)
 
 
 def system(include_padding: bool = True) -> RoleMask:
     """Create a mask for system messages."""
-    return RoleMask("system", include_padding=include_padding)
+    return RoleMask(Role.SYSTEM, include_padding=include_padding)

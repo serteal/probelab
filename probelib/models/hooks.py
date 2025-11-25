@@ -1,7 +1,8 @@
-from typing import TYPE_CHECKING, Any, Callable, Literal, Self
+from typing import TYPE_CHECKING, Any, Callable, Self
 
 import torch
 
+from ..types import HookPoint
 from .architectures import ArchitectureRegistry
 
 if TYPE_CHECKING:
@@ -29,7 +30,7 @@ class HookedModel:
         model: "PreTrainedModel",
         layers: list[int],
         detach_activations: bool = False,
-        hook_point: Literal["pre_layernorm", "post_block"] = "post_block",
+        hook_point: HookPoint = HookPoint.POST_BLOCK,
     ):
         self.model = model
         self.layers = layers
@@ -49,9 +50,9 @@ class HookedModel:
     def _create_shared_hook(self) -> Callable:
         """Create a single shared hook function for all layers.
 
-        - For hook_point='pre_layernorm', the hook is attached to the input_layernorm
+        - For hook_point=HookPoint.PRE_LAYERNORM, the hook is attached to the input_layernorm
           and captures its output (legacy behavior).
-        - For hook_point='post_block', the hook is attached to the transformer block
+        - For hook_point=HookPoint.POST_BLOCK, the hook is attached to the transformer block
           and captures the block's output (aligns with HF hidden_states for that layer).
         """
 
@@ -81,9 +82,9 @@ class HookedModel:
 
         # Register hooks according to hook_point
         for layer in self.layers:
-            if self.hook_point == "pre_layernorm":
+            if self.hook_point == HookPoint.PRE_LAYERNORM:
                 module = self.architecture.get_layer_norm(self.base_model, layer)
-            else:  # post_block
+            else:  # HookPoint.POST_BLOCK
                 module = self.architecture.get_layer_module(self.base_model, layer)
 
             # Attach layer index as metadata to the module
@@ -112,7 +113,10 @@ class HookedModel:
                 k: v for k, v in batch_inputs.items() if k != "detection_mask"
             }
             _ = self.model(**model_inputs)  # type: ignore
-            return torch.stack([self.cache[layer] for layer in self.layers], dim=0)
+            result = torch.stack([self.cache[layer] for layer in self.layers], dim=0)
+            # Clear cache to free GPU memory immediately
+            self.cache.clear()
+            return result
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any):
         """Restore model and remove hooks."""

@@ -1,30 +1,23 @@
 """Preprocessing transformers for activation pipelines.
 
-This module provides composable transformers that operate on Activations objects:
-- PreTransformers: Activations → Activations (pre-probe transforms)
-- PostTransformers: Scores → Scores (post-probe transforms)
+This module provides composable transformers for use in Pipelines:
+- SelectLayer/SelectLayers: Layer selection
+- Pool: Unified pooling for Activations and Scores
+- Normalize: Feature normalization
 """
 
-from .base import PostTransformer, PreTransformer
-from .post_transforms import AggregateTokenScores
+from .base import PreTransformer
 from .pre_transforms import (
-    AggregateLayers,
-    AggregateSequences,
     Normalize,
+    Pool,
     SelectLayer,
     SelectLayers,
 )
 
 __all__ = [
-    # Base classes
     "PreTransformer",
-    "PostTransformer",
-    # Pre-transforms
     "SelectLayer",
     "SelectLayers",
-    "AggregateSequences",
-    "AggregateLayers",
+    "Pool",
     "Normalize",
-    # Post-transforms
-    "AggregateTokenScores",
 ]

@@ -8,6 +8,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from utils import TimingResult, measure_with_warmup, timer
 
 import probelib as pl
+from probelib import Pipeline
+from probelib.preprocessing import Pool, SelectLayer
 
 torch.set_float32_matmul_precision("high")
 pl.logger.logger.setLevel(logging.WARNING)  # type: ignore
@@ -77,6 +79,7 @@ def benchmark_activation_collection(
             tokenizer=tokenizer,
             dataset=dataset,
             layers=layers,
+            mask=pl.masks.assistant(),  # Required parameter
             batch_size=batch_size,
             streaming=False,  # Use batch mode for fair comparison
             verbose=False,
@@ -98,6 +101,7 @@ def benchmark_activation_collection(
             tokenizer=tokenizer,
             dataset=dataset,
             layers=layers,
+            mask=pl.masks.assistant(),  # Required parameter
             batch_size=batch_size,
             streaming=True,  # Force streaming mode
             verbose=False,
@@ -139,95 +143,157 @@ def benchmark_probe_training(
         dataset = dataset[:max_samples]
 
     # Measure full pipeline (activation collection + training)
-    def train_probe_full(probe_class, **kwargs):
-        def inner_train_probe_full():
-            probe = probe_class(layer=layers[0], **kwargs)
-            return pl.scripts.train_probes(
-                probes=probe,
+    def train_pipeline_full(probe_class, use_aggregation=True):
+        def inner_train_pipeline_full():
+            if use_aggregation:
+                pipeline = Pipeline([
+                    ("select", SelectLayer(layers[0])),
+                    ("agg", Pool(axis="sequence", method="mean")),
+                    ("probe", probe_class()),
+                ])
+            else:
+                # Token-level: no aggregation before probe
+                pipeline = Pipeline([
+                    ("select", SelectLayer(layers[0])),
+                    ("probe", probe_class()),
+                ])
+            return pl.scripts.train_from_model(
+                pipelines=pipeline,
                 model=model,
                 tokenizer=tokenizer,
                 dataset=dataset,
+                layers=layers,
+                mask=pl.masks.assistant(),
                 batch_size=batch_size,
-                streaming=True,
+                streaming=False,  # Batch mode for direct comparison
                 verbose=False,
             )
 
-        return inner_train_probe_full
-
-    # Import SequencePooling for the new API
-    from probelib.processing import SequencePooling
+        return inner_train_pipeline_full
 
     # Test with MEAN pooling (sample-level aggregation)
     gpu_logistic_mean_result = measure_with_warmup(
-        train_probe_full(pl.probes.Logistic, sequence_pooling=SequencePooling.MEAN),  # type: ignore
+        train_pipeline_full(pl.probes.Logistic, use_aggregation=True),
         warmup_runs=1,
         measurement_runs=3,
         name="GPU Logistic with MEAN pooling",
     )
     results["gpu_logistic_mean_pooling"] = gpu_logistic_mean_result
 
-    # Test with NONE pooling (token-level training)
+    # Test with token-level training (no aggregation)
     gpu_logistic_token_result = measure_with_warmup(
-        train_probe_full(pl.probes.Logistic, sequence_pooling=SequencePooling.NONE),  # type: ignore
+        train_pipeline_full(pl.probes.Logistic, use_aggregation=False),
         warmup_runs=1,
         measurement_runs=3,
-        name="GPU Logistic with token-level (NONE pooling)",
+        name="GPU Logistic with token-level (no aggregation)",
     )
     results["gpu_logistic_token_level"] = gpu_logistic_token_result
 
     # MLP with MEAN pooling
     mlp_mean_result = measure_with_warmup(
-        train_probe_full(pl.probes.MLP, sequence_pooling=SequencePooling.MEAN),  # type: ignore
+        train_pipeline_full(pl.probes.MLP, use_aggregation=True),
         warmup_runs=1,
         measurement_runs=3,
         name="MLP with MEAN pooling",
     )
     results["mlp_mean_pooling"] = mlp_mean_result
 
-    # MLP with token-level (NONE pooling)
+    # MLP with token-level (no aggregation)
     mlp_token_result = measure_with_warmup(
-        train_probe_full(pl.probes.MLP, sequence_pooling=SequencePooling.NONE),  # type: ignore
+        train_pipeline_full(pl.probes.MLP, use_aggregation=False),
         warmup_runs=1,
         measurement_runs=3,
-        name="MLP with token-level (NONE pooling)",
+        name="MLP with token-level (no aggregation)",
     )
     results["mlp_token_level"] = mlp_token_result
 
-    # Attention probe (always uses NONE pooling but aggregates internally)
+    # Attention probe (no aggregation, uses attention internally)
     attention_full_pipeline_result = measure_with_warmup(
-        train_probe_full(pl.probes.Attention, sequence_pooling=SequencePooling.NONE),  # type: ignore
+        train_pipeline_full(pl.probes.Attention, use_aggregation=False),
         warmup_runs=1,
         measurement_runs=3,
         name="Attention Probe (attention-based aggregation)",
     )
     results["attention_full_pipeline"] = attention_full_pipeline_result
 
-    def train_10_probes_full():
-        probes = {
-            f"logistic_{i}": pl.probes.Logistic(
-                layer=layers[0], sequence_pooling=SequencePooling.MEAN
-            )
+    def train_10_pipelines_full():
+        pipelines = {
+            f"logistic_{i}": Pipeline([
+                ("select", SelectLayer(layers[0])),
+                ("agg", Pool(axis="sequence", method="mean")),
+                ("probe", pl.probes.Logistic()),
+            ])
             for i in range(10)
         }
-        return pl.scripts.train_probes(
-            probes=probes,
+        return pl.scripts.train_from_model(
+            pipelines=pipelines,
             model=model,
             tokenizer=tokenizer,
             dataset=dataset,
+            layers=layers,
+            mask=pl.masks.assistant(),
             batch_size=batch_size,
-            streaming=True,
+            streaming=False,  # Batch mode for direct comparison
             verbose=False,
         )
 
     logistic_10_probes_full_pipeline_result = measure_with_warmup(
-        train_10_probes_full,  # type: ignore
+        train_10_pipelines_full,
         warmup_runs=1,
         measurement_runs=3,
-        name="Logistic 10 Probes Full Pipeline",
+        name="Logistic 10 Pipelines Full Pipeline",
     )
     results["logistic_10_probes_full_pipeline"] = (
         logistic_10_probes_full_pipeline_result
     )
+
+    # Streaming mode benchmarks (using partial_fit)
+    def train_pipeline_streaming(probe_class, use_aggregation=True):
+        def inner_train_pipeline_streaming():
+            if use_aggregation:
+                pipeline = Pipeline([
+                    ("select", SelectLayer(layers[0])),
+                    ("agg", Pool(axis="sequence", method="mean")),
+                    ("probe", probe_class()),
+                ])
+            else:
+                # Token-level: no aggregation before probe
+                pipeline = Pipeline([
+                    ("select", SelectLayer(layers[0])),
+                    ("probe", probe_class()),
+                ])
+            return pl.scripts.train_from_model(
+                pipelines=pipeline,
+                model=model,
+                tokenizer=tokenizer,
+                dataset=dataset,
+                layers=layers,
+                mask=pl.masks.assistant(),
+                batch_size=batch_size,
+                streaming=True,  # Streaming mode with partial_fit
+                n_epochs=10,  # Fewer epochs for benchmark
+                verbose=False,
+            )
+
+        return inner_train_pipeline_streaming
+
+    # Streaming Logistic with MEAN pooling
+    streaming_logistic_mean_result = measure_with_warmup(
+        train_pipeline_streaming(pl.probes.Logistic, use_aggregation=True),
+        warmup_runs=1,
+        measurement_runs=3,
+        name="Streaming Logistic with MEAN pooling",
+    )
+    results["streaming_logistic_mean_pooling"] = streaming_logistic_mean_result
+
+    # Streaming MLP with MEAN pooling
+    streaming_mlp_mean_result = measure_with_warmup(
+        train_pipeline_streaming(pl.probes.MLP, use_aggregation=True),
+        warmup_runs=1,
+        measurement_runs=3,
+        name="Streaming MLP with MEAN pooling",
+    )
+    results["streaming_mlp_mean_pooling"] = streaming_mlp_mean_result
 
     return results
 
