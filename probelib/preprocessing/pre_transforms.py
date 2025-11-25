@@ -18,10 +18,10 @@ class SelectLayer(PreTransformer):
     to [batch, seq, hidden].
 
     Args:
-        layer: Layer index to select
+        layer: Layer index to select.
 
     Example:
-        >>> transform = SelectLayer(16)
+        >>> transform = SelectLayer(layer=16)
         >>> acts = transform.transform(acts)  # [batch, seq, hidden]
     """
 
@@ -34,7 +34,7 @@ class SelectLayer(PreTransformer):
             raise ValueError(
                 f"Activations don't have LAYER axis. Available axes: {X.axes}"
             )
-        return X.select(layers=self.layer)
+        return X.select(layer=self.layer)
 
     def __repr__(self) -> str:
         return f"SelectLayer(layer={self.layer})"
@@ -47,10 +47,10 @@ class SelectLayers(PreTransformer):
     preserving the LAYER dimension.
 
     Args:
-        layers: List of layer indices to select
+        layers: List of layer indices to select.
 
     Example:
-        >>> transform = SelectLayers([16, 20, 24])
+        >>> transform = SelectLayers(layers=[16, 20, 24])
         >>> acts = transform.transform(acts)  # [3, batch, seq, hidden]
     """
 
@@ -103,7 +103,6 @@ class Pool(PreTransformer):
         if dim not in valid_dims:
             raise ValueError(f"dim must be one of {valid_dims}, got {dim!r}")
 
-        # Normalize method to enum for validation
         if isinstance(method, str):
             try:
                 method_enum = AggregationMethod(method)
@@ -143,7 +142,6 @@ class Pool(PreTransformer):
             raise TypeError(f"Expected Activations or Scores, got {type(X).__name__}")
 
     def _transform_activations(self, X: Activations) -> Activations:
-        """Pool activations."""
         if self.dim == "sequence":
             if not X.has_axis(Axis.SEQ):
                 return X  # Already pooled
@@ -154,7 +152,6 @@ class Pool(PreTransformer):
             return X.pool(dim="layer", method=self.method)
 
     def _transform_scores(self, X: Scores) -> Scores:
-        """Pool scores."""
         if self.dim == "layer":
             raise ValueError("Scores don't have a layer dimension")
         return X.pool(dim=self.dim, method=self.method)
@@ -281,7 +278,6 @@ class Normalize(PreTransformer):
             self._running_var = new_var
             self._n_samples_seen += m
 
-        # Compute std from running variance
         self.std_ = torch.sqrt(self._running_var).clamp(min=self.eps).unsqueeze(0)
         self._fitted = True
 
@@ -323,10 +319,8 @@ class Normalize(PreTransformer):
         if not self._fitted:
             raise ValueError("Normalize must be fitted before transform")
 
-        # Normalize
         normalized = (X.activations - self.mean_) / self.std_
 
-        # Return new Activations with same metadata
         return Activations(
             activations=normalized,
             axes=X.axes,

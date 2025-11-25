@@ -47,7 +47,6 @@ def _detect_collection_strategy_from_pipelines(
         "mean", "max", or "last_token" if all pipelines use the same pooling,
         None otherwise (dense collection required).
     """
-    # Normalize to dict
     if isinstance(pipelines, Pipeline):
         pipelines_dict: Mapping[str, Pipeline] = {"_single": pipelines}
     else:
@@ -56,8 +55,7 @@ def _detect_collection_strategy_from_pipelines(
     pooling_methods: set[str] = set()
 
     for pipeline in pipelines_dict.values():
-        # Check if pipeline has post-transforms (they need token-level data)
-        if pipeline._post_steps:
+        if pipeline._post_steps:  # Post-transforms need token-level data
             return None
 
         method: str | None = None
@@ -159,11 +157,9 @@ def train_pipelines(
         ... ])
         >>> pl.train_pipelines(pipeline, acts, train_dataset.labels)
     """
-    # Normalize inputs
     is_single_pipeline = isinstance(pipelines, Pipeline)
     pipelines_dict = {"_single": pipelines} if is_single_pipeline else pipelines
 
-    # Convert labels to tensor
     if isinstance(labels, list) and labels and isinstance(labels[0], Label):
         labels_tensor = torch.tensor([label.value for label in labels])
     else:
@@ -171,7 +167,6 @@ def train_pipelines(
             torch.tensor(labels) if not isinstance(labels, torch.Tensor) else labels
         )
 
-    # Train each pipeline
     _train_pipelines_batch(pipelines_dict, activations, labels_tensor, verbose)
 
 
@@ -210,14 +205,12 @@ def train_pipelines_streaming(
         ... )
         >>> pl.train_pipelines_streaming(pipeline, acts_iter, large_dataset.labels)
     """
-    # Normalize inputs
     is_single_pipeline = isinstance(pipelines, Pipeline)
     pipelines_dict = {"_single": pipelines} if is_single_pipeline else pipelines
 
     if verbose:
         logger.info(f"Training {len(pipelines_dict)} pipeline(s) in streaming mode (single pass)")
 
-    # Train each pipeline using fit_streaming
     for name, pipeline in pipelines_dict.items():
         if verbose and not is_single_pipeline:
             logger.info(f"Training pipeline '{name}'")
@@ -385,11 +378,9 @@ def evaluate_pipelines(
         ... )
         >>> print(f"AUROC: {metrics['auroc']:.3f}")
     """
-    # Normalize inputs
     is_single_pipeline = isinstance(pipelines, Pipeline)
     pipelines_dict = {"_single": pipelines} if is_single_pipeline else pipelines
 
-    # Convert labels to tensor
     if isinstance(labels, list) and labels and isinstance(labels[0], Label):
         labels_tensor = torch.tensor([label.value for label in labels])
     else:
@@ -397,7 +388,6 @@ def evaluate_pipelines(
             torch.tensor(labels) if not isinstance(labels, torch.Tensor) else labels
         )
 
-    # Set default metrics
     if metrics is None:
         metrics = [
             auroc,
@@ -405,7 +395,6 @@ def evaluate_pipelines(
             functools.partial(recall_at_fpr, fpr=0.01),  # recall@1%
         ]
     else:
-        # Convert string metrics to functions
         converted_metrics = []
         for metric in metrics:
             if isinstance(metric, str):
@@ -414,18 +403,15 @@ def evaluate_pipelines(
                 converted_metrics.append(metric)
         metrics = converted_metrics
 
-    # Normalize bootstrap config
     if isinstance(bootstrap, bool):
         bootstrap_kwargs: dict[str, Any] | None = {} if bootstrap else None
     else:
         bootstrap_kwargs = bootstrap
 
-    # Evaluate all pipelines
     all_predictions, all_metrics = _evaluate_pipelines_batch(
         pipelines_dict, activations, labels_tensor, metrics, bootstrap_kwargs
     )
 
-    # Return in same format as input
     if is_single_pipeline:
         return all_predictions["_single"], all_metrics["_single"]
     else:

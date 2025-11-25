@@ -36,7 +36,7 @@ class TestEmptyBatchHandling:
         )
 
         # Extract token-level features
-        layer_selected = activations.select(layers=12)
+        layer_selected = activations.select(layer=12)
         features, tokens_per_sample = layer_selected.extract_tokens()
 
         # Check results
@@ -66,6 +66,6 @@ class TestEmptyBatchHandling:
         )
 
         # Select layer first, then aggregate
-        layer_selected = activations.select(layers=12)
+        layer_selected = activations.select(layer=12)
         aggregated = layer_selected.pool(dim="sequence", method="mean")
         assert aggregated.activations.shape == (batch_size, d_model), "Should have 3 samples"

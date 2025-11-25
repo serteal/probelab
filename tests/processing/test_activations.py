@@ -155,10 +155,10 @@ class TestGetBatches:
         # Create input tensors
         input_ids = torch.tensor(
             [
-                [1, 2, 3, 0, 0],  # length 3
-                [1, 2, 3, 4, 5],  # length 5
-                [1, 2, 0, 0, 0],  # length 2
-                [1, 2, 3, 4, 0],  # length 4
+                [1, 2, 3, 0, 0],  # index 0, length 3
+                [1, 2, 3, 4, 5],  # index 1, length 5
+                [1, 2, 0, 0, 0],  # index 2, length 2
+                [1, 2, 3, 4, 0],  # index 3, length 4
             ]
         )
         attention_mask = (input_ids != 0).float()
@@ -166,18 +166,18 @@ class TestGetBatches:
 
         batches = list(get_batches(inputs, batch_size=2, tokenizer=mock_tokenizer))
 
-        # Should create 2 batches, sorted by length
+        # Should create 2 batches, sorted by length descending
         assert len(batches) == 2
 
-        # First batch should contain shortest sequences
+        # First batch should contain longest sequences (descending order)
         batch1_inputs, batch1_indices = batches[0]
-        assert set(batch1_indices) == {2, 0}  # indices of length 2 and 3 sequences
-        assert batch1_inputs["input_ids"].shape[1] <= 3  # max length in batch
+        assert set(batch1_indices) == {1, 3}  # indices of length 5 and 4 sequences
+        assert batch1_inputs["input_ids"].shape[1] == 5  # max length in batch
 
-        # Second batch should contain longest sequences
+        # Second batch should contain shortest sequences
         batch2_inputs, batch2_indices = batches[1]
-        assert set(batch2_indices) == {3, 1}  # indices of length 4 and 5 sequences
-        assert batch2_inputs["input_ids"].shape[1] <= 5  # max length in batch
+        assert set(batch2_indices) == {0, 2}  # indices of length 3 and 2 sequences
+        assert batch2_inputs["input_ids"].shape[1] == 3  # max length in batch
 
     def test_get_batches_left_padding(self, mock_tokenizer):
         """Test batch creation with left padding."""
@@ -279,12 +279,19 @@ class TestModelHelpers:
         model.config.hidden_size = 768
         assert get_hidden_dim(model) == 768
 
-        # Test error case
-        model.config = Mock()
-        del model.config.hidden_size
-        model.name_or_path = "unknown-model"
+        # Test with text_config.hidden_size (multimodal models)
+        model2 = Mock()
+        model2.config = Mock(spec=[])  # No hidden_size
+        model2.config.text_config = Mock()
+        model2.config.text_config.hidden_size = 1024
+        assert get_hidden_dim(model2) == 1024
+
+        # Test error case - no hidden_size anywhere
+        model3 = Mock()
+        model3.config = Mock(spec=[])  # Empty spec, no hidden_size
+        model3.name_or_path = "unknown-model"
         with pytest.raises(ValueError, match="Cannot determine hidden dimension"):
-            get_hidden_dim(model)
+            get_hidden_dim(model3)
 
 
 class TestActivations:

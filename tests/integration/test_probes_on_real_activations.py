@@ -11,7 +11,18 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelib as pl
-from probelib.types import AggregationMethod
+from probelib.datasets.base import DialogueDataset
+from probelib.types import Dialogue, Label
+
+
+class _TestDialogueDataset(DialogueDataset):
+    """Simple concrete DialogueDataset for testing."""
+
+    base_name = "test_dataset"
+
+    def _get_dialogues(self) -> tuple[list[Dialogue], list[Label], dict | None]:
+        # Not used - we pass dialogues directly to __init__
+        return [], [], None
 
 
 def _cuda_required():
@@ -54,10 +65,17 @@ def _collect_small_activations(model_name: str, dialogues):
     )
     model.eval()
 
+    # Wrap in _TestDialogueDataset (disable shuffle for deterministic comparison)
+    dataset = _TestDialogueDataset(
+        dialogues=dialogues,
+        labels=[pl.Label.POSITIVE, pl.Label.NEGATIVE],  # Dummy labels
+        shuffle_upon_init=False,
+    )
+
     acts = pl.processing.collect_activations(
         model=model,
         tokenizer=tokenizer,
-        dataset=dialogues,
+        dataset=dataset,
         layers=[0],
         batch_size=2,
         streaming=False,
@@ -65,7 +83,8 @@ def _collect_small_activations(model_name: str, dialogues):
         add_generation_prompt=False,
         mask=pl.masks.assistant(include_padding=False),
     )
-    return acts
+    # Convert to float32 for probe compatibility (models often use bfloat16)
+    return acts.to(dtype=torch.float32)
 
 
 @pytest.mark.integration
@@ -79,7 +98,7 @@ def test_logistic_sequence_mean_llama3():
     labels = [1, 0]  # arbitrary small labels for 2 samples
     pipeline = pl.Pipeline([
         ("select", pl.preprocessing.SelectLayer(0)),
-        ("agg", pl.preprocessing.Pool(AggregationMethod.MEAN)),
+        ("agg", pl.preprocessing.Pool(dim="sequence", method="mean")),
         ("probe", pl.probes.Logistic(
             device="cuda",
             random_state=0,
@@ -89,7 +108,7 @@ def test_logistic_sequence_mean_llama3():
     probs = pipeline.predict_proba(acts)
 
     assert probs.shape == (2, 2)
-    assert torch.allclose(probs.sum(dim=1), torch.ones(2), atol=1e-5)
+    assert torch.allclose(probs.sum(dim=1), torch.ones(2, device=probs.device), atol=1e-5)
     # non-degenerate predictions
     assert not torch.allclose(probs[0], probs[1])
 
@@ -110,10 +129,17 @@ def test_logistic_token_mean_streaming_fit_llama3():
     )
     model.eval()
 
+    # Wrap in dataset (disable shuffle for deterministic comparison)
+    dataset = _TestDialogueDataset(
+        dialogues=dialogues,
+        labels=[pl.Label.POSITIVE, pl.Label.NEGATIVE],
+        shuffle_upon_init=False,
+    )
+
     acts_iter = pl.processing.collect_activations(
         model=model,
         tokenizer=tokenizer,
-        dataset=dialogues,
+        dataset=dataset,
         layers=[0],
         batch_size=1,
         streaming=True,
@@ -127,22 +153,23 @@ def test_logistic_token_mean_streaming_fit_llama3():
     # so we use sequence-level aggregation before the probe
     pipeline = pl.Pipeline([
         ("select", pl.preprocessing.SelectLayer(0)),
-        ("agg", pl.preprocessing.Pool(AggregationMethod.MEAN)),
+        ("agg", pl.preprocessing.Pool(dim="sequence", method="mean")),
         ("probe", pl.probes.Logistic(
             device="cuda",
             random_state=0,
         )),
     ])
 
-    # Use partial_fit for streaming
+    # Use partial_fit for streaming (convert to float32 for probe compatibility)
     for batch_acts in acts_iter:
+        batch_acts_f32 = batch_acts.to(dtype=torch.float32)
         batch_labels = [labels[i] for i in batch_acts.batch_indices]
-        pipeline.partial_fit(batch_acts, batch_labels)
+        pipeline.partial_fit(batch_acts_f32, batch_labels)
 
     probs = pipeline.predict_proba(acts)
 
     assert probs.shape == (2, 2)
-    assert torch.allclose(probs.sum(dim=1), torch.ones(2), atol=1e-5)
+    assert torch.allclose(probs.sum(dim=1), torch.ones(2, device=probs.device), atol=1e-5)
 
 
 @pytest.mark.integration
@@ -156,7 +183,7 @@ def test_logistic_sequence_mean_gemma2():
     labels = [1, 0]
     pipeline = pl.Pipeline([
         ("select", pl.preprocessing.SelectLayer(0)),
-        ("agg", pl.preprocessing.Pool(AggregationMethod.MEAN)),
+        ("agg", pl.preprocessing.Pool(dim="sequence", method="mean")),
         ("probe", pl.probes.Logistic(
             device="cuda",
             random_state=0,
@@ -166,4 +193,4 @@ def test_logistic_sequence_mean_gemma2():
     probs = pipeline.predict_proba(acts)
 
     assert probs.shape == (2, 2)
-    assert torch.allclose(probs.sum(dim=1), torch.ones(2), atol=1e-5)
+    assert torch.allclose(probs.sum(dim=1), torch.ones(2, device=probs.device), atol=1e-5)

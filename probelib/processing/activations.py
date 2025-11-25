@@ -74,12 +74,9 @@ def get_batches(
         batch_size: Maximum number of sequences per batch.
         tokenizer: Provides padding semantics used to trim left/right padding.
     """
-    # Get sequence lengths and sort by length (descending) for efficient batching
-    # Largest batches first to allocate peak memory when GPU is unfragmented
     seq_lengths = (inputs["input_ids"] != tokenizer.pad_token_id).sum(dim=1)  # type: ignore
     sorted_indices = torch.sort(seq_lengths, descending=True)[1]
 
-    # Create batches
     num_samples = sorted_indices.numel()
     for start in range(0, num_samples, batch_size):
         end = min(start + batch_size, num_samples)
@@ -304,13 +301,11 @@ class Activations:
             acts = torch.randn(12, 4, 10, 768)  # [layer, batch, seq, hidden]
             activations = Activations.from_tensor(acts, layer_indices=list(range(12)))
         """
-        # Determine shape and axes
         if activations.ndim == 3:
             # [batch, seq, hidden] - single layer
             batch_size, seq_len, hidden_size = activations.shape
             axes = (Axis.BATCH, Axis.SEQ, Axis.HIDDEN)
 
-            # Add layer dimension
             activations = activations.unsqueeze(0)  # [1, batch, seq, hidden]
             axes = (Axis.LAYER, Axis.BATCH, Axis.SEQ, Axis.HIDDEN)
 
@@ -330,7 +325,6 @@ class Activations:
                 f"got shape {activations.shape}"
             )
 
-        # Create default masks if needed
         if attention_mask is None:
             attention_mask = torch.ones(batch_size, seq_len, dtype=torch.float32)
 
@@ -340,13 +334,11 @@ class Activations:
         if input_ids is None:
             input_ids = torch.ones(batch_size, seq_len, dtype=torch.long)
 
-        # Move to same device as activations
         device = activations.device
         attention_mask = attention_mask.to(device)
         detection_mask = detection_mask.to(device)
         input_ids = input_ids.to(device)
 
-        # Create metadata
         layer_meta = LayerMeta(indices=tuple(layer_indices))
         sequence_meta = SequenceMeta(
             attention_mask=attention_mask,
@@ -421,39 +413,29 @@ class Activations:
             ValueError: If hidden_states format is invalid or empty
             TypeError: If hidden_states is not tuple or Tensor
         """
-        # Handle tuple format (HuggingFace)
         if isinstance(hidden_states, tuple):
             if len(hidden_states) == 0:
                 raise ValueError("Empty hidden_states tuple")
 
-            # Detect format by checking first element
             first_elem = hidden_states[0]
 
-            # Standard format: tuple of tensors (one per layer)
-            # Each tensor: [batch, seq, hidden]
             if isinstance(first_elem, torch.Tensor):
-                # Standard HF forward pass: (layer_0, layer_1, ..., layer_N)
-                # Filter to requested layers if specified
+                # Standard HF format: (layer_0, layer_1, ..., layer_N), each [batch, seq, hidden]
                 if layer_indices is not None:
                     if not isinstance(layer_indices, (list, tuple)):
                         layer_indices_to_select = [layer_indices]
                     else:
                         layer_indices_to_select = list(layer_indices)
                     selected_layers = [hidden_states[idx] for idx in layer_indices_to_select]
-                    # Track which layers we selected
                     actual_layer_indices = layer_indices_to_select
                 else:
-                    # Use all layers
                     selected_layers = list(hidden_states)
                     actual_layer_indices = list(range(len(hidden_states)))
 
-                # Stack to get [layer, batch, seq, hidden]
-                activations_tensor = torch.stack(selected_layers, dim=0)
+                activations_tensor = torch.stack(selected_layers, dim=0)  # [layer, batch, seq, hidden]
 
-            # Nested tuple format: tuple of tuples (generation steps)
-            # Outer tuple = generation steps, inner tuple = layers
             elif isinstance(first_elem, (tuple, list)):
-                # Generation format: ((step0_layer0, step0_layer1, ...), (step1_layer0, ...), ...)
+                # Generation format: ((step0_layer0, ...), (step1_layer0, ...)), each tensor [batch, 1, hidden]
                 num_steps = len(hidden_states)
                 num_layers = len(hidden_states[0])
 
@@ -479,20 +461,15 @@ class Activations:
                     selected_layer_indices = list(range(num_layers))
                     actual_layer_indices = selected_layer_indices
 
-                # Collect tensors for selected layers across generation steps
                 layer_tensors = []
                 for layer_idx in selected_layer_indices:
-                    # Get all tensors for this layer across generation steps
                     step_tensors = [
                         hidden_states[step_idx][layer_idx] for step_idx in range(num_steps)
                     ]
-
-                    # Concatenate along sequence dimension
                     layer_tensor = torch.cat(step_tensors, dim=1)  # [batch, total_seq, hidden]
                     layer_tensors.append(layer_tensor)
 
-                # Stack layers to get [layer, batch, seq, hidden]
-                activations_tensor = torch.stack(layer_tensors, dim=0)
+                activations_tensor = torch.stack(layer_tensors, dim=0)  # [layer, batch, seq, hidden]
             else:
                 raise TypeError(
                     f"Expected tuple of Tensors or tuple of tuples, "
@@ -506,8 +483,6 @@ class Activations:
                     f"Expected 4D tensor [layer, batch, seq, hidden], "
                     f"got shape {activations_tensor.shape}"
                 )
-            # For tensor input, layer_indices indicates what layers these are
-            # (no selection happens here, just labeling)
             actual_layer_indices = layer_indices
         else:
             raise TypeError(
@@ -554,11 +529,9 @@ class Activations:
         Returns:
             Activations object
         """
-        # Convert to list if needed
         if not isinstance(layer_indices, list):
             layer_indices = list(layer_indices)
 
-        # Use from_tensor which handles all the logic
         return cls.from_tensor(
             activations=activations,
             layer_indices=layer_indices,
@@ -692,8 +665,8 @@ class Activations:
                 raise ValueError(
                     f"Layer {layer} is not available in this Activations object.\n"
                     f"Available layers: [{available_layers}]\n"
-                    f"Hint: Use acts.select(layers={list(layer_indices)}) to select "
-                    f"available layers, or collect_activations with the desired layers."
+                    f"Hint: Use acts.select(layer=...) for single layer or "
+                    f"acts.select(layers=[...]) for multiple layers."
                 ) from exc
         return tensor_indices
 
@@ -702,7 +675,7 @@ class Activations:
             raise ValueError(
                 "Layer metadata is unavailable because the layer axis was removed.\n"
                 "Hint: This happens after pooling over layers (e.g., acts.pool(dim='layer')) "
-                "or selecting a single layer (e.g., acts.select(layers=10))."
+                "or selecting a single layer (e.g., acts.select(layer=10))."
             )
         return self.layer_meta
 
@@ -753,55 +726,54 @@ class Activations:
     def select(
         self,
         *,
-        layers: int | list[int] | range | None = None,
+        layer: int | None = None,
+        layers: list[int] | range | None = None,
     ) -> "Activations":
         """
-        Unified method for selecting layers with automatic axis handling.
+        Select layer(s) from multi-layer activations.
 
-        This is a cleaner API that replaces `select_layer()` and `select_layers()`
-        with a single method that automatically determines whether to keep or
-        remove the layer axis based on input.
+        Use ``layer`` (singular) to select a single layer and remove the LAYER axis.
+        Use ``layers`` (plural) to select multiple layers while keeping the LAYER axis.
 
         Args:
-            layers: Layer(s) to select:
-                - int: Select single layer, remove LAYER axis
-                - list[int]: Select multiple layers, keep LAYER axis
-                - range: Select range of layers, keep LAYER axis
-                - None: No layer selection (returns self)
+            layer: Single layer index to select. Removes LAYER axis from result.
+            layers: List or range of layer indices to select. Keeps LAYER axis.
 
         Returns:
-            New Activations with selected layers
+            New Activations with selected layer(s).
+
+        Raises:
+            ValueError: If both ``layer`` and ``layers`` are provided.
+            ValueError: If neither ``layer`` nor ``layers`` are provided.
+            ValueError: If requested layer(s) are not available.
 
         Examples:
-            # Select single layer (removes layer axis)
-            >>> acts.select(layers=10)
+            # Select single layer (removes LAYER axis)
+            >>> acts.select(layer=10)  # Returns [batch, seq, hidden]
 
-            # Select multiple layers (keeps layer axis)
-            >>> acts.select(layers=[10, 15, 20])
+            # Select multiple layers (keeps LAYER axis)
+            >>> acts.select(layers=[10, 15, 20])  # Returns [3, batch, seq, hidden]
 
             # Select range of layers
             >>> acts.select(layers=range(10, 20))
-
-        Raises:
-            ValueError: If requested layers are not available
-
-        Note:
-            For backwards compatibility, `select_layer(i)` and
-            `select_layers([i, j])` are still available.
         """
-        if layers is None:
-            return self
+        if layer is not None and layers is not None:
+            raise ValueError(
+                "Cannot specify both 'layer' and 'layers'. "
+                "Use 'layer' for single layer selection (removes axis), "
+                "'layers' for multiple layer selection (keeps axis)."
+            )
 
-        # Ensure we have layer axis
+        if layer is None and layers is None:
+            raise ValueError(
+                "Must specify either 'layer' (single, removes axis) or "
+                "'layers' (multiple, keeps axis)."
+            )
+
         self.expect_axes(Axis.LAYER)
 
-        # Handle range objects
-        if isinstance(layers, range):
-            layers = list(layers)
-
-        # Single layer - remove axis
-        if isinstance(layers, int):
-            tensor_idx = self.get_layer_tensor_indices([layers])[0]
+        if layer is not None:
+            tensor_idx = self.get_layer_tensor_indices([layer])[0]
             dim = self._axis_positions[Axis.LAYER]
             selected = self.activations.select(dim, tensor_idx)
 
@@ -814,7 +786,9 @@ class Activations:
                 batch_indices=self.batch_indices,
             )
 
-        # Multiple layers - keep axis
+        if isinstance(layers, range):
+            layers = list(layers)
+
         if not layers:
             raise ValueError(
                 f"layers must be non-empty. Available layers: {self.layer_indices}"
@@ -877,7 +851,6 @@ class Activations:
             For backwards compatibility, `sequence_pool()` and `aggregate()` are
             still available but may be deprecated in future versions.
         """
-        # Normalize method to enum
         if isinstance(method, str):
             try:
                 method = AggregationMethod(method)
@@ -887,7 +860,6 @@ class Activations:
                     f"Supported: {[m.value for m in AggregationMethod]}"
                 )
 
-        # Normalize dimension name
         if dim in ("sequence", "seq"):
             axis = Axis.SEQ
             self.expect_axes(Axis.SEQ)
@@ -899,20 +871,16 @@ class Activations:
                 f"Unknown dimension: {dim}. Supported: 'sequence', 'seq', 'layer'"
             )
 
-        # Handle sequence pooling
         if axis == Axis.SEQ:
             if use_detection_mask:
-                # Use existing _reduce_sequence which respects detection mask
                 reduced = self._reduce_sequence(method)
             else:
-                # Simple pooling over all tokens
                 dim_idx = self._axis_positions[Axis.SEQ]
                 if method == AggregationMethod.MEAN:
                     reduced = self.activations.mean(dim=dim_idx)
                 elif method == AggregationMethod.MAX:
                     reduced = self.activations.max(dim=dim_idx).values
                 elif method == AggregationMethod.LAST_TOKEN:
-                    # Take the last token (index -1) for each sequence
                     reduced = self.activations.select(dim_idx, -1)
                 else:
                     raise ValueError(
@@ -929,7 +897,6 @@ class Activations:
                 batch_indices=self.batch_indices,
             )
 
-        # Handle layer pooling
         elif axis == Axis.LAYER:
             if method == AggregationMethod.LAST_TOKEN:
                 raise ValueError(
@@ -972,7 +939,7 @@ class Activations:
                 raise ValueError(
                     f"Token extraction requires single layer, but found {self.n_layers} layers.\n"
                     f"Available layers: {self.layer_indices}\n"
-                    f"Hint: Use acts.select(layers=i) to select a single layer before extracting tokens."
+                    f"Hint: Use acts.select(layer=i) to select a single layer before extracting tokens."
                 )
             # Remove layer dimension
             acts = self.activations.squeeze(self._axis_positions[Axis.LAYER])
@@ -1006,7 +973,6 @@ class Activations:
         Uses torch.no_grad() since this is a pure aggregation operation
         that doesn't need gradient tracking.
         """
-        # Normalize method to enum
         if isinstance(method, str):
             try:
                 method = AggregationMethod(method)
@@ -1122,12 +1088,9 @@ def streaming_activations(
     """
     n_samples = tokenized_inputs["input_ids"].shape[0]
 
-    # Use HookedModel context for all batches (preserves buffer reuse optimization)
     with HookedModel(model, layers, detach_activations=detach_activations, hook_point=hook_point) as hooked_model:
-        # Get optimized batches with sorting and views
         batch_iter = get_batches(tokenized_inputs, batch_size, tokenizer)
 
-        # Add progress bar if requested
         if verbose:
             batch_iter = tqdm(
                 batch_iter,

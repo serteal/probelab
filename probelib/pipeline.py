@@ -121,15 +121,11 @@ class Pipeline:
         Returns:
             self: Fitted pipeline
         """
-        # Apply pre-transforms
         X_transformed = X
         for name, transformer in self._pre_steps:
             X_transformed = transformer.fit_transform(X_transformed, y)
 
-        # Fit probe
         self._probe.fit(X_transformed, y)
-
-        # Post-transforms (Pool on Scores) are stateless, no fitting needed
 
         return self
 
@@ -290,7 +286,6 @@ class Pipeline:
         for name, transformer in self._post_steps:
             scores = transformer.transform(scores)
 
-        # Return raw tensor
         return scores.scores
 
     def predict(self, X: "Activations") -> torch.Tensor:

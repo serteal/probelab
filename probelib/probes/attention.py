@@ -43,7 +43,7 @@ class _AttentionNetwork(nn.Module):
         self.attention_norm = nn.LayerNorm(d_model)
         self.attention_scorer = nn.Sequential(
             nn.Linear(d_model, hidden_dim),
-            nn.ReLU(),  # Changed from Tanh to ReLU for better gradient flow
+            nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )

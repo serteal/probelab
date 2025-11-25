@@ -35,7 +35,7 @@ class TestAggregationEdgeCases:
         )
 
         # Mean aggregation with no valid tokens should handle gracefully
-        aggregated = activations.select(layers=0).pool(dim="sequence", method="mean").activations
+        aggregated = activations.select(layer=0).pool(dim="sequence", method="mean").activations
         assert aggregated.shape == (2, 8)
         # Should be zeros or handle gracefully
         assert torch.all(torch.isfinite(aggregated))
@@ -57,7 +57,7 @@ class TestAggregationEdgeCases:
 
         # Test all aggregation methods
         for method in [AggregationMethod.MEAN, AggregationMethod.MAX, AggregationMethod.LAST_TOKEN]:
-            aggregated = activations.select(layers=0).pool(dim="sequence", method=method).activations
+            aggregated = activations.select(layer=0).pool(dim="sequence", method=method).activations
             assert aggregated.shape == (3, 8)
 
             if method in (AggregationMethod.MEAN, AggregationMethod.LAST_TOKEN):
@@ -89,7 +89,7 @@ class TestAggregationEdgeCases:
         )
 
         # Test mean aggregation
-        mean_agg = activations.select(layers=0).pool(dim="sequence", method="mean").activations
+        mean_agg = activations.select(layer=0).pool(dim="sequence", method="mean").activations
         assert mean_agg.shape == (batch_size, d_model)
 
         # Verify mean is computed only over valid tokens
@@ -99,11 +99,11 @@ class TestAggregationEdgeCases:
             assert torch.allclose(mean_agg[i], expected_mean, atol=1e-6)
 
         # Test max aggregation
-        max_agg = activations.select(layers=0).pool(dim="sequence", method="max").activations
+        max_agg = activations.select(layer=0).pool(dim="sequence", method="max").activations
         assert max_agg.shape == (batch_size, d_model)
 
         # Test last_token aggregation
-        last_agg = activations.select(layers=0).pool(dim="sequence", method="last_token").activations
+        last_agg = activations.select(layer=0).pool(dim="sequence", method="last_token").activations
         assert last_agg.shape == (batch_size, d_model)
 
         # Last token should be at different positions
@@ -129,7 +129,7 @@ class TestAggregationEdgeCases:
         )
 
         # Mean aggregation should propagate NaN
-        mean_agg = activations.select(layers=0).pool(dim="sequence", method="mean").activations
+        mean_agg = activations.select(layer=0).pool(dim="sequence", method="mean").activations
         assert torch.any(torch.isnan(mean_agg[0]))
 
         # But shouldn't affect other sequences
@@ -149,7 +149,7 @@ class TestAggregationEdgeCases:
                 layer_indices=[0],
             )
 
-            aggregated = activations.select(layers=0).pool(dim="sequence", method="mean").activations
+            aggregated = activations.select(layer=0).pool(dim="sequence", method="mean").activations
             assert aggregated.dtype == dtype
 
     def test_aggregation_preserves_device(self):
@@ -166,7 +166,7 @@ class TestAggregationEdgeCases:
             layer_indices=[0],
         )
 
-        aggregated = activations.select(layers=0).pool(dim="sequence", method="mean").activations
+        aggregated = activations.select(layer=0).pool(dim="sequence", method="mean").activations
         assert aggregated.device.type == device
 
 
@@ -589,7 +589,7 @@ class TestBoundaryConditions:
         )
 
         # Should handle long sequences
-        aggregated = activations.select(layers=0).pool(dim="sequence", method="mean").activations
+        aggregated = activations.select(layer=0).pool(dim="sequence", method="mean").activations
         assert aggregated.shape == (2, 16)
 
     def test_many_layers(self):

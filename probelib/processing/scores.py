@@ -209,13 +209,14 @@ class Scores:
 
             # Create mask from tokens_per_sample: [batch, seq]
             seq_indices = torch.arange(seq_len, device=self.scores.device)
-            mask = seq_indices.unsqueeze(0) < self.tokens_per_sample.unsqueeze(1)
+            tokens_per_sample = self.tokens_per_sample.to(self.scores.device)
+            mask = seq_indices.unsqueeze(0) < tokens_per_sample.unsqueeze(1)
 
             if method == AggregationMethod.MEAN:
                 # Masked mean: sum valid tokens / count
                 mask_expanded = mask.unsqueeze(-1).to(self.scores.dtype)  # [batch, seq, 1]
                 masked_scores = self.scores * mask_expanded
-                counts = self.tokens_per_sample.clamp(min=1).unsqueeze(-1).to(self.scores.dtype)  # [batch, 1]
+                counts = tokens_per_sample.clamp(min=1).unsqueeze(-1).to(self.scores.dtype)  # [batch, 1]
                 pooled = masked_scores.sum(dim=1) / counts  # [batch, n_classes]
 
             elif method == AggregationMethod.MAX:
@@ -224,18 +225,18 @@ class Scores:
                 masked_scores = self.scores.masked_fill(~mask_expanded, float("-inf"))
                 pooled = masked_scores.max(dim=1).values  # [batch, n_classes]
                 # Handle empty sequences (all -inf -> 0)
-                empty_mask = self.tokens_per_sample == 0
+                empty_mask = tokens_per_sample == 0
                 if empty_mask.any():
                     pooled[empty_mask] = 0.0
 
             elif method == AggregationMethod.LAST_TOKEN:
                 # Gather last valid token for each sample
-                last_indices = (self.tokens_per_sample - 1).clamp(min=0).long()  # [batch]
+                last_indices = (tokens_per_sample - 1).clamp(min=0).long()  # [batch]
                 # Expand for gather: [batch, 1, n_classes]
                 gather_idx = last_indices.view(batch_size, 1, 1).expand(batch_size, 1, n_classes)
                 pooled = self.scores.gather(dim=1, index=gather_idx).squeeze(1)  # [batch, n_classes]
                 # Handle empty sequences
-                empty_mask = self.tokens_per_sample == 0
+                empty_mask = tokens_per_sample == 0
                 if empty_mask.any():
                     pooled[empty_mask] = 0.0
 

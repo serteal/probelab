@@ -56,7 +56,7 @@ train_activations, test_activations = (
 # Create a pipeline with preprocessing steps + probe
 pipeline = pl.Pipeline([
     ("select", pl.preprocessing.SelectLayer(16)),
-    ("agg", pl.preprocessing.AggregateSequences("mean")),
+    ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
     ("probe", pl.probes.Logistic(device="cuda")),
 ])
 
@@ -95,16 +95,16 @@ train_dataset, test_dataset = (
 mask = pl.masks.assistant() & ~pl.masks.special_tokens()
 
 # Create pipelines with preprocessing steps + probe
-# Each pipeline selects layer 16, aggregates token scores, then classifies
+# Each pipeline selects layer 16, pools over sequence, then classifies
 pipelines = {
     "logistic": pl.Pipeline([
         ("select", pl.preprocessing.SelectLayer(16)),
-        ("agg", pl.preprocessing.AggregateTokenScores("mean")),
+        ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
         ("probe", pl.probes.Logistic(device="cuda")),
     ]),
     "mlp": pl.Pipeline([
         ("select", pl.preprocessing.SelectLayer(16)),
-        ("agg", pl.preprocessing.AggregateTokenScores("mean")),
+        ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
         ("probe", pl.probes.MLP(device="cuda")),
     ]),
 }
@@ -173,7 +173,7 @@ train_stream = pl.collect_activations(
 # Create pipeline with preprocessing + probe
 pipeline = pl.Pipeline([
     ("select", pl.preprocessing.SelectLayer(12)),
-    ("agg", pl.preprocessing.AggregateTokenScores("mean")),
+    ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
     ("probe", pl.probes.MLP(hidden_dim=256, device="cuda")),
 ])
 
