@@ -194,23 +194,19 @@ class Pipeline:
         self,
         X: "ActivationIterator",
         y: torch.Tensor | list,
-        n_epochs: int = 50,
-        freeze_normalizer_after_epoch: int = 0,
         verbose: bool = False,
     ) -> "Pipeline":
-        """Fit pipeline using streaming/online learning over multiple epochs.
+        """Fit pipeline using streaming/online learning (single pass).
 
-        Iterates over activation batches multiple times (epochs),
-        calling partial_fit on each batch. This method handles:
-        - Multi-epoch training with the activation iterator
-        - Normalizer freezing after specified epoch
-        - Learning rate scheduler stepping at epoch boundaries
+        Iterates over activation batches once, calling partial_fit on each batch.
+        Each batch is processed exactly once - no multi-epoch training.
+
+        For multi-epoch training, use streaming=False (batch mode) where the
+        probe's fit() method handles epochs internally.
 
         Args:
-            X: ActivationIterator that can be iterated multiple times
+            X: ActivationIterator that yields activation batches
             y: Labels for entire dataset (indexed by batch_indices)
-            n_epochs: Number of passes through the data
-            freeze_normalizer_after_epoch: Freeze Normalize statistics after this epoch
             verbose: Print progress
 
         Returns:
@@ -222,10 +218,9 @@ class Pipeline:
 
         Example:
             >>> acts_iter = pl.collect_activations(..., streaming=True)
-            >>> pipeline.fit_streaming(acts_iter, labels, n_epochs=50)
+            >>> pipeline.fit_streaming(acts_iter, labels)
         """
         from .logger import logger
-        from .preprocessing.pre_transforms import Normalize
         from .types import Label
 
         # Check for post-transforms
@@ -249,45 +244,17 @@ class Pipeline:
             else:
                 y = torch.tensor(y)
 
-        # Track whether scheduler has been initialized
-        scheduler_initialized = False
+        # Single pass through the data - each batch is processed exactly once
+        for batch_acts in X:
+            # Get batch labels using batch_indices
+            batch_indices = torch.as_tensor(batch_acts.batch_indices)
+            batch_labels = y.index_select(0, batch_indices)
 
-        for epoch in range(n_epochs):
+            # Call existing partial_fit (single gradient step per batch)
+            self.partial_fit(batch_acts, batch_labels)
+
             if verbose:
-                logger.info(f"Epoch {epoch + 1}/{n_epochs}")
-
-            steps_in_epoch = 0
-            for batch_acts in X:
-                # Get batch labels using batch_indices
-                batch_indices = torch.as_tensor(batch_acts.batch_indices)
-                batch_labels = y.index_select(0, batch_indices)
-
-                # Call existing partial_fit
-                self.partial_fit(batch_acts, batch_labels)
-                steps_in_epoch += 1
-
-            # Initialize scheduler after first epoch (when we know steps_per_epoch)
-            if not scheduler_initialized and hasattr(self._probe, "init_scheduler"):
-                self._probe.init_scheduler(n_epochs, steps_in_epoch)
-                scheduler_initialized = True
-
-            # Freeze normalizers after specified epoch
-            if epoch == freeze_normalizer_after_epoch:
-                for name, transformer in self._pre_steps:
-                    if isinstance(transformer, Normalize) and hasattr(transformer, "freeze"):
-                        transformer.freeze()
-                        if verbose:
-                            logger.info(f"Froze normalizer '{name}' after epoch {epoch + 1}")
-
-                # Also freeze probe's internal scaler if it has one
-                if hasattr(self._probe, "freeze_scaler"):
-                    self._probe.freeze_scaler()
-                    if verbose:
-                        logger.info(f"Froze probe scaler after epoch {epoch + 1}")
-
-            # Step LR scheduler at epoch end
-            if hasattr(self._probe, "step_scheduler"):
-                self._probe.step_scheduler()
+                logger.info(f"Processed batch with {len(batch_indices)} samples")
 
         return self
 

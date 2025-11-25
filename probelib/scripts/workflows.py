@@ -179,23 +179,21 @@ def train_pipelines_streaming(
     pipelines: PipelineInput,
     activations_iter: ActivationIterator,
     labels: torch.Tensor | list[Label],
-    n_epochs: int = 50,
-    freeze_normalizer_after_epoch: int = 0,
     verbose: bool = True,
 ) -> None:
-    """Train one or many pipelines on streaming activations over multiple epochs.
+    """Train one or many pipelines on streaming activations (single pass).
 
     For large datasets that don't fit in memory. Each pipeline must support
-    partial_fit() for incremental learning. This function handles multi-epoch
-    training, normalizer freezing, and learning rate scheduling.
+    partial_fit() for incremental learning. Each batch is processed exactly
+    once - no multi-epoch training.
+
+    For multi-epoch training, use streaming=False (batch mode) where the
+    probe's fit() method handles epochs internally.
 
     Args:
         pipelines: Single Pipeline or mapping name → Pipeline instance
         activations_iter: ActivationIterator yielding activation batches
         labels: All labels (indexed by batch_indices from activations)
-        n_epochs: Number of passes through the data (default: 50)
-        freeze_normalizer_after_epoch: Freeze Normalize/scaler statistics after
-            this epoch (default: 0 = freeze after first epoch)
         verbose: Whether to print progress information
 
     Raises:
@@ -210,18 +208,14 @@ def train_pipelines_streaming(
         ...     mask=pl.masks.assistant(),
         ...     streaming=True,  # Returns iterator
         ... )
-        >>> pl.train_pipelines_streaming(
-        ...     pipeline, acts_iter, large_dataset.labels,
-        ...     n_epochs=50, freeze_normalizer_after_epoch=0
-        ... )
+        >>> pl.train_pipelines_streaming(pipeline, acts_iter, large_dataset.labels)
     """
     # Normalize inputs
     is_single_pipeline = isinstance(pipelines, Pipeline)
     pipelines_dict = {"_single": pipelines} if is_single_pipeline else pipelines
 
     if verbose:
-        logger.info(f"Training {len(pipelines_dict)} pipeline(s) in streaming mode")
-        logger.info(f"  n_epochs={n_epochs}, freeze_normalizer_after_epoch={freeze_normalizer_after_epoch}")
+        logger.info(f"Training {len(pipelines_dict)} pipeline(s) in streaming mode (single pass)")
 
     # Train each pipeline using fit_streaming
     for name, pipeline in pipelines_dict.items():
@@ -231,8 +225,6 @@ def train_pipelines_streaming(
         pipeline.fit_streaming(
             activations_iter,
             labels,
-            n_epochs=n_epochs,
-            freeze_normalizer_after_epoch=freeze_normalizer_after_epoch,
             verbose=verbose,
         )
 
@@ -247,8 +239,6 @@ def train_from_model(
     mask: "MaskFunction",
     batch_size: int = 32,
     streaming: bool = False,
-    n_epochs: int = 50,
-    freeze_normalizer_after_epoch: int = 0,
     verbose: bool = True,
     **activation_kwargs: Any,
 ) -> None:
@@ -262,6 +252,12 @@ def train_from_model(
     (e.g., Pool(dim="sequence", method="mean")), activations are pooled during collection
     for ~440x memory reduction and ~2x throughput improvement.
 
+    **Streaming vs Batch Mode**:
+    - streaming=False (default): Collects all activations, then calls fit() which
+      handles epochs internally (e.g., MLP trains for n_epochs=100 by default)
+    - streaming=True: Processes each batch exactly once via partial_fit().
+      Use for very large datasets that don't fit in memory.
+
     Args:
         pipelines: Single Pipeline or mapping name → Pipeline instance
         model: Language model to extract activations from
@@ -270,10 +266,7 @@ def train_from_model(
         layers: Layer indices to collect (REQUIRED - no magic extraction)
         mask: Mask function for token selection (REQUIRED)
         batch_size: Batch size for activation collection
-        streaming: Whether to use streaming mode (uses partial_fit)
-        n_epochs: Number of epochs for streaming training (default: 50)
-        freeze_normalizer_after_epoch: Freeze Normalize/scaler statistics after
-            this epoch when streaming (default: 0 = freeze after first epoch)
+        streaming: Whether to use streaming mode (single pass with partial_fit)
         verbose: Whether to show progress
         **activation_kwargs: Additional args for collect_activations
             (e.g., hook_point, add_generation_prompt)
@@ -318,8 +311,6 @@ def train_from_model(
             pipelines,
             activations,
             dataset.labels,
-            n_epochs=n_epochs,
-            freeze_normalizer_after_epoch=freeze_normalizer_after_epoch,
             verbose=verbose,
         )
     else:

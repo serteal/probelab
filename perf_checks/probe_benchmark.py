@@ -142,6 +142,93 @@ def benchmark_probe_training(
     if max_samples:
         dataset = dataset[:max_samples]
 
+    # === FIRST: Benchmark with PRE-COLLECTED activations (probe training only) ===
+    # This shows the theoretical max throughput without activation collection overhead
+    print("\n" + "=" * 60)
+    print("Pre-collecting activations for probe-only benchmarks...")
+    print("=" * 60)
+
+    # Collect activations once with pooled strategy (most common use case)
+    pre_collected_pooled = pl.collect_activations(
+        model=model,
+        tokenizer=tokenizer,
+        dataset=dataset,
+        layers=layers,
+        mask=pl.masks.assistant(),
+        batch_size=batch_size,
+        collection_strategy="mean",  # Pool during collection
+        verbose=True,
+    )
+
+    # Also collect dense activations for token-level benchmarks
+    pre_collected_dense = pl.collect_activations(
+        model=model,
+        tokenizer=tokenizer,
+        dataset=dataset,
+        layers=layers,
+        mask=pl.masks.assistant(),
+        batch_size=batch_size,
+        collection_strategy=None,  # Dense collection
+        verbose=True,
+    )
+
+    # Benchmark probe training ONLY with pre-collected pooled activations
+    def train_probe_only_pooled():
+        pipeline = Pipeline([
+            ("select", SelectLayer(layers[0])),
+            # No Pool needed - activations are already pooled
+            ("probe", pl.probes.Logistic()),
+        ])
+        pl.scripts.train_pipelines(pipeline, pre_collected_pooled, dataset.labels, verbose=False)
+        return pipeline
+
+    probe_only_pooled_result = measure_with_warmup(
+        train_probe_only_pooled,
+        warmup_runs=1,
+        measurement_runs=5,
+        name="Probe Training ONLY (pre-collected pooled activations)",
+    )
+    results["probe_only_pooled"] = probe_only_pooled_result
+
+    # Benchmark probe training ONLY with pre-collected dense activations
+    def train_probe_only_dense():
+        pipeline = Pipeline([
+            ("select", SelectLayer(layers[0])),
+            ("agg", Pool(dim="sequence", method="mean")),
+            ("probe", pl.probes.Logistic()),
+        ])
+        pl.scripts.train_pipelines(pipeline, pre_collected_dense, dataset.labels, verbose=False)
+        return pipeline
+
+    probe_only_dense_result = measure_with_warmup(
+        train_probe_only_dense,
+        warmup_runs=1,
+        measurement_runs=5,
+        name="Probe Training ONLY (pre-collected dense activations)",
+    )
+    results["probe_only_dense"] = probe_only_dense_result
+
+    # Benchmark 10 probes with pre-collected activations
+    def train_10_probes_only():
+        pipelines = {
+            f"logistic_{i}": Pipeline([
+                ("select", SelectLayer(layers[0])),
+                ("probe", pl.probes.Logistic()),
+            ])
+            for i in range(10)
+        }
+        pl.scripts.train_pipelines(pipelines, pre_collected_pooled, dataset.labels, verbose=False)
+        return pipelines
+
+    probe_10_only_result = measure_with_warmup(
+        train_10_probes_only,
+        warmup_runs=1,
+        measurement_runs=5,
+        name="10 Probes Training ONLY (pre-collected pooled)",
+    )
+    results["probe_10_only"] = probe_10_only_result
+
+    # === NEXT: Full pipeline benchmarks (activation collection + training) ===
     # Measure full pipeline (activation collection + training)
     def train_pipeline_full(probe_class, use_aggregation=True):
         def inner_train_pipeline_full():
@@ -253,7 +340,7 @@ def benchmark_probe_training(
         logistic_10_probes_full_pipeline_result
     )
 
-    # Streaming mode benchmarks (using partial_fit)
+    # Streaming mode benchmarks (using partial_fit - single pass)
     def train_pipeline_streaming(probe_class, use_aggregation=True):
         def inner_train_pipeline_streaming():
             if use_aggregation:
@@ -280,8 +367,7 @@ def benchmark_probe_training(
                 layers=layers,
                 mask=pl.masks.assistant(),
                 batch_size=batch_size,
-                streaming=True,  # Streaming mode with partial_fit
-                n_epochs=10,  # Fewer epochs for benchmark
+                streaming=True,  # Streaming mode - single pass with partial_fit
                 verbose=False,
             )
 

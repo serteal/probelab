@@ -190,13 +190,13 @@ class MLP(BaseProbe):
             # TOKEN-LEVEL training
             features, tokens_per_sample = X.extract_tokens()  # [n_tokens, hidden]
 
-            # Handle labels
+            # Handle labels (ensure device compatibility)
             if y_tensor.ndim == 1:
                 # Labels are [batch] → expand to [n_tokens]
-                labels = torch.repeat_interleave(y_tensor, tokens_per_sample)
+                labels = torch.repeat_interleave(y_tensor, tokens_per_sample.cpu())
             elif y_tensor.ndim == 2:
                 # Labels are [batch, seq] → extract tokens
-                labels = y_tensor[X.detection_mask.bool()]
+                labels = y_tensor[X.detection_mask.cpu().bool()]
             else:
                 raise ValueError(
                     f"Invalid label shape: {y_tensor.shape}. "
@@ -295,11 +295,11 @@ class MLP(BaseProbe):
             # Token-level training
             features, tokens_per_sample = X.extract_tokens()
 
-            # Expand labels if needed
+            # Expand labels if needed (ensure device compatibility)
             if y_tensor.ndim == 1:
-                labels = torch.repeat_interleave(y_tensor, tokens_per_sample)
+                labels = torch.repeat_interleave(y_tensor, tokens_per_sample.cpu())
             elif y_tensor.ndim == 2:
-                labels = y_tensor[X.detection_mask.bool()]
+                labels = y_tensor[X.detection_mask.cpu().bool()]
             else:
                 raise ValueError(f"Invalid label shape: {y_tensor.shape}")
 

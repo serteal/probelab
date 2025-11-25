@@ -40,7 +40,8 @@ class _GPUStandardScaler:
 
     def fit(self, X: torch.Tensor) -> "_GPUStandardScaler":
         """Fit the scaler on data."""
-        X = X.to(self.device)
+        if X.device != torch.device(self.device):
+            X = X.to(self.device)
         self.mean_ = X.mean(dim=0)
         self.std_ = X.std(dim=0).clamp(min=1e-8)
         self._fitted = True
@@ -94,14 +95,23 @@ class _GPUStandardScaler:
         """Transform the data."""
         if not self._fitted:
             raise RuntimeError("Scaler must be fitted before transform")
-        X = X.to(self.device)
+        if X.device != torch.device(self.device):
+            X = X.to(self.device)
         mean = self.mean_.to(X.dtype)
         std = self.std_.to(X.dtype)
         return (X - mean) / std
 
     def fit_transform(self, X: torch.Tensor) -> torch.Tensor:
-        """Fit and transform in one step."""
-        return self.fit(X).transform(X)
+        """Fit and transform in one step (single pass optimization)."""
+        if X.device != torch.device(self.device):
+            X = X.to(self.device)
+        self.mean_ = X.mean(dim=0)
+        self.std_ = X.std(dim=0).clamp(min=1e-8)
+        self._fitted = True
+        # Transform in-place using computed stats (no second iteration)
+        mean = self.mean_.to(X.dtype)
+        std = self.std_.to(X.dtype)
+        return (X - mean) / std
 
 
 class Logistic(BaseProbe):
@@ -217,13 +227,13 @@ class Logistic(BaseProbe):
             # TOKEN-LEVEL training
             features, tokens_per_sample = X.extract_tokens()  # [n_tokens, hidden]
 
-            # Handle labels
+            # Handle labels (ensure device compatibility)
             if y_tensor.ndim == 1:
                 # Labels are [batch] → expand to [n_tokens]
-                labels = torch.repeat_interleave(y_tensor, tokens_per_sample)
+                labels = torch.repeat_interleave(y_tensor, tokens_per_sample.cpu())
             elif y_tensor.ndim == 2:
                 # Labels are [batch, seq] → extract tokens
-                labels = y_tensor[X.detection_mask.bool()]
+                labels = y_tensor[X.detection_mask.cpu().bool()]
             else:
                 raise ValueError(
                     f"Invalid label shape: {y_tensor.shape}. "
@@ -280,6 +290,9 @@ class Logistic(BaseProbe):
 
         self._network.train()
 
+        # Cache weight tensor reference for L2 regularization (avoid loop in closure)
+        weight_param = self._network.linear.weight
+
         # LBFGS requires a closure
         def closure():
             self._optimizer.zero_grad()
@@ -288,14 +301,13 @@ class Logistic(BaseProbe):
             # Binary cross entropy loss
             bce_loss = F.binary_cross_entropy_with_logits(logits, labels)
 
-            # Add L2 regularization on weights (not bias)
-            l2_reg = 0.0
+            # Add L2 regularization on weights (direct access, no loop)
             if l2_weight > 0:
-                for name, param in self._network.named_parameters():
-                    if "weight" in name:
-                        l2_reg += torch.sum(param**2)
+                l2_reg = torch.sum(weight_param**2)
+                loss = bce_loss + l2_weight * l2_reg
+            else:
+                loss = bce_loss
 
-            loss = bce_loss + l2_weight * l2_reg
             loss.backward()
             return loss
 
@@ -342,11 +354,12 @@ class Logistic(BaseProbe):
             # Token-level training
             features, tokens_per_sample = X.extract_tokens()
 
-            # Expand labels if needed
+            # Expand labels if needed (ensure device compatibility)
             if y_tensor.ndim == 1:
-                labels = torch.repeat_interleave(y_tensor, tokens_per_sample)
+                # Move tokens_per_sample to CPU for repeat_interleave with CPU labels
+                labels = torch.repeat_interleave(y_tensor, tokens_per_sample.cpu())
             elif y_tensor.ndim == 2:
-                labels = y_tensor[X.detection_mask.bool()]
+                labels = y_tensor[X.detection_mask.cpu().bool()]
             else:
                 raise ValueError(f"Invalid label shape: {y_tensor.shape}")
 
