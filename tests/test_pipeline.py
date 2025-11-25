@@ -3,12 +3,12 @@
 import pytest
 import torch
 
-from probelib import Pipeline
-from probelib.preprocessing import Pool, SelectLayer
-from probelib.preprocessing.base import PreTransformer
-from probelib.probes import Logistic, MLP
-from probelib.probes.base import BaseProbe
-from probelib.processing.activations import Activations, Axis
+from probelab import Pipeline
+from probelab.preprocessing import Pool, SelectLayer
+from probelab.preprocessing.base import PreTransformer
+from probelab.probes import Logistic, MLP
+from probelab.probes.base import BaseProbe
+from probelab.processing.activations import Activations, Axis
 
 
 def create_activations(

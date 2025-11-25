@@ -5,16 +5,16 @@ from unittest.mock import Mock, patch
 import pytest
 import torch
 
-from probelib.datasets.base import DialogueDataset
-from probelib.masks import all as all_tokens
-from probelib.processing.tokenization import (
+from probelab.datasets.base import DialogueDataset
+from probelab.masks import all as all_tokens
+from probelab.processing.tokenization import (
     _get_prefix_pattern,
     get_model_family,
     preprocess_dialogue,
     tokenize_dataset,
     tokenize_dialogues,
 )
-from probelib.types import Dialogue, DialogueDataType, Message
+from probelab.types import Dialogue, DialogueDataType, Message
 
 
 class MockDialogueDataset(DialogueDataset):
@@ -452,7 +452,7 @@ class TestTokenizeDataset:
         mask = all_tokens()
 
         with patch(
-            "probelib.processing.tokenization.tokenize_dialogues"
+            "probelab.processing.tokenization.tokenize_dialogues"
         ) as mock_tokenize:
             mock_return = {"input_ids": torch.tensor([[1, 2, 3]])}
             mock_tokenize.return_value = mock_return

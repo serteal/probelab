@@ -1685,8 +1685,8 @@ wheels = [
 ]
 
 [[package]]
-name = "probelib"
-version = "0.1.0"
+name = "probelab"
+version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "accelerate" },

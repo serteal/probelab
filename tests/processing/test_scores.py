@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from probelib.processing.scores import ScoreAxis, Scores
+from probelab.processing.scores import ScoreAxis, Scores
 
 
 class TestScoresInit:

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 class Pipeline:
-    """sklearn-style pipeline for probelib.
+    """sklearn-style pipeline for probelab.
 
     A Pipeline chains together a sequence of transformers with a probe:
     - Pre-probe transforms: Activations → Activations (SelectLayer, Pool, Normalize)

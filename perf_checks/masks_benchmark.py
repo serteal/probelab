@@ -6,9 +6,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from utils import TimingResult, measure_with_warmup, timer
 
-import probelib as pl
-from probelib import Pipeline
-from probelib.masks import (
+import probelab as pl
+from probelab import Pipeline
+from probelab.masks import (
     after,
     assistant,
     between,
@@ -17,7 +17,7 @@ from probelib.masks import (
     regex,
     user,
 )
-from probelib.preprocessing import Pool, SelectLayer
+from probelab.preprocessing import Pool, SelectLayer
 
 torch.set_float32_matmul_precision("high")
 pl.logger.logger.setLevel(logging.WARNING)  # type: ignore
@@ -213,7 +213,7 @@ def print_summary(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark probelib masking system performance"
+        description="Benchmark probelab masking system performance"
     )
     parser.add_argument(
         "--model",

@@ -1,1 +1,1 @@
-"""Tests for probelib."""
+"""Tests for probelab."""

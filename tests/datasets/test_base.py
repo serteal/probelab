@@ -2,8 +2,8 @@
 
 import numpy as np
 
-from probelib.datasets.base import DialogueDataset
-from probelib.types import Dialogue, Label, Message, DialogueDataType
+from probelab.datasets.base import DialogueDataset
+from probelab.types import Dialogue, Label, Message, DialogueDataType
 
 
 class SimpleDialogueDataset(DialogueDataset):

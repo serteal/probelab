@@ -1,7 +1,7 @@
 """Profile activation collection to find bottlenecks."""
 import time
 import torch
-import probelib as pl
+import probelab as pl
 
 torch.set_float32_matmul_precision("high")
 
@@ -128,8 +128,8 @@ def profile_collection():
     
     # Profile train_from_model
     print("\n=== Profiling train_from_model (streaming) ===")
-    from probelib import Pipeline
-    from probelib.preprocessing import Pool, SelectLayer
+    from probelab import Pipeline
+    from probelab.preprocessing import Pool, SelectLayer
     
     times = []
     for run in range(3):

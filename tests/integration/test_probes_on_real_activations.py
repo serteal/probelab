@@ -10,9 +10,9 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-import probelib as pl
-from probelib.datasets.base import DialogueDataset
-from probelib.types import Dialogue, Label
+import probelab as pl
+from probelab.datasets.base import DialogueDataset
+from probelab.types import Dialogue, Label
 
 
 class _TestDialogueDataset(DialogueDataset):

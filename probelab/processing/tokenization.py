@@ -1,5 +1,5 @@
 """
-Tokenization utilities for probelib.
+Tokenization utilities for probelab.
 
 This module provides utilities for tokenizing dialogues and creating detection masks
 using the new mask system instead of use_for_training flags.

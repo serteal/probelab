@@ -1,7 +1,7 @@
-"""Tests for probelib.visualization module."""
+"""Tests for probelab.visualization module."""
 
 import torch
-from probelib.visualization import show_detection_mask_in_html
+from probelab.visualization import show_detection_mask_in_html
 
 
 class TestVisualization:

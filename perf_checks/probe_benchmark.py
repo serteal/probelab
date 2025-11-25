@@ -7,9 +7,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from utils import TimingResult, measure_with_warmup, timer
 
-import probelib as pl
-from probelib import Pipeline
-from probelib.preprocessing import Pool, SelectLayer
+import probelab as pl
+from probelab import Pipeline
+from probelab.preprocessing import Pool, SelectLayer
 
 torch.set_float32_matmul_precision("high")
 pl.logger.logger.setLevel(logging.WARNING)  # type: ignore
@@ -430,7 +430,7 @@ def print_summary(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark probelib performance")
+    parser = argparse.ArgumentParser(description="Benchmark probelab performance")
     parser.add_argument(
         "--model",
         # default="meta-llama/Llama-3.1-8B-Instruct",

@@ -6,14 +6,14 @@ from pathlib import Path
 import pytest
 import torch
 
-from probelib import Pipeline
-from probelib.preprocessing import SelectLayer, Pool
-from probelib.probes.logistic import Logistic
-from probelib.processing.activations import (
+from probelab import Pipeline
+from probelab.preprocessing import SelectLayer, Pool
+from probelab.probes.logistic import Logistic
+from probelab.processing.activations import (
     ActivationIterator,
     Activations,
 )
-from probelib.types import Label, AggregationMethod
+from probelab.types import Label, AggregationMethod
 
 
 class MockActivationIterator(ActivationIterator):
@@ -29,7 +29,7 @@ class MockActivationIterator(ActivationIterator):
                 batch_size = batch.batch_size
                 indices = torch.arange(start_idx, start_idx + batch_size, dtype=torch.long)
                 # Create new batch with indices
-                from probelib.processing.activations import Axis
+                from probelab.processing.activations import Axis
                 new_batch = Activations.from_tensor(
                     activations=batch.activations,
                     layer_indices=batch.layer_indices,

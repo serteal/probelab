@@ -1512,7 +1512,7 @@ def collect_activations(
         - ActivationIterator: For streaming mode (collection_strategy ignored)
 
     Examples:
-        >>> import probelib as pl
+        >>> import probelab as pl
         >>> dataset = pl.datasets.CircuitBreakersDataset()
         >>>
         >>> # Dense collection (default)

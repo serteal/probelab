@@ -178,8 +178,8 @@ def with_bootstrap(
         if hasattr(metric_fn, "__doc__"):
             wrapped.__doc__ = metric_fn.__doc__  # type: ignore
 
-        wrapped._probelib_bootstrap = True  # type: ignore[attr-defined]
-        wrapped._probelib_bootstrap_config = {
+        wrapped._probelab_bootstrap = True  # type: ignore[attr-defined]
+        wrapped._probelab_bootstrap_config = {
             "n_bootstrap": n_bootstrap,
             "confidence_level": confidence_level,
             "random_state": random_state,

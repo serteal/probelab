@@ -1,4 +1,4 @@
-"""Probe implementations for probelib."""
+"""Probe implementations for probelab."""
 
 from .attention import Attention
 from .base import BaseProbe

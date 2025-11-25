@@ -1,15 +1,15 @@
-"""Logging utilities for probelib.
+"""Logging utilities for probelab.
 
-Provides a library-local logger named "probelib" without modifying the root logger.
+Provides a library-local logger named "probelab" without modifying the root logger.
 Defaults to console-only logging with no files written on import.
 
 Usage:
-    from probelib.logger import logger  # console-only by default
+    from probelab.logger import logger  # console-only by default
     logger.info("Hello")
 
 Opt-in file logging:
-    from probelib.logger import setup_logger
-    setup_logger(logfile="probelib.log")  # add file handler
+    from probelab.logger import setup_logger
+    setup_logger(logfile="probelab.log")  # add file handler
 """
 
 import logging
@@ -22,7 +22,7 @@ _DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 def _ensure_console_handler(logger: logging.Logger, level: str) -> None:
     for h in logger.handlers:
         if isinstance(h, logging.StreamHandler) and getattr(
-            h, "_probelib_console", False
+            h, "_probelab_console", False
         ):
             h.setLevel(level)
             return
@@ -31,7 +31,7 @@ def _ensure_console_handler(logger: logging.Logger, level: str) -> None:
     fmt = logging.Formatter(_DEFAULT_FORMAT, datefmt=_DEFAULT_DATEFMT)
     console.setFormatter(fmt)
     # Mark to avoid duplicate additions
-    console._probelib_console = True  # type: ignore[attr-defined]
+    console._probelab_console = True  # type: ignore[attr-defined]
     logger.addHandler(console)
 
 
@@ -48,14 +48,14 @@ def setup_logger(
     level: str = "INFO",
     file_level: str = "WARNING",
 ) -> logging.Logger:
-    """Configure the library-local "probelib" logger.
+    """Configure the library-local "probelab" logger.
 
     - By default (logfile=None) configures console-only logging and does NOT write files.
     - If `logfile` is provided, adds a file handler at `file_level`.
 
-    Returns the configured "probelib" logger.
+    Returns the configured "probelab" logger.
     """
-    logger = logging.getLogger("probelib")
+    logger = logging.getLogger("probelab")
     logger.setLevel(level)
     logger.propagate = False
 

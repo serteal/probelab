@@ -13,8 +13,8 @@ import torch
 from transformers import AutoTokenizer
 from utils import TimingResult, measure_with_warmup
 
-import probelib as pl
-from probelib.masks import (
+import probelab as pl
+from probelab.masks import (
     after,
     all,
     assistant,
@@ -27,7 +27,7 @@ from probelib.masks import (
     system,
     user,
 )
-from probelib.processing.tokenization import tokenize_dataset
+from probelab.processing.tokenization import tokenize_dataset
 
 torch.set_float32_matmul_precision("high")
 pl.logger.logger.setLevel(logging.WARNING)  # type: ignore

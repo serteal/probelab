@@ -1,5 +1,5 @@
 """
-Core types and data structures for probelib.
+Core types and data structures for probelab.
 
 This module defines the fundamental data types used throughout the library,
 including Messages, Dialogues, Labels, and related protocols.

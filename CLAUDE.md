@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Information
 
-- **Name**: probelib
+- **Name**: probelab
 - **Version**: 0.1.0
 - **Author**: Alex Serrano
 - **Python**: >=3.11
@@ -24,37 +24,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```python
 # Core types
-from probelib import Message, Dialogue, Label
+from probelab import Message, Dialogue, Label
 
 # Activation handling
-from probelib import HookedModel, Activations, collect_activations
+from probelab import HookedModel, Activations, collect_activations
 
 # Pipeline and preprocessing
-from probelib import Pipeline
-from probelib import preprocessing
-from probelib.preprocessing import SelectLayer, SelectLayers, Pool, Normalize
+from probelab import Pipeline
+from probelab import preprocessing
+from probelab.preprocessing import SelectLayer, SelectLayers, Pool, Normalize
 
 # Probes (used within pipelines)
-from probelib.probes import BaseProbe, Logistic, MLP, Attention
+from probelab.probes import BaseProbe, Logistic, MLP, Attention
 
 # High-level workflows
-from probelib.scripts import (
+from probelab.scripts import (
     train_pipelines, evaluate_pipelines,  # Core: work with pre-collected activations
     train_from_model, evaluate_from_model,  # Convenience: one-step from model
     train_pipelines_streaming,  # Streaming support
 )
 
 # Datasets
-from probelib.datasets import DialogueDataset, CircuitBreakersDataset, DolusChatDataset
+from probelab.datasets import DialogueDataset, CircuitBreakersDataset, DolusChatDataset
 
 # Metrics
-from probelib.metrics import auroc, recall_at_fpr, get_metric_by_name
+from probelab.metrics import auroc, recall_at_fpr, get_metric_by_name
 
 # Visualization
-from probelib.visualization import print_metrics, visualize_mask
+from probelab.visualization import print_metrics, visualize_mask
 
 # Masks for selective token processing
-from probelib import masks
+from probelab import masks
 ```
 
 ## Commands
@@ -64,11 +64,11 @@ from probelib import masks
 ```bash
 # Clone and install in development mode
 git clone <repo_url>
-cd probelib
+cd probelab
 uv sync --dev
 
 # Verify installation
-uv run python -c "import probelib; print(probelib.__version__)"
+uv run python -c "import probelab; print(probelab.__version__)"
 ```
 
 ### Testing
@@ -100,18 +100,18 @@ uv run pytest tests/ -m "not slow"      # Exclude slow tests
 uv run pytest tests/ -m "requires_gpu"  # GPU tests only
 
 # Run with coverage
-uv run pytest tests/ --cov=probelib --cov-report=html --cov-report=term
+uv run pytest tests/ --cov=probelab --cov-report=html --cov-report=term
 ```
 
 ### Code Quality
 
 ```bash
 # Run linting (configured to ignore F722 for jaxtyping)
-uv run ruff check probelib/
-uv run ruff format probelib/
+uv run ruff check probelab/
+uv run ruff format probelab/
 
 # Type checking (if mypy is added)
-# uv run mypy src/probelib
+# uv run mypy src/probelab
 ```
 
 ### Build and Distribution
@@ -121,11 +121,11 @@ uv run ruff format probelib/
 uv build
 
 # The build creates:
-# - dist/probelib-0.1.0-py3-none-any.whl
-# - dist/probelib-0.1.0.tar.gz
+# - dist/probelab-0.1.0-py3-none-any.whl
+# - dist/probelab-0.1.0.tar.gz
 
 # Install from wheel
-pip install dist/probelib-0.1.0-py3-none-any.whl
+pip install dist/probelab-0.1.0-py3-none-any.whl
 ```
 
 ### Development Dependencies
@@ -139,7 +139,7 @@ The `dev` dependency group includes:
 
 ## Architecture Overview
 
-probelib is a library for training classifiers (probes) on Large Language Model (LLM) activations to understand what information is encoded in different model layers. It's designed for interpretability research, particularly for understanding how LLMs represent concepts internally.
+probelab is a library for training classifiers (probes) on Large Language Model (LLM) activations to understand what information is encoded in different model layers. It's designed for interpretability research, particularly for understanding how LLMs represent concepts internally.
 
 ### Core Concepts
 
@@ -151,7 +151,7 @@ probelib is a library for training classifiers (probes) on Large Language Model 
 ### Module Structure
 
 ```
-probelib/
+probelab/
 ├── __init__.py          # Public API exports
 ├── types.py             # Core type definitions
 ├── pipeline.py          # Pipeline composition for preprocessing + probes
@@ -359,7 +359,7 @@ probelib/
 1. **Basic Pipeline Training (2-Step API - Preferred)**
 
    ```python
-   import probelib as pl
+   import probelab as pl
 
    # Load data
    dataset = pl.datasets.CircuitBreakersDataset()
@@ -387,7 +387,7 @@ probelib/
 2. **Convenience Function (One-Step from Model)**
 
    ```python
-   import probelib as pl
+   import probelab as pl
 
    # Load data
    dataset = pl.datasets.CircuitBreakersDataset()
@@ -686,16 +686,16 @@ probelib/
 
 ```bash
 # Logging level
-PROBELIB_LOG_LEVEL=INFO  # DEBUG, INFO, WARNING, ERROR
+PROBELAB_LOG_LEVEL=INFO  # DEBUG, INFO, WARNING, ERROR
 
 # Cache directory
-PROBELIB_CACHE_DIR=/path/to/cache
+PROBELAB_CACHE_DIR=/path/to/cache
 
 # Default device
-PROBELIB_DEVICE=cuda:0  # or cpu
+PROBELAB_DEVICE=cuda:0  # or cpu
 
 # Disable progress bars
-PROBELIB_DISABLE_PROGRESS=1
+PROBELAB_DISABLE_PROGRESS=1
 ```
 
 ### Pytest Configuration

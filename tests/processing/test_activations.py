@@ -6,9 +6,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-import probelib as pl
-from probelib.datasets.base import DialogueDataset
-from probelib.processing.activations import (
+import probelab as pl
+from probelab.datasets.base import DialogueDataset
+from probelab.processing.activations import (
     ActivationIterator,
     Activations,
     Axis,
@@ -17,7 +17,7 @@ from probelib.processing.activations import (
     get_hidden_dim,
     get_n_layers,
 )
-from probelib.types import Dialogue, DialogueDataType, Label, Message
+from probelab.types import Dialogue, DialogueDataType, Label, Message
 
 
 class MockDialogueDataset(DialogueDataset):
@@ -706,7 +706,7 @@ class TestActivations:
 class TestActivationIterator:
     """Test ActivationIterator class (streaming functionality)."""
 
-    @patch("probelib.processing.activations.HookedModel")
+    @patch("probelab.processing.activations.HookedModel")
     def test_streaming_initialization(
         self, mock_hooked_model, sample_dataset, mock_tokenizer
     ):
@@ -736,7 +736,7 @@ class TestActivationIterator:
         assert iterator.layers == layers
         assert len(iterator) == 2  # 3 samples with batch_size=2
 
-    @patch("probelib.processing.activations.HookedModel")
+    @patch("probelab.processing.activations.HookedModel")
     def test_streaming_iteration(
         self, mock_hooked_model, sample_dataset, mock_tokenizer
     ):
@@ -779,8 +779,8 @@ class TestActivationIterator:
 class TestCollectDatasetActivations:
     """Test collect_activations function."""
 
-    @patch("probelib.processing.activations.tokenize_dialogues")
-    @patch("probelib.processing.activations.HookedModel")
+    @patch("probelab.processing.activations.tokenize_dialogues")
+    @patch("probelab.processing.activations.HookedModel")
     def test_collect_activations_basic(
         self, mock_hooked_model, mock_tokenize, sample_dataset
     ):
@@ -852,8 +852,8 @@ class TestCollectDatasetActivations:
 class TestActivationIteratorIntegration:
     """Integration tests for activation collection."""
 
-    @patch("probelib.processing.activations.tokenize_dialogues")
-    @patch("probelib.processing.activations.HookedModel")
+    @patch("probelab.processing.activations.tokenize_dialogues")
+    @patch("probelab.processing.activations.HookedModel")
     def test_iterator_yields_correct_batches(
         self, mock_hooked_model, mock_tokenize, sample_dataset
     ):

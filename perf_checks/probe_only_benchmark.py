@@ -1,10 +1,10 @@
 """Microbenchmark for probe training only (no activation collection)."""
 import time
 import torch
-import probelib as pl
-from probelib import Pipeline
-from probelib.preprocessing import Pool, SelectLayer
-from probelib.processing.activations import Activations, Axis, SequenceMeta, LayerMeta
+import probelab as pl
+from probelab import Pipeline
+from probelab.preprocessing import Pool, SelectLayer
+from probelab.processing.activations import Activations, Axis, SequenceMeta, LayerMeta
 
 torch.set_float32_matmul_precision("high")
 

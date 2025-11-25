@@ -546,7 +546,7 @@ def _evaluate_pipelines_batch(
             metric_name = _metric_display_name(metric_fn)
             metric_callable = metric_fn
             if bootstrap_kwargs is not None and not getattr(
-                metric_fn, "_probelib_bootstrap", False
+                metric_fn, "_probelab_bootstrap", False
             ):
                 metric_callable = with_bootstrap(**bootstrap_kwargs)(metric_fn)
 

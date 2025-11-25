@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 import torch
 
-from probelib import Pipeline
-from probelib.preprocessing import SelectLayer, Pool
-from probelib.probes.mlp import MLP
-from probelib.processing.activations import Activations
-from probelib.types import Label, AggregationMethod
+from probelab import Pipeline
+from probelab.preprocessing import SelectLayer, Pool
+from probelab.probes.mlp import MLP
+from probelab.processing.activations import Activations
+from probelab.types import Label, AggregationMethod
 
 
 def create_test_activations(n_samples=10, seq_len=20, d_model=16, layer=0):

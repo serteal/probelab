@@ -1,5 +1,5 @@
 """
-Utilities for asserting equality between probelib outputs and independently-computed baselines.
+Utilities for asserting equality between probelab outputs and independently-computed baselines.
 
 Designed for small, deterministic tests with real LLaMA3/Gemma2 tokenizers/models.
 """
@@ -10,8 +10,8 @@ from __future__ import annotations
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-import probelib as pl
-from probelib.processing.activations import get_batches
+import probelab as pl
+from probelab.processing.activations import get_batches
 
 
 def set_deterministic():
@@ -126,7 +126,7 @@ def assert_tokenization_equal(
     device: str | torch.device = "cpu",
     **tokenize_kwargs,
 ) -> None:
-    """Assert that probelib tokenization matches a baseline built from HF directly.
+    """Assert that probelab tokenization matches a baseline built from HF directly.
 
     Compares only input_ids and attention_mask. Detection mask equality is handled by
     assert_detection_mask_messages_equal or assert_detection_mask_tokens_equal.
@@ -141,7 +141,7 @@ def assert_tokenization_equal(
     formatted = _format_with_template(tok, template_ready, add_generation_prompt)
     baseline = _tokenize_strings(tok, formatted, **tokenize_kwargs)
 
-    # Actual via probelib
+    # Actual via probelab
     actual = pl.processing.tokenize_dialogues(
         tokenizer=tok,
         dialogues=dialogues,
@@ -200,7 +200,7 @@ def assert_collect_activations_equal(
     tok = get_tokenizer(model_name, padding_side=padding_side)
     model = get_model(model_name, device=device, dtype=dtype)
 
-    # Tokenize via probelib to get the exact attention_mask/seq shaping used by the library
+    # Tokenize via probelab to get the exact attention_mask/seq shaping used by the library
     tokenized = pl.processing.tokenize_dialogues(
         tokenizer=tok,
         dialogues=dialogues,

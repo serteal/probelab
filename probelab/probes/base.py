@@ -10,7 +10,7 @@ from ..processing.scores import Scores
 
 
 class BaseProbe(ABC):
-    """Base class for probes in probelib.
+    """Base class for probes in probelab.
 
     Probes are classifiers that operate on Activations objects and return
     Scores objects. They adapt their behavior based on the dimensionality
@@ -28,9 +28,9 @@ class BaseProbe(ABC):
 
     Example:
         >>> # Probes should be used within a Pipeline
-        >>> from probelib import Pipeline
-        >>> from probelib.preprocessing import SelectLayer, Pool
-        >>> from probelib.probes import Logistic
+        >>> from probelab import Pipeline
+        >>> from probelab.preprocessing import SelectLayer, Pool
+        >>> from probelab.probes import Logistic
         >>>
         >>> pipeline = Pipeline([
         ...     ("select", SelectLayer(16)),

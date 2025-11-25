@@ -1,5 +1,5 @@
 """
-Pytest configuration and shared fixtures for probelib tests.
+Pytest configuration and shared fixtures for probelab tests.
 """
 
 import pytest

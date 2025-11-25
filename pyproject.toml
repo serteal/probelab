@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "probelib"
+name = "probelab"
 version = "0.0.1"
 description = "A library for training activation monitors on language models."
 readme = "README.md"
@@ -50,9 +50,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/serteal/probelib"
-Repository = "https://github.com/serteal/probelib"
-Issues = "https://github.com/serteal/probelib/issues"
+Homepage = "https://github.com/serteal/probelab"
+Repository = "https://github.com/serteal/probelab"
+Issues = "https://github.com/serteal/probelab/issues"
 
 [dependency-groups]
 dev = [

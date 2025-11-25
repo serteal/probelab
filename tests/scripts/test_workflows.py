@@ -5,19 +5,19 @@ import functools
 import pytest
 import torch
 
-from probelib import Pipeline
-from probelib.metrics import auroc, recall_at_fpr
-from probelib.preprocessing import Pool, SelectLayer
-from probelib.probes import Logistic, MLP
-from probelib.processing.activations import Activations, Axis
-from probelib.scripts.workflows import (
+from probelab import Pipeline
+from probelab.metrics import auroc, recall_at_fpr
+from probelab.preprocessing import Pool, SelectLayer
+from probelab.probes import Logistic, MLP
+from probelab.processing.activations import Activations, Axis
+from probelab.scripts.workflows import (
     _create_pipeline_without_pooling,
     _detect_collection_strategy_from_pipelines,
     _metric_display_name,
     evaluate_pipelines,
     train_pipelines,
 )
-from probelib.types import Label
+from probelab.types import Label
 
 
 def create_activations(

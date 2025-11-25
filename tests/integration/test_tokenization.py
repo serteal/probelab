@@ -8,7 +8,7 @@ Checks that:
 
 import pytest
 
-import probelib as pl
+import probelab as pl
 from tests.utils.assertions import (
     assert_detection_mask_text_equal,
     assert_tokenization_equal,

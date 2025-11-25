@@ -1,10 +1,10 @@
-"""Tests for probelib.metrics module."""
+"""Tests for probelab.metrics module."""
 
 import numpy as np
 import pytest
 import torch
 
-from probelib.metrics import (
+from probelab.metrics import (
     accuracy,
     auroc,
     f1,

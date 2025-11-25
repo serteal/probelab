@@ -1,4 +1,4 @@
-# `probelib`
+# `probelab`
 
 A library for training probes on LLM activations.
 
@@ -13,14 +13,14 @@ A library for training probes on LLM activations.
 ### From Source (Development)
 
 ```bash
-uv add git+https://github.com/serteal/probelib.git
+uv add git+https://github.com/serteal/probelab.git
 ```
 
 or:
 
 ```bash
-git clone https://github.com/serteal/probelib.git
-cd probelib
+git clone https://github.com/serteal/probelab.git
+cd probelab
 uv sync
 ```
 
@@ -30,7 +30,7 @@ uv sync
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-import probelib as pl
+import probelab as pl
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name := "meta-llama/Llama-3.1-8B-Instruct",
@@ -66,7 +66,7 @@ predictions = pipeline.predict_proba(test_activations)
 print(pl.metrics.auroc(test_ds.labels, predictions))
 ```
 
-## What does `probelib` allow?
+## What does `probelab` allow?
 
 ### High-level, multi-pipeline training and evaluation
 
@@ -76,7 +76,7 @@ import functools
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-import probelib as pl
+import probelab as pl
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name := "meta-llama/Llama-3.1-8B-Instruct",
@@ -141,7 +141,7 @@ pl.visualization.print_metrics(metrics)
 ### Low-Level Building Blocks (manual control)
 
 ```python
-import probelib as pl
+import probelab as pl
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -214,18 +214,18 @@ uv run pytest tests/processing/
 uv run pytest -m "not slow"
 
 # With coverage
-uv run pytest tests/ --cov=probelib --cov-report=html
+uv run pytest tests/ --cov=probelab --cov-report=html
 ```
 
 ## Citation
 
-If you use `probelib` in your research, please cite:
+If you use `probelab` in your research, please cite:
 
 ```bibtex
-@software{probelib2025,
-  title = {probelib: A library for training probes on LLM activations},
+@software{probelab2025,
+  title = {probelab: A library for training probes on LLM activations},
   author = {Alex Serrano},
-  url = {https://github.com/serteal/probelib},
+  url = {https://github.com/serteal/probelab},
   version = {0.1.0},
   year = {2025},
 }

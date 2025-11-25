@@ -1,5 +1,5 @@
 """
-Dataset interfaces and utilities for probelib.
+Dataset interfaces and utilities for probelab.
 
 This module provides the core dataset abstractions for working with dialogue data,
 including mask-based token selection and metadata handling.
@@ -18,7 +18,7 @@ class DialogueDataset(ABC):
     """
     Abstract base class for dialogue datasets.
 
-    This class provides the core interface for working with dialogue data in probelib.
+    This class provides the core interface for working with dialogue data in probelab.
 
     Key features:
     - Mask-based token selection

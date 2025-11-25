@@ -1,5 +1,5 @@
 """
-probelib: A library for training classifiers on LLM activations.
+probelab: A library for training classifiers on LLM activations.
 
 This library provides tools for:
 - Dataset handling

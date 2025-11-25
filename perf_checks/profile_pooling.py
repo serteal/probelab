@@ -1,8 +1,8 @@
 """Profile the pooling operation to find bottlenecks."""
 import time
 import torch
-import probelib as pl
-from probelib.processing.activations import Activations, Axis, SequenceMeta, LayerMeta
+import probelab as pl
+from probelab.processing.activations import Activations, Axis, SequenceMeta, LayerMeta
 
 def profile_pooling():
     n_samples = 1000

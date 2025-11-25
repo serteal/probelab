@@ -9,7 +9,7 @@ tested implicitly through the main probe tests.
 import pytest
 import torch
 
-from probelib.processing.activations import Activations
+from probelab.processing.activations import Activations
 
 
 class TestEmptyBatchHandling:

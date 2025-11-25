@@ -3,9 +3,9 @@
 import pytest
 import torch
 
-from probelib.probes.base import BaseProbe
-from probelib.processing.activations import Activations
-from probelib.types import Label
+from probelab.probes.base import BaseProbe
+from probelab.processing.activations import Activations
+from probelab.types import Label
 
 
 class ConcreteProbe(BaseProbe):
@@ -116,7 +116,7 @@ class TestBaseProbe:
 
         # Create simple activations
         acts = torch.randn(4, 16)  # 4 batch, 16 dim
-        from probelib.processing.activations import Axis
+        from probelab.processing.activations import Axis
 
         activations = Activations(
             activations=acts,
@@ -135,7 +135,7 @@ class TestBaseProbe:
         probe = ConcreteProbe()
 
         acts = torch.randn(4, 16)
-        from probelib.processing.activations import Axis
+        from probelab.processing.activations import Axis
 
         activations = Activations(
             activations=acts,

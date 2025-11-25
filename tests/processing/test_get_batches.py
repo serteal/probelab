@@ -5,7 +5,7 @@ These tests avoid network and model dependencies.
 
 import torch
 
-from probelib.processing.activations import get_batches
+from probelab.processing.activations import get_batches
 
 
 class DummyTokenizer:

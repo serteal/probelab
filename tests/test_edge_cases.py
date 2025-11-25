@@ -1,5 +1,5 @@
 """
-Comprehensive edge case tests for probelib.
+Comprehensive edge case tests for probelab.
 Focuses on aggregation methods, streaming, memory management, and boundary conditions.
 """
 
@@ -10,11 +10,11 @@ from pathlib import Path
 import pytest
 import torch
 
-from probelib import Pipeline
-from probelib.preprocessing import SelectLayer, Pool
-from probelib.probes import MLP, Attention, Logistic
-from probelib.processing.activations import ActivationIterator, Activations
-from probelib.types import AggregationMethod, Label
+from probelab import Pipeline
+from probelab.preprocessing import SelectLayer, Pool
+from probelab.probes import MLP, Attention, Logistic
+from probelab.processing.activations import ActivationIterator, Activations
+from probelab.types import AggregationMethod, Label
 
 
 class TestAggregationEdgeCases:

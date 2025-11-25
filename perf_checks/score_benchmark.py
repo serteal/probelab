@@ -1,7 +1,7 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-import probelib as pl
+import probelab as pl
 
 model = AutoModelForCausalLM.from_pretrained(
     "google/gemma-3-27b-it", torch_dtype=torch.bfloat16, device_map="auto"

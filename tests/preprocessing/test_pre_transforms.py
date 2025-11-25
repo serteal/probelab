@@ -3,9 +3,9 @@
 import pytest
 import torch
 
-from probelib.preprocessing import Normalize, Pool, SelectLayer, SelectLayers
-from probelib.processing.activations import Activations, Axis
-from probelib.processing.scores import Scores
+from probelab.preprocessing import Normalize, Pool, SelectLayer, SelectLayers
+from probelab.processing.activations import Activations, Axis
+from probelab.processing.scores import Scores
 
 
 def create_activations(

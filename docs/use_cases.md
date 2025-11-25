@@ -1,4 +1,4 @@
-Use cases for probelib:
+Use cases for probelab:
 
 - Be able to define datasets and get tokenized versions of the data with good mask support.
   - Easy and ergonomic to add new datasets.

@@ -166,8 +166,8 @@ def visualize_mask(
         **tokenize_kwargs: Additional tokenization arguments
 
     Examples:
-        >>> from probelib import visualize_mask
-        >>> from probelib.masks import assistant, contains
+        >>> from probelab import visualize_mask
+        >>> from probelab.masks import assistant, contains
         >>>
         >>> dialogue = [
         ...     Message(role="user", content="What is 2+2?"),

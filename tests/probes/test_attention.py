@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 import torch
 
-from probelib import Pipeline
-from probelib.preprocessing import SelectLayer
-from probelib.probes.attention import Attention
-from probelib.processing.activations import Activations
-from probelib.types import Label
+from probelab import Pipeline
+from probelab.preprocessing import SelectLayer
+from probelab.probes.attention import Attention
+from probelab.processing.activations import Activations
+from probelab.types import Label
 
 
 def create_test_activations(n_samples=10, seq_len=20, d_model=16, layer=0):
