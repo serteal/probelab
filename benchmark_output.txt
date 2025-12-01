@@ -1,103 +1,0 @@
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:01<00:01,  1.11s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:01<00:00,  1.71it/s]
-Model loading: 2.139s
-Model loaded: 26 layers, 2304 hidden size
-Dataset loading: 1.308s
-
-============================================================
-Pre-collecting activations for probe-only benchmarks...
-============================================================
-Collecting (mean pooled):   0%|          | 0/4 [00:00<?, ?it/s]Collecting (mean pooled):  25%|██▌       | 1/4 [00:00<00:01,  1.84it/s]Collecting (mean pooled):  50%|█████     | 2/4 [00:00<00:00,  3.11it/s]Collecting (mean pooled):  75%|███████▌  | 3/4 [00:00<00:00,  4.39it/s]Collecting (mean pooled): 100%|██████████| 4/4 [00:00<00:00,  4.66it/s]
-Collecting activations:   0%|          | 0/4 [00:00<?, ?it/s]Collecting activations:  25%|██▌       | 1/4 [00:00<00:01,  2.79it/s]Collecting activations:  50%|█████     | 2/4 [00:00<00:00,  3.42it/s]Collecting activations:  75%|███████▌  | 3/4 [00:00<00:00,  4.02it/s]Collecting activations: 100%|██████████| 4/4 [00:00<00:00,  4.83it/s]
-
-============================================================
-Measuring: Probe Training ONLY (pre-collected pooled activations)
-============================================================
-Running 1 warmup iteration(s)...
-Warmup 1: 0.122s
-
-Running 5 measurement iterations...
-  Run 1: 0.056s
-  Run 2: 0.052s
-  Run 3: 0.043s
-  Run 4: 0.046s
-  Run 5: 0.044s
-
-Results: Mean: 0.048s ± 0.005s | Min: 0.043s | Max: 0.056s
-
-============================================================
-Measuring: Probe Training ONLY (pre-collected dense activations)
-============================================================
-Running 1 warmup iteration(s)...
-Warmup 1: 0.072s
-
-Running 5 measurement iterations...
-  Run 1: 0.070s
-  Run 2: 0.084s
-  Run 3: 0.065s
-  Run 4: 0.080s
-  Run 5: 0.065s
-
-Results: Mean: 0.073s ± 0.008s | Min: 0.065s | Max: 0.084s
-
-============================================================
-Measuring: 10 Probes Training ONLY (pre-collected pooled)
-============================================================
-Running 1 warmup iteration(s)...
-Warmup 1: 0.576s
-
-Running 5 measurement iterations...
-  Run 1: 0.561s
-  Run 2: 0.541s
-  Run 3: 0.538s
-  Run 4: 0.475s
-  Run 5: 0.462s
-
-Results: Mean: 0.516s ± 0.039s | Min: 0.462s | Max: 0.561s
-
-============================================================
-Measuring: GPU Logistic with MEAN pooling
-============================================================
-Running 1 warmup iteration(s)...
-Warmup 1: 24.621s
-
-Running 3 measurement iterations...
-  Run 1: 24.675s
-  Run 2: 24.649s
-  Run 3: 24.664s
-
-Results: Mean: 24.663s ± 0.010s | Min: 24.649s | Max: 24.675s
-
-============================================================
-Measuring: GPU Logistic with token-level (no aggregation)
-============================================================
-Running 1 warmup iteration(s)...
-Warmup 1: 24.891s
-
-Running 3 measurement iterations...
-  Run 1: 24.898s
-  Run 2: 24.993s
-  Run 3: 24.857s
-
-Results: Mean: 24.916s ± 0.057s | Min: 24.857s | Max: 24.993s
-
-============================================================
-Measuring: MLP with MEAN pooling
-============================================================
-Running 1 warmup iteration(s)...
-Warmup 1: 24.728s
-
-Running 3 measurement iterations...
-  Run 1: 24.711s
-  Run 2: 24.695s
-  Run 3: 24.713s
-
-Results: Mean: 24.706s ± 0.008s | Min: 24.695s | Max: 24.713s
-
-============================================================
-Measuring: MLP with token-level (no aggregation)
-============================================================
-Running 1 warmup iteration(s)...
-Warmup 1: 24.871s
-
-Running 3 measurement iterations...
-  Run 1: 24.898s

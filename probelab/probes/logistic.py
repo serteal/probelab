@@ -509,6 +509,9 @@ class Logistic(BaseProbe):
         # Get predictions
         self._network.eval()
         with torch.no_grad():
+            # Cast to network dtype to avoid dtype mismatch
+            network_dtype = next(self._network.parameters()).dtype
+            features_scaled = features_scaled.to(network_dtype)
             logits = self._network(features_scaled)
             probs_positive = torch.sigmoid(logits)
 

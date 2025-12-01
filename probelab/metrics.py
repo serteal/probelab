@@ -542,6 +542,83 @@ def fpr(y_true: np.ndarray, y_pred_proba: np.ndarray) -> float:
 
 
 # ============================================================================
+# False Negative Rate Metrics
+# ============================================================================
+
+
+def fnr_at_threshold(
+    y_true: np.ndarray, y_pred_proba: np.ndarray, threshold: float = 0.5
+) -> float:
+    """False negative rate at a specified threshold.
+
+    Useful for analyzing how many positive examples are incorrectly
+    classified as negative at a given decision threshold.
+
+    FNR = FN / (FN + TP) = FN / P = 1 - Recall
+
+    Args:
+        y_true: True binary labels [N]
+        y_pred_proba: Predicted probabilities [N] or [N, 2]
+        threshold: Decision threshold
+
+    Returns:
+        False negative rate (FN / (FN + TP))
+
+    Examples:
+        >>> y_true = np.array([0, 0, 1, 1, 1, 1])
+        >>> y_pred = np.array([0.3, 0.4, 0.3, 0.4, 0.8, 0.9])
+        >>> fnr_at_threshold(y_true, y_pred, threshold=0.5)
+        0.5
+    """
+    y_true = _ensure_numpy(y_true)
+    y_pred_proba = _ensure_numpy(y_pred_proba)
+    proba = _get_binary_proba(y_pred_proba)
+
+    # Get positive examples
+    pos_mask = y_true == 1
+    if not np.any(pos_mask):
+        return np.nan  # No positive examples
+
+    pos_scores = proba[pos_mask]
+    # FNR = fraction of positives predicted as negative (score <= threshold)
+    return float(np.mean(pos_scores <= threshold))
+
+
+def fnr(y_true: np.ndarray, y_pred_proba: np.ndarray) -> float:
+    """False negative rate at default threshold (0.5).
+
+    FNR = FN / (FN + TP) = 1 - Recall
+
+    Useful for datasets with only positive examples (e.g., virology papers)
+    to measure how many are incorrectly classified as negative.
+
+    Args:
+        y_true: True binary labels [N]
+        y_pred_proba: Predicted probabilities [N] or [N, 2]
+
+    Returns:
+        False negative rate at threshold 0.5
+
+    Examples:
+        >>> y_true = np.array([1, 1, 1, 1])  # All positive
+        >>> y_pred = np.array([0.3, 0.4, 0.8, 0.9])  # Two below threshold
+        >>> fnr(y_true, y_pred)
+        0.5
+    """
+    y_true = _ensure_numpy(y_true)
+    y_pred_proba = _ensure_numpy(y_pred_proba)
+    proba = _get_binary_proba(y_pred_proba)
+
+    # Get positive examples
+    pos_mask = y_true == 1
+    if not np.any(pos_mask):
+        return np.nan  # No positive examples
+
+    pos_scores = proba[pos_mask]
+    return float(np.mean(pos_scores <= 0.5))
+
+
+# ============================================================================
 # Distribution Statistics
 # ============================================================================
 
@@ -625,6 +702,7 @@ METRICS_REGISTRY = {
     "recall": recall,
     "f1": f1,
     "fpr": fpr,
+    "fnr": fnr,
     "mean_score": mean_score,
     "std_score": std_score,
 }
