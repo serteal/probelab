@@ -192,6 +192,64 @@ class MMMUDataset(DialogueDataset):
         return all_dialogues, all_labels, all_metadata
 
 
+class BiologyToTDataset(HFDataset):
+    """
+    Biology Tree-of-Thought reasoning dataset.
+
+    Contains 5,752 biology Q&A examples with detailed chain-of-thought reasoning,
+    focusing on cellular biology topics like membrane structure, signaling,
+    and protein interactions.
+
+    Source: https://huggingface.co/datasets/LLMTeamAkiyama/cleand_moremilk_ToT-Biology
+
+    Metadata fields:
+        - id: Unique identifier
+        - total_token: Token count per record
+        - base_datasets_id: Reference to source data
+        - thought: Chain-of-thought reasoning process
+    """
+
+    base_name = "biology_tot"
+    spec = DatasetSpec(
+        hf_path="LLMTeamAkiyama/cleand_moremilk_ToT-Biology",
+        shape="fields",
+        user_fields=("question",),
+        assistant_fields=("answer",),
+        metadata_fields={
+            "id": ("id",),
+            "total_token": ("total_token",),
+            "base_datasets_id": ("base_datasets_id",),
+            "thought": ("thought",),
+        },
+    )
+
+
+class BiochemReasoningDataset(HFDataset):
+    """
+    Biochemistry reasoning dataset from PrimeKG knowledge graph.
+
+    Contains 10,327 biomedical reasoning examples covering chemistry, biology,
+    drug interactions, disease treatments, molecular pathways, and protein functions.
+    Includes detailed step-by-step reasoning chains.
+
+    Source: https://huggingface.co/datasets/extrasensory/reasoning-biochem
+
+    Metadata fields:
+        - reasoning_chains: Step-by-step logical reasoning traces
+    """
+
+    base_name = "biochem_reasoning"
+    spec = DatasetSpec(
+        hf_path="extrasensory/reasoning-biochem",
+        shape="fields",
+        user_fields=("question",),
+        assistant_fields=("response",),
+        metadata_fields={
+            "reasoning_chains": ("reasoning_chains",),
+        },
+    )
+
+
 class StemQADataset(HFDataset):
     """
     Combined STEM Q&A from multiple sources.

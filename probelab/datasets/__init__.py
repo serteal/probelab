@@ -104,6 +104,8 @@ from .legal_finance import (
 
 # Science and STEM datasets
 from .science import (
+    BiochemReasoningDataset,
+    BiologyToTDataset,
     MMMUDataset,
     ScienceQADataset,
     StemQADataset,
@@ -180,6 +182,8 @@ __all__ = [
     "FinanceTasksDataset",
     "LegalAdviceRedditDataset",
     # Science / STEM
+    "BiochemReasoningDataset",
+    "BiologyToTDataset",
     "MMMUDataset",
     "ScienceQADataset",
     "StemQADataset",

@@ -74,7 +74,7 @@ def get_batches(
         batch_size: Maximum number of sequences per batch.
         tokenizer: Provides padding semantics used to trim left/right padding.
     """
-    seq_lengths = (inputs["input_ids"] != tokenizer.pad_token_id).sum(dim=1)  # type: ignore
+    seq_lengths = inputs["attention_mask"].sum(dim=1)
     sorted_indices = torch.sort(seq_lengths, descending=True)[1]
 
     num_samples = sorted_indices.numel()
@@ -426,13 +426,17 @@ class Activations:
                         layer_indices_to_select = [layer_indices]
                     else:
                         layer_indices_to_select = list(layer_indices)
-                    selected_layers = [hidden_states[idx] for idx in layer_indices_to_select]
+                    selected_layers = [
+                        hidden_states[idx] for idx in layer_indices_to_select
+                    ]
                     actual_layer_indices = layer_indices_to_select
                 else:
                     selected_layers = list(hidden_states)
                     actual_layer_indices = list(range(len(hidden_states)))
 
-                activations_tensor = torch.stack(selected_layers, dim=0)  # [layer, batch, seq, hidden]
+                activations_tensor = torch.stack(
+                    selected_layers, dim=0
+                )  # [layer, batch, seq, hidden]
 
             elif isinstance(first_elem, (tuple, list)):
                 # Generation format: ((step0_layer0, ...), (step1_layer0, ...)), each tensor [batch, 1, hidden]
@@ -464,12 +468,17 @@ class Activations:
                 layer_tensors = []
                 for layer_idx in selected_layer_indices:
                     step_tensors = [
-                        hidden_states[step_idx][layer_idx] for step_idx in range(num_steps)
+                        hidden_states[step_idx][layer_idx]
+                        for step_idx in range(num_steps)
                     ]
-                    layer_tensor = torch.cat(step_tensors, dim=1)  # [batch, total_seq, hidden]
+                    layer_tensor = torch.cat(
+                        step_tensors, dim=1
+                    )  # [batch, total_seq, hidden]
                     layer_tensors.append(layer_tensor)
 
-                activations_tensor = torch.stack(layer_tensors, dim=0)  # [layer, batch, seq, hidden]
+                activations_tensor = torch.stack(
+                    layer_tensors, dim=0
+                )  # [layer, batch, seq, hidden]
             else:
                 raise TypeError(
                     f"Expected tuple of Tensors or tuple of tuples, "
@@ -965,9 +974,7 @@ class Activations:
     # ------------------------------------------------------------------
     # Internal sequence reduction
     # ------------------------------------------------------------------
-    def _reduce_sequence(
-        self, method: AggregationMethod | str
-    ) -> torch.Tensor:
+    def _reduce_sequence(self, method: AggregationMethod | str) -> torch.Tensor:
         """Reduce sequence dimension using specified method.
 
         Uses torch.no_grad() since this is a pure aggregation operation
@@ -1037,7 +1044,9 @@ class Activations:
                     # Use direct indexing instead of clone + masked_fill_
                     reduced[no_valid] = 0.0
 
-            remaining_axes = tuple(axis for axis in self.axes if axis not in (Axis.SEQ,))
+            remaining_axes = tuple(
+                axis for axis in self.axes if axis not in (Axis.SEQ,)
+            )
             permuted_axes = (Axis.BATCH,) + tuple(
                 axis for axis in self.axes if axis not in (Axis.BATCH, Axis.SEQ)
             )
@@ -1047,8 +1056,6 @@ class Activations:
                 reduced = reduced.permute(permute_back)
 
             return reduced
-
-
 
 
 def streaming_activations(
@@ -1088,7 +1095,9 @@ def streaming_activations(
     """
     n_samples = tokenized_inputs["input_ids"].shape[0]
 
-    with HookedModel(model, layers, detach_activations=detach_activations, hook_point=hook_point) as hooked_model:
+    with HookedModel(
+        model, layers, detach_activations=detach_activations, hook_point=hook_point
+    ) as hooked_model:
         batch_iter = get_batches(tokenized_inputs, batch_size, tokenizer)
 
         if verbose:
@@ -1156,7 +1165,9 @@ def batch_activations(
             dtype=model.dtype,
         )
 
-        with HookedModel(model, layers, detach_activations=detach_activations, hook_point=hook_point) as hooked_model:
+        with HookedModel(
+            model, layers, detach_activations=detach_activations, hook_point=hook_point
+        ) as hooked_model:
             batches = get_batches(tokenized_inputs, batch_size, tokenizer)
 
             if verbose:
@@ -1184,7 +1195,9 @@ def batch_activations(
         batch_list = []
         indices_list = []
 
-        with HookedModel(model, layers, detach_activations=detach_activations, hook_point=hook_point) as hooked_model:
+        with HookedModel(
+            model, layers, detach_activations=detach_activations, hook_point=hook_point
+        ) as hooked_model:
             batches = get_batches(tokenized_inputs, batch_size, tokenizer)
 
             if verbose:
@@ -1236,7 +1249,6 @@ def batch_activations(
     )
 
 
-
 def batch_activations_pooled(
     model: "PreTrainedModel",
     tokenizer: "PreTrainedTokenizerBase",
@@ -1283,11 +1295,17 @@ def batch_activations_pooled(
 
     num_batches = (n_samples + batch_size - 1) // batch_size
 
-    with HookedModel(model, layers, detach_activations=detach_activations, hook_point=hook_point) as hooked_model:
+    with HookedModel(
+        model, layers, detach_activations=detach_activations, hook_point=hook_point
+    ) as hooked_model:
         batches = get_batches(tokenized_inputs, batch_size, tokenizer)
 
         if verbose:
-            batches = tqdm(batches, desc=f"Collecting ({pooling_method.value} pooled)", total=num_batches)
+            batches = tqdm(
+                batches,
+                desc=f"Collecting ({pooling_method.value} pooled)",
+                total=num_batches,
+            )
 
         for batch_idx, (batch_inputs, batch_indices) in enumerate(batches):
             batch_inputs_gpu = _ensure_on_device(batch_inputs, model.device)
@@ -1304,7 +1322,9 @@ def batch_activations_pooled(
                 mask = detection_mask.unsqueeze(0).unsqueeze(-1).to(batch_acts.dtype)
                 masked = batch_acts * mask
                 counts = mask.sum(dim=2, keepdim=True).clamp(min=1.0)
-                pooled = masked.sum(dim=2) / counts.squeeze(2)  # [n_layers, batch, hidden]
+                pooled = masked.sum(dim=2) / counts.squeeze(
+                    2
+                )  # [n_layers, batch, hidden]
 
             elif pooling_method == AggregationMethod.MAX:
                 # Expand mask for broadcasting: [1, batch, seq, 1]
@@ -1327,7 +1347,9 @@ def batch_activations_pooled(
                 gather_idx = last_indices.view(1, batch_size_actual, 1, 1).expand(
                     n_layers_actual, batch_size_actual, 1, batch_acts.shape[-1]
                 )
-                pooled = batch_acts.gather(dim=2, index=gather_idx).squeeze(2)  # [n_layers, batch, hidden]
+                pooled = batch_acts.gather(dim=2, index=gather_idx).squeeze(
+                    2
+                )  # [n_layers, batch, hidden]
                 # Handle empty sequences
                 no_valid = valid_counts == 0
                 if no_valid.any():
@@ -1577,14 +1599,25 @@ def collect_activations(
     elif collection_strategy in ("mean", "max", "last_token"):
         # Pooled collection - pools each batch during collection for memory efficiency
         return batch_activations_pooled(
-            model, tokenizer, tokenized_inputs, layers,
-            batch_size, collection_strategy, verbose, hook_point,
-            detach_activations
+            model,
+            tokenizer,
+            tokenized_inputs,
+            layers,
+            batch_size,
+            collection_strategy,
+            verbose,
+            hook_point,
+            detach_activations,
         )
     else:
         # Dense collection - full sequences [layers, batch, seq, hidden]
         return batch_activations(
-            model, tokenizer, tokenized_inputs, layers,
-            batch_size, verbose, hook_point,
-            detach_activations
+            model,
+            tokenizer,
+            tokenized_inputs,
+            layers,
+            batch_size,
+            verbose,
+            hook_point,
+            detach_activations,
         )
