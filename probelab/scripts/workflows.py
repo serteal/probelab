@@ -170,58 +170,6 @@ def train_pipelines(
     _train_pipelines_batch(pipelines_dict, activations, labels_tensor, verbose)
 
 
-def train_pipelines_streaming(
-    pipelines: PipelineInput,
-    activations_iter: ActivationIterator,
-    labels: torch.Tensor | list[Label],
-    verbose: bool = True,
-) -> None:
-    """Train one or many pipelines on streaming activations (single pass).
-
-    For large datasets that don't fit in memory. Each pipeline must support
-    partial_fit() for incremental learning. Each batch is processed exactly
-    once - no multi-epoch training.
-
-    For multi-epoch training, use streaming=False (batch mode) where the
-    probe's fit() method handles epochs internally.
-
-    Args:
-        pipelines: Single Pipeline or mapping name → Pipeline instance
-        activations_iter: ActivationIterator yielding activation batches
-        labels: All labels (indexed by batch_indices from activations)
-        verbose: Whether to print progress information
-
-    Raises:
-        NotImplementedError: If any pipeline doesn't support partial_fit
-
-    Example:
-        >>> acts_iter = pl.collect_activations(
-        ...     model=model,
-        ...     tokenizer=tokenizer,
-        ...     dataset=large_dataset,
-        ...     layers=[16],
-        ...     mask=pl.masks.assistant(),
-        ...     streaming=True,  # Returns iterator
-        ... )
-        >>> pl.train_pipelines_streaming(pipeline, acts_iter, large_dataset.labels)
-    """
-    is_single_pipeline = isinstance(pipelines, Pipeline)
-    pipelines_dict = {"_single": pipelines} if is_single_pipeline else pipelines
-
-    if verbose:
-        logger.info(f"Training {len(pipelines_dict)} pipeline(s) in streaming mode (single pass)")
-
-    for name, pipeline in pipelines_dict.items():
-        if verbose and not is_single_pipeline:
-            logger.info(f"Training pipeline '{name}'")
-
-        pipeline.fit_streaming(
-            activations_iter,
-            labels,
-            verbose=verbose,
-        )
-
-
 def train_from_model(
     pipelines: PipelineInput,
     model: "PreTrainedModel",
@@ -231,7 +179,6 @@ def train_from_model(
     layers: list[int],
     mask: "MaskFunction",
     batch_size: int = 32,
-    streaming: bool = False,
     verbose: bool = True,
     **activation_kwargs: Any,
 ) -> None:
@@ -245,12 +192,6 @@ def train_from_model(
     (e.g., Pool(dim="sequence", method="mean")), activations are pooled during collection
     for ~440x memory reduction and ~2x throughput improvement.
 
-    **Streaming vs Batch Mode**:
-    - streaming=False (default): Collects all activations, then calls fit() which
-      handles epochs internally (e.g., MLP trains for n_epochs=100 by default)
-    - streaming=True: Processes each batch exactly once via partial_fit().
-      Use for very large datasets that don't fit in memory.
-
     Args:
         pipelines: Single Pipeline or mapping name → Pipeline instance
         model: Language model to extract activations from
@@ -259,7 +200,6 @@ def train_from_model(
         layers: Layer indices to collect (REQUIRED - no magic extraction)
         mask: Mask function for token selection (REQUIRED)
         batch_size: Batch size for activation collection
-        streaming: Whether to use streaming mode (single pass with partial_fit)
         verbose: Whether to show progress
         **activation_kwargs: Additional args for collect_activations
             (e.g., hook_point, add_generation_prompt)
@@ -291,7 +231,6 @@ def train_from_model(
         layers=layers,
         mask=mask,
         batch_size=batch_size,
-        streaming=streaming,
         collection_strategy=collection_strategy,
         verbose=verbose,
         detach_activations=activation_kwargs.pop("detach_activations", True),
@@ -299,27 +238,19 @@ def train_from_model(
     )
 
     # 2. Train pipelines on activations
-    if isinstance(activations, ActivationIterator):
-        train_pipelines_streaming(
-            pipelines,
-            activations,
-            dataset.labels,
-            verbose=verbose,
-        )
-    else:
-        # If we used pooled collection, create modified pipelines without Pool(dim="sequence")
-        if collection_strategy is not None:
-            is_single_pipeline = isinstance(pipelines, Pipeline)
-            if is_single_pipeline:
-                modified_pipelines: PipelineInput = _create_pipeline_without_pooling(pipelines)
-            else:
-                modified_pipelines = {
-                    name: _create_pipeline_without_pooling(p)
-                    for name, p in pipelines.items()
-                }
-            train_pipelines(modified_pipelines, activations, dataset.labels, verbose)
+    # If we used pooled collection, create modified pipelines without Pool(dim="sequence")
+    if collection_strategy is not None:
+        is_single_pipeline = isinstance(pipelines, Pipeline)
+        if is_single_pipeline:
+            modified_pipelines: PipelineInput = _create_pipeline_without_pooling(pipelines)
         else:
-            train_pipelines(pipelines, activations, dataset.labels, verbose)
+            modified_pipelines = {
+                name: _create_pipeline_without_pooling(p)
+                for name, p in pipelines.items()
+            }
+        train_pipelines(modified_pipelines, activations, dataset.labels, verbose)
+    else:
+        train_pipelines(pipelines, activations, dataset.labels, verbose)
 
 
 def _train_pipelines_batch(
@@ -490,9 +421,37 @@ def evaluate_from_model(
 
     # 2. Evaluate pipelines on activations
     if isinstance(activations, ActivationIterator):
-        raise NotImplementedError(
-            "Streaming evaluation not yet implemented. "
-            "Use streaming=False or implement evaluate_pipelines_streaming()."
+        # Streaming evaluation: accumulate predictions across batches
+        is_single_pipeline = isinstance(pipelines, Pipeline)
+        pipelines_dict = {"_single": pipelines} if is_single_pipeline else pipelines
+
+        # If we used pooled collection, create modified pipelines
+        if collection_strategy is not None:
+            pipelines_to_use = {
+                name: _create_pipeline_without_pooling(p)
+                for name, p in pipelines_dict.items()
+            }
+        else:
+            pipelines_to_use = pipelines_dict
+
+        all_preds: dict[str, list[torch.Tensor]] = {name: [] for name in pipelines_to_use}
+        all_indices: list[int] = []
+
+        for batch_acts in activations:
+            all_indices.extend(batch_acts.batch_indices)
+            for name, pipeline in pipelines_to_use.items():
+                probs = pipeline.predict_proba(batch_acts)
+                all_preds[name].append(probs[:, 1])  # Positive class probs
+
+        # Concatenate and reorder by original indices
+        order = torch.argsort(torch.tensor(all_indices))
+        predictions = {
+            name: torch.cat(p)[order] for name, p in all_preds.items()
+        }
+
+        # Now compute metrics using the standard evaluation path
+        return _compute_metrics_from_predictions(
+            predictions, dataset.labels, metrics, bootstrap, is_single_pipeline
         )
     else:
         # If we used pooled collection, create modified pipelines without Pool(dim="sequence")
@@ -557,3 +516,72 @@ def _evaluate_pipelines_batch(
         all_metrics[name] = pipeline_metrics
 
     return all_predictions, all_metrics
+
+
+def _compute_metrics_from_predictions(
+    predictions: dict[str, torch.Tensor],
+    labels: torch.Tensor | list[Label],
+    metrics: list[Callable | str] | None,
+    bootstrap: bool | dict[str, Any] | None,
+    is_single_pipeline: bool,
+) -> tuple[PredictionsOutput, MetricsOutput]:
+    """Compute metrics from pre-computed predictions.
+
+    Used by streaming evaluation where predictions are accumulated across batches.
+    """
+    # Convert labels to tensor
+    if isinstance(labels, list) and labels and isinstance(labels[0], Label):
+        labels_tensor = torch.tensor([label.value for label in labels])
+    else:
+        labels_tensor = (
+            torch.tensor(labels) if not isinstance(labels, torch.Tensor) else labels
+        )
+
+    # Set up metrics
+    if metrics is None:
+        metrics = [
+            auroc,
+            functools.partial(recall_at_fpr, fpr=0.001),
+            functools.partial(recall_at_fpr, fpr=0.01),
+        ]
+    else:
+        converted_metrics = []
+        for metric in metrics:
+            if isinstance(metric, str):
+                converted_metrics.append(get_metric_by_name(metric))
+            else:
+                converted_metrics.append(metric)
+        metrics = converted_metrics
+
+    # Set up bootstrap
+    if isinstance(bootstrap, bool):
+        bootstrap_kwargs: dict[str, Any] | None = {} if bootstrap else None
+    else:
+        bootstrap_kwargs = bootstrap
+
+    # Convert labels to numpy
+    y_true = labels_tensor.detach().cpu().float().numpy()
+
+    # Compute metrics for each pipeline
+    all_metrics = {}
+    for name, preds in predictions.items():
+        y_pred = preds.detach().cpu().float().numpy()
+        pipeline_metrics = {}
+
+        for metric_fn in metrics:
+            metric_name = _metric_display_name(metric_fn)
+            metric_callable = metric_fn
+            if bootstrap_kwargs is not None and not getattr(
+                metric_fn, "_probelab_bootstrap", False
+            ):
+                metric_callable = with_bootstrap(**bootstrap_kwargs)(metric_fn)
+
+            result = metric_callable(y_true, y_pred)
+            pipeline_metrics[metric_name] = result
+
+        all_metrics[name] = pipeline_metrics
+
+    if is_single_pipeline:
+        return predictions["_single"], all_metrics["_single"]
+    else:
+        return predictions, all_metrics

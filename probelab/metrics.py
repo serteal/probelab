@@ -708,6 +708,127 @@ METRICS_REGISTRY = {
 }
 
 
+# ============================================================================
+# Weighted Error Metrics (GDM Paper)
+# ============================================================================
+
+
+def weighted_error_rate(
+    y_true: np.ndarray,
+    y_pred_proba: np.ndarray,
+    threshold: float = 0.5,
+    fnr_weight: float = 5.0,
+    fpr_weight: float = 50.0,
+) -> float:
+    """Weighted combination of FPR and FNR (GDM paper metric).
+
+    Computes weighted average of false positive rate and false negative rate.
+    Useful for deployment where overtriggering (FPR) is weighted more heavily.
+
+    From GDM paper (Equation 5):
+        weighted_error = (fnr_weight * FNR + fpr_weight * FPR) / (fnr_weight + fpr_weight)
+
+    Args:
+        y_true: True binary labels [N]
+        y_pred_proba: Predicted probabilities [N] or [N, 2]
+        threshold: Decision threshold (default: 0.5)
+        fnr_weight: Weight for false negative rate (default: 5)
+        fpr_weight: Weight for false positive rate (default: 50)
+
+    Returns:
+        Weighted error rate
+
+    Examples:
+        >>> y_true = np.array([0, 0, 1, 1])
+        >>> y_pred = np.array([0.3, 0.6, 0.4, 0.9])
+        >>> weighted_error_rate(y_true, y_pred, fnr_weight=5, fpr_weight=50)
+    """
+    y_true = _ensure_numpy(y_true)
+    y_pred_proba = _ensure_numpy(y_pred_proba)
+    proba = _get_binary_proba(y_pred_proba)
+    y_pred = (proba > threshold).astype(int)
+
+    pos_mask = y_true == 1
+    neg_mask = y_true == 0
+
+    # False negative rate: fraction of positives predicted as negative
+    if pos_mask.any():
+        fnr_val = np.mean(y_pred[pos_mask] == 0)
+    else:
+        fnr_val = 0.0
+
+    # False positive rate: fraction of negatives predicted as positive
+    if neg_mask.any():
+        fpr_val = np.mean(y_pred[neg_mask] == 1)
+    else:
+        fpr_val = 0.0
+
+    total_weight = fnr_weight + fpr_weight
+    return (fnr_weight * fnr_val + fpr_weight * fpr_val) / total_weight
+
+
+def optimal_threshold(
+    y_true: np.ndarray,
+    y_pred_proba: np.ndarray,
+    fnr_weight: float = 5.0,
+    fpr_weight: float = 50.0,
+    n_thresholds: int = 100,
+) -> tuple[float, float]:
+    """Find threshold that minimizes weighted error.
+
+    Searches over a grid of thresholds to find the one that minimizes
+    the weighted combination of FPR and FNR.
+
+    Args:
+        y_true: True binary labels [N]
+        y_pred_proba: Predicted probabilities [N] or [N, 2]
+        fnr_weight: Weight for FNR (default: 5)
+        fpr_weight: Weight for FPR (default: 50)
+        n_thresholds: Number of thresholds to search (default: 100)
+
+    Returns:
+        Tuple of (best_threshold, best_error)
+
+    Examples:
+        >>> y_true = np.array([0, 0, 1, 1])
+        >>> y_pred = np.array([0.1, 0.4, 0.6, 0.9])
+        >>> threshold, error = optimal_threshold(y_true, y_pred)
+    """
+    y_true = _ensure_numpy(y_true)
+    y_pred_proba = _ensure_numpy(y_pred_proba)
+
+    thresholds = np.linspace(0, 1, n_thresholds)
+    best_threshold = 0.5
+    best_error = float("inf")
+
+    for t in thresholds:
+        error = weighted_error_rate(y_true, y_pred_proba, t, fnr_weight, fpr_weight)
+        if error < best_error:
+            best_error = error
+            best_threshold = t
+
+    return float(best_threshold), float(best_error)
+
+
+# ============================================================================
+# Metric Registry for Backward Compatibility
+# ============================================================================
+
+METRICS_REGISTRY = {
+    "auroc": auroc,
+    "accuracy": accuracy,
+    "balanced_accuracy": balanced_accuracy,
+    "precision": precision,
+    "recall": recall,
+    "f1": f1,
+    "fpr": fpr,
+    "fnr": fnr,
+    "mean_score": mean_score,
+    "std_score": std_score,
+    "weighted_error": weighted_error_rate,
+}
+
+
 def get_metric_by_name(name: str) -> Callable:
     """Get a metric function by name.
 
@@ -716,6 +837,7 @@ def get_metric_by_name(name: str) -> Callable:
     - "auroc@X": Partial AUROC with max X% FPR
     - "percentileX": X-th percentile
     - "fpr@X": FPR at threshold X
+    - "weighted_error": Weighted combination of FPR and FNR
 
     Args:
         name: Metric name or special syntax
@@ -727,6 +849,7 @@ def get_metric_by_name(name: str) -> Callable:
         >>> m = get_metric_by_name("auroc")
         >>> m = get_metric_by_name("recall@5")  # 5% FPR
         >>> m = get_metric_by_name("percentile95")
+        >>> m = get_metric_by_name("weighted_error")
     """
     # Check registry first
     if name in METRICS_REGISTRY:

@@ -4,10 +4,12 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from .processing.activations import Axis
+
 if TYPE_CHECKING:
     from .preprocessing.base import PreTransformer
     from .probes.base import BaseProbe
-    from .processing.activations import ActivationIterator, Activations
+    from .processing.activations import Activations
     from .processing.scores import Scores
 
 
@@ -104,6 +106,53 @@ class Pipeline:
         self._probe_name, self._probe = self.steps[probe_idx]
         self._post_steps = self.steps[probe_idx + 1 :]
 
+    def _has_layer_handling(self) -> bool:
+        """Check if pipeline has explicit layer handling (SelectLayer, SelectLayers, or Pool on layer)."""
+        from .preprocessing.pre_transforms import Pool, SelectLayer, SelectLayers
+
+        for _, step in self._pre_steps:
+            if isinstance(step, (SelectLayer, SelectLayers)):
+                return True
+            if isinstance(step, Pool) and step.dim == "layer":
+                return True
+        return False
+
+    def _auto_select_single_layer(self, X: "Activations") -> "Activations":
+        """Auto-select single layer if no explicit layer handling in pipeline.
+
+        If activations have exactly one layer and the pipeline has no SelectLayer,
+        SelectLayers, or Pool(dim="layer"), automatically select that layer.
+
+        Args:
+            X: Input activations
+
+        Returns:
+            Activations with LAYER axis removed if single layer, otherwise unchanged
+
+        Raises:
+            ValueError: If multiple layers present without explicit handling
+        """
+        if not X.has_axis(Axis.LAYER):
+            return X
+
+        if self._has_layer_handling():
+            # Pipeline has explicit layer handling, don't auto-select
+            return X
+
+        if X.n_layers == 1:
+            # Single layer - auto-select it
+            return X.select(layer=X.layer_indices[0])
+        else:
+            # Multiple layers without handling - error with helpful message
+            raise ValueError(
+                f"Activations contain {X.n_layers} layers {X.layer_indices} "
+                f"but pipeline has no layer handling.\n\n"
+                f"Options:\n"
+                f"  1. Collect single layer: collect_activations(..., layers=[{X.layer_indices[0]}])\n"
+                f"  2. Add SelectLayer: Pipeline([SelectLayer({X.layer_indices[0]}), ...])\n"
+                f"  3. Pool layers: Pipeline([Pool(dim='layer', method='mean'), ...])"
+            )
+
     def fit(
         self,
         X: "Activations",
@@ -114,143 +163,27 @@ class Pipeline:
         Pre-transformers are fit and applied in sequence, then the probe
         is fit on the transformed activations.
 
+        If activations have exactly one layer and the pipeline has no explicit
+        layer handling (SelectLayer, SelectLayers, or Pool(dim="layer")), the
+        single layer is automatically selected.
+
         Args:
             X: Training activations
             y: Training labels (Tensor or list of Labels/ints)
 
         Returns:
             self: Fitted pipeline
+
+        Raises:
+            ValueError: If activations have multiple layers without explicit handling
         """
-        X_transformed = X
+        # Auto-select single layer if no explicit layer handling
+        X_transformed = self._auto_select_single_layer(X)
+
         for name, transformer in self._pre_steps:
             X_transformed = transformer.fit_transform(X_transformed, y)
 
         self._probe.fit(X_transformed, y)
-
-        return self
-
-    def partial_fit(
-        self,
-        X: "Activations",
-        y: torch.Tensor | list,
-    ) -> "Pipeline":
-        """Incrementally fit pipeline on a batch of data.
-
-        For streaming/online learning. Call multiple times with different batches.
-        Pre-transformers are applied (assumed stateless), then probe is incrementally
-        fitted using its partial_fit() method.
-
-        **Note**: Post-transforms (Pool on Scores) are not supported with streaming.
-
-        Args:
-            X: Batch of activations
-            y: Batch of labels
-
-        Returns:
-            self: The pipeline instance
-
-        Raises:
-            NotImplementedError: If probe doesn't support partial_fit or if
-                pipeline has post-transforms
-
-        Example:
-            >>> for batch_acts in activation_iterator:
-            ...     batch_labels = labels[batch_acts.batch_indices]
-            ...     pipeline.partial_fit(batch_acts, batch_labels)
-        """
-        # Check for post-transforms
-        if self._post_steps:
-            raise NotImplementedError(
-                "Streaming (partial_fit) is not supported with post-probe transforms. "
-                "Use Pool(dim='sequence') before the probe instead."
-            )
-
-        # Check probe supports partial_fit
-        if not hasattr(self._probe, "partial_fit"):
-            raise NotImplementedError(
-                f"Probe {self._probe.__class__.__name__} doesn't support streaming. "
-                f"Use fit() with complete data instead."
-            )
-
-        # Apply pre-transforms (stateless, just transform)
-        X_transformed = X
-        for name, transformer in self._pre_steps:
-            # Most pre-transformers are stateless
-            # If they have partial_fit, use it then transform; otherwise just transform
-            if hasattr(transformer, "partial_fit"):
-                transformer.partial_fit(X_transformed, y)
-            X_transformed = transformer.transform(X_transformed)
-
-        # Partial fit probe
-        self._probe.partial_fit(X_transformed, y)
-
-        return self
-
-    def fit_streaming(
-        self,
-        X: "ActivationIterator",
-        y: torch.Tensor | list,
-        verbose: bool = False,
-    ) -> "Pipeline":
-        """Fit pipeline using streaming/online learning (single pass).
-
-        Iterates over activation batches once, calling partial_fit on each batch.
-        Each batch is processed exactly once - no multi-epoch training.
-
-        For multi-epoch training, use streaming=False (batch mode) where the
-        probe's fit() method handles epochs internally.
-
-        Args:
-            X: ActivationIterator that yields activation batches
-            y: Labels for entire dataset (indexed by batch_indices)
-            verbose: Print progress
-
-        Returns:
-            self: Fitted pipeline
-
-        Raises:
-            NotImplementedError: If probe doesn't support partial_fit or
-                pipeline has post-transforms
-
-        Example:
-            >>> acts_iter = pl.collect_activations(..., streaming=True)
-            >>> pipeline.fit_streaming(acts_iter, labels)
-        """
-        from .logger import logger
-        from .types import Label
-
-        # Check for post-transforms
-        if self._post_steps:
-            raise NotImplementedError(
-                "Streaming (fit_streaming) is not supported with post-probe transforms. "
-                "Use Pool(dim='sequence') before the probe instead."
-            )
-
-        # Check probe supports partial_fit
-        if not hasattr(self._probe, "partial_fit"):
-            raise NotImplementedError(
-                f"Probe {self._probe.__class__.__name__} doesn't support streaming. "
-                f"Use fit() with complete data instead."
-            )
-
-        # Convert labels to tensor for indexing
-        if isinstance(y, list):
-            if y and isinstance(y[0], Label):
-                y = torch.tensor([label.value for label in y])
-            else:
-                y = torch.tensor(y)
-
-        # Single pass through the data - each batch is processed exactly once
-        for batch_acts in X:
-            # Get batch labels using batch_indices
-            batch_indices = torch.as_tensor(batch_acts.batch_indices)
-            batch_labels = y.index_select(0, batch_indices)
-
-            # Call existing partial_fit (single gradient step per batch)
-            self.partial_fit(batch_acts, batch_labels)
-
-            if verbose:
-                logger.info(f"Processed batch with {len(batch_indices)} samples")
 
         return self
 
@@ -260,6 +193,10 @@ class Pipeline:
         Applies all pre-transforms, runs probe prediction, then applies
         all post-transforms.
 
+        If activations have exactly one layer and the pipeline has no explicit
+        layer handling (SelectLayer, SelectLayers, or Pool(dim="layer")), the
+        single layer is automatically selected.
+
         Args:
             X: Activations to predict on
 
@@ -267,15 +204,17 @@ class Pipeline:
             Predicted probabilities [batch, 2]
 
         Raises:
-            ValueError: If pipeline not fitted
+            ValueError: If pipeline not fitted or multiple layers without handling
         """
         if not self._probe._fitted:
             raise ValueError(
                 "Pipeline must be fitted before predict. Call fit() first."
             )
 
+        # Auto-select single layer if no explicit layer handling
+        X_transformed = self._auto_select_single_layer(X)
+
         # Apply pre-transforms (Activations → Activations)
-        X_transformed = X
         for name, transformer in self._pre_steps:
             X_transformed = transformer.transform(X_transformed)
 

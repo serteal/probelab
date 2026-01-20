@@ -41,7 +41,6 @@ from probelab.probes import BaseProbe, Logistic, MLP, Attention
 from probelab.scripts import (
     train_pipelines, evaluate_pipelines,  # Core: work with pre-collected activations
     train_from_model, evaluate_from_model,  # Convenience: one-step from model
-    train_pipelines_streaming,  # Streaming support
 )
 
 # Datasets
@@ -252,16 +251,19 @@ probelab/
 6. **Pipeline (`pipeline.py`)**: Composition framework
 
    - **Pipeline**: Compose preprocessing steps with probes
-   - Methods: `fit()`, `predict()`, `predict_proba()`, `partial_fit()`
+   - Methods: `fit()`, `predict()`, `predict_proba()`
+   - **Auto-selection**: Single-layer activations work without `SelectLayer` (auto-selected)
+   - Multi-layer activations require explicit handling (`SelectLayer` or `Pool(dim="layer")`)
    - Enables clear separation of concerns
-   - Example: `Pipeline([SelectLayer(16), Pool(dim="sequence", method="mean"), Logistic()])`
+   - Example: `Pipeline([Pool(dim="sequence", method="mean"), Logistic()])` (single layer)
+   - Example: `Pipeline([SelectLayer(16), Pool(dim="sequence", method="mean"), Logistic()])` (multi-layer)
 
 7. **Preprocessing (`preprocessing/`)**: Transformation steps
 
    - **SelectLayer**: Select a single layer from multi-layer activations (removes LAYER axis)
    - **SelectLayers**: Select multiple layers (keeps LAYER axis)
    - **Pool**: Unified pooling over sequence or layer dimension (mean, max, last_token)
-   - **Normalize**: Feature normalization with online learning support
+   - **Normalize**: Feature normalization (compute mean/std on training data)
    - All transformers follow sklearn-like API (fit, transform, fit_transform)
 
 8. **Scripts (`scripts/workflows.py`)**: High-level workflows
@@ -269,10 +271,9 @@ probelab/
    - **Core functions** (work with pre-collected activations):
      - `train_pipelines`: Train pipelines on activation batches
      - `evaluate_pipelines`: Evaluate pipelines on activation batches
-     - `train_pipelines_streaming`: Streaming training for large datasets
    - **Convenience functions** (one-step from model):
      - `train_from_model`: Collect activations + train pipelines
-     - `evaluate_from_model`: Collect activations + evaluate pipelines
+     - `evaluate_from_model`: Collect activations + evaluate pipelines (supports streaming evaluation)
    - Explicit 2-step API preferred over convenience functions
    - Multi-pipeline training with shared activations
 
@@ -324,19 +325,18 @@ probelab/
 
 3. **Memory Efficiency**
 
-   - Streaming activation collection via `ActivationIterator`
-   - Automatic streaming detection based on dataset size
+   - Streaming activation collection via `ActivationIterator` (for evaluation)
    - Dynamic batching based on sequence lengths
    - Tensor views for efficient batch processing
    - Optional model pruning (keep only needed layers)
    - Activation caching with deterministic hashing
-   - `partial_fit()` support for incremental training
+   - Use `collection_strategy="mean"` for memory-efficient training on large datasets
 
 4. **Pipeline-Based Architecture**
 
    - Explicit composition of preprocessing steps and probes
    - Clear separation of concerns: layer selection, pooling, classification
-   - Pipelines follow sklearn-like API (fit, predict, partial_fit)
+   - Pipelines follow sklearn-like API (fit, predict, predict_proba)
    - Enables easy experimentation with different preprocessing strategies
    - Example: `Pipeline([SelectLayer(16), Pool(dim="sequence", method="mean"), Logistic()])`
 
@@ -364,7 +364,7 @@ probelab/
    # Load data
    dataset = pl.datasets.CircuitBreakersDataset()
 
-   # Step 1: Collect activations
+   # Step 1: Collect activations (single layer)
    activations = pl.collect_activations(
        model=model,
        tokenizer=tokenizer,
@@ -375,8 +375,8 @@ probelab/
    )
 
    # Step 2: Create pipeline and train
+   # NOTE: SelectLayer not needed for single-layer activations (auto-selected)
    pipeline = pl.Pipeline([
-       ("select", pl.preprocessing.SelectLayer(12)),
        ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
        ("probe", pl.probes.Logistic(device="cuda")),
    ])
@@ -392,9 +392,8 @@ probelab/
    # Load data
    dataset = pl.datasets.CircuitBreakersDataset()
 
-   # Create pipeline
+   # Create pipeline (SelectLayer not needed for single layer)
    pipeline = pl.Pipeline([
-       ("select", pl.preprocessing.SelectLayer(12)),
        ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
        ("probe", pl.probes.Logistic(device="cuda")),
    ])
@@ -435,30 +434,27 @@ probelab/
    pl.scripts.train_pipelines(pipelines, activations, dataset.labels)
    ```
 
-4. **Streaming for Large Datasets**
+4. **Memory-Efficient Training for Large Datasets**
    ```python
-   # Collect activations in streaming mode
-   activation_stream = pl.collect_activations(
+   # Use collection_strategy to pool activations during collection
+   # This reduces memory ~440x by avoiding storing full sequences
+   activations = pl.collect_activations(
        model=model,
        tokenizer=tokenizer,
        data=large_dataset,
        layers=[12],
        mask=pl.masks.assistant(),
        batch_size=8,
-       streaming=True  # Returns ActivationIterator
+       collection_strategy="mean"  # Pool during collection
    )
 
-   # Create pipeline
+   # Create pipeline (no Pool needed - already aggregated)
    pipeline = pl.Pipeline([
        ("select", pl.preprocessing.SelectLayer(12)),
-       ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
        ("probe", pl.probes.Logistic(device="cuda")),
    ])
 
-   # Streaming training with pipeline.partial_fit()
-   pl.scripts.train_pipelines_streaming(
-       pipeline, activation_stream, labels
-   )
+   pipeline.fit(activations, large_dataset.labels)
    ```
 
 5. **Evaluation with Custom Metrics**
@@ -627,7 +623,7 @@ probelab/
 
 1. **Memory Management**
 
-   - Use streaming for datasets > 10k examples
+   - Use `collection_strategy="mean"` for large datasets
    - Enable model pruning when using few layers
    - Clear GPU cache between large operations
    - Use appropriate batch sizes for your GPU
@@ -643,7 +639,6 @@ probelab/
 
    - Test with both GPU and CPU
    - Include edge cases (empty datasets, single examples)
-   - Test streaming and batch modes
    - Verify numerical stability
 
 4. **Performance**
@@ -677,7 +672,7 @@ probelab/
    - Increase regularization for logistic probe
 
 4. **Slow Training**
-   - Enable streaming for large datasets
+   - Use `collection_strategy="mean"` to reduce memory and improve throughput
    - Use larger batch sizes if memory allows
    - Consider using fewer layers
    - Profile with PyTorch profiler
@@ -710,6 +705,13 @@ Located in `pyproject.toml`:
 ### Recent Updates & Future Enhancements
 
 **Recently Added (Latest):**
+- **Removed streaming training** (simplification):
+  - Removed `pipeline.partial_fit()`, `pipeline.fit_streaming()`
+  - Removed `train_pipelines_streaming()` function
+  - Removed `streaming` parameter from `train_from_model()`
+  - Removed all probe `partial_fit()` methods
+  - **Migration:** Use batch training. For large datasets, use `collection_strategy="mean"` in `collect_activations()` for memory efficiency
+  - Streaming evaluation is still supported via `evaluate_from_model(streaming=True)`
 - **API refinements for research clarity:**
   - `tokenize_dialogues()` and `tokenize_dataset()` now require `mask` parameter (no hidden defaults)
   - `Activations.select()` now uses explicit `layer=` (single, removes axis) and `layers=` (multiple, keeps axis) parameters
@@ -720,12 +722,19 @@ Located in `pyproject.toml`:
   - Workflow functions renamed:
     - Core: `train_pipelines()`, `evaluate_pipelines()` (work with pre-collected activations)
     - Convenience: `train_from_model()`, `evaluate_from_model()` (one-step from model)
-    - Streaming: `train_pipelines_streaming()` for incremental learning
   - Probes no longer have `layer`, `sequence_pooling`, or `score_aggregation` parameters
   - All preprocessing is now explicit in pipeline definition
   - Clear separation of concerns: layer selection, aggregation, classification
 
 **Removed (Breaking Changes):**
+- **Streaming training** (latest):
+  - `pipeline.partial_fit()` → Use `pipeline.fit()` with batch data
+  - `pipeline.fit_streaming()` → Use `pipeline.fit()` with batch data
+  - `train_pipelines_streaming()` → Use `train_pipelines()` with batch data
+  - `streaming` parameter in `train_from_model()` → Use batch training
+  - All probe `partial_fit()` methods → Use `probe.fit()` with batch data
+  - `Normalize.partial_fit()` → Use `Normalize.fit()` with batch data
+  - `Logistic.streaming_lr` parameter → Removed (no streaming training)
 - **Probe parameters**:
   - `layer` parameter → Use `SelectLayer` transformer in pipeline
   - `sequence_pooling` parameter → Use `Pool(dim="sequence", ...)` transformer in pipeline
@@ -789,7 +798,7 @@ pl.scripts.train_from_model(
   - `Activations.from_hidden_states()`: Create from HuggingFace format
 - **Mask system**: Comprehensive composable mask functions
 - Function-based metrics API with bootstrap confidence intervals
-- Streaming support with `ActivationIterator`
+- `ActivationIterator` for streaming evaluation
 - Multi-pipeline parallel training with shared activations
 - Attention probe implementation
 

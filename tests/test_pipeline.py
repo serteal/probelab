@@ -234,43 +234,6 @@ class TestPipelineScore:
         assert 0.0 <= score <= 1.0
 
 
-class TestPipelinePartialFit:
-    """Test Pipeline.partial_fit() for streaming."""
-
-    def test_partial_fit_basic(self):
-        """Test basic partial_fit."""
-        pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("pool", Pool(dim="sequence", method="mean")),
-            ("probe", Logistic()),
-        ])
-
-        # Fit with multiple batches
-        for _ in range(3):
-            acts = create_activations(n_layers=2, batch_size=5, layer_indices=[0, 1])
-            labels = create_labels(batch_size=5)
-            pipeline.partial_fit(acts, labels)
-
-        # Should be able to predict after partial_fit
-        test_acts = create_activations(n_layers=2, batch_size=3, layer_indices=[0, 1])
-        probs = pipeline.predict_proba(test_acts)
-        assert probs.shape == (3, 2)
-
-    def test_partial_fit_with_post_transforms_raises(self):
-        """Test that partial_fit with post-transforms raises error."""
-        pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("probe", Logistic()),
-            ("pool", Pool(dim="sequence", method="mean")),
-        ])
-
-        acts = create_activations(n_layers=2, batch_size=5, layer_indices=[0, 1])
-        labels = create_labels(batch_size=5)
-
-        with pytest.raises(NotImplementedError, match="not supported with post-probe"):
-            pipeline.partial_fit(acts, labels)
-
-
 class TestPipelineItemAccess:
     """Test Pipeline step access."""
 
@@ -398,3 +361,144 @@ class TestPipelineWithMLP:
 
         assert probs.shape == (5, 2)
         assert torch.all(probs >= 0) and torch.all(probs <= 1)
+
+
+class TestPipelineAutoSelectLayer:
+    """Test Pipeline auto-selection of single layer."""
+
+    def test_single_layer_auto_select(self):
+        """Test that single-layer activations work without SelectLayer."""
+        # Pipeline WITHOUT SelectLayer
+        pipeline = Pipeline([
+            ("pool", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic()),
+        ])
+
+        # Single-layer activations
+        acts = create_activations(n_layers=1, batch_size=20, layer_indices=[16])
+        labels = create_labels(batch_size=20)
+
+        # Should work without SelectLayer
+        pipeline.fit(acts, labels)
+        assert pipeline._probe._fitted
+
+        # Predict should also work
+        test_acts = create_activations(n_layers=1, batch_size=5, layer_indices=[16])
+        probs = pipeline.predict_proba(test_acts)
+        assert probs.shape == (5, 2)
+
+    def test_single_layer_auto_select_with_token_level(self):
+        """Test auto-selection works with token-level training."""
+        # Pipeline WITHOUT SelectLayer, with post-probe pool
+        pipeline = Pipeline([
+            ("probe", Logistic()),
+            ("pool", Pool(dim="sequence", method="mean")),
+        ])
+
+        # Single-layer activations
+        acts = create_activations(n_layers=1, batch_size=20, layer_indices=[8])
+        labels = create_labels(batch_size=20)
+
+        pipeline.fit(acts, labels)
+        assert pipeline._probe._fitted
+
+        test_acts = create_activations(n_layers=1, batch_size=5, layer_indices=[8])
+        probs = pipeline.predict_proba(test_acts)
+        assert probs.shape == (5, 2)
+
+    def test_multi_layer_without_handling_raises(self):
+        """Test that multi-layer activations without layer handling raises error."""
+        # Pipeline WITHOUT SelectLayer or Pool(dim="layer")
+        pipeline = Pipeline([
+            ("pool", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic()),
+        ])
+
+        # Multi-layer activations
+        acts = create_activations(n_layers=3, batch_size=20, layer_indices=[12, 16, 20])
+        labels = create_labels(batch_size=20)
+
+        with pytest.raises(ValueError, match="Activations contain 3 layers"):
+            pipeline.fit(acts, labels)
+
+    def test_multi_layer_with_select_layer_works(self):
+        """Test that multi-layer activations work with explicit SelectLayer."""
+        # Pipeline WITH SelectLayer
+        pipeline = Pipeline([
+            ("select", SelectLayer(16)),
+            ("pool", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic()),
+        ])
+
+        # Multi-layer activations
+        acts = create_activations(n_layers=3, batch_size=20, layer_indices=[12, 16, 20])
+        labels = create_labels(batch_size=20)
+
+        pipeline.fit(acts, labels)
+        assert pipeline._probe._fitted
+
+    def test_multi_layer_with_pool_layer_works(self):
+        """Test that multi-layer activations work with Pool(dim='layer')."""
+        # Pipeline WITH Pool(dim="layer")
+        pipeline = Pipeline([
+            ("pool_layer", Pool(dim="layer", method="mean")),
+            ("pool_seq", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic()),
+        ])
+
+        # Multi-layer activations
+        acts = create_activations(n_layers=3, batch_size=20, layer_indices=[12, 16, 20])
+        labels = create_labels(batch_size=20)
+
+        pipeline.fit(acts, labels)
+        assert pipeline._probe._fitted
+
+    def test_explicit_select_layer_still_works_for_single_layer(self):
+        """Test that explicit SelectLayer works even with single-layer activations."""
+        # Pipeline WITH explicit SelectLayer
+        pipeline = Pipeline([
+            ("select", SelectLayer(16)),
+            ("pool", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic()),
+        ])
+
+        # Single-layer activations
+        acts = create_activations(n_layers=1, batch_size=20, layer_indices=[16])
+        labels = create_labels(batch_size=20)
+
+        pipeline.fit(acts, labels)
+        assert pipeline._probe._fitted
+
+    def test_no_layer_axis_works(self):
+        """Test that activations without LAYER axis work (already selected)."""
+        # Create single-layer activations and pre-select
+        acts = create_activations(n_layers=1, batch_size=20, layer_indices=[16])
+        acts_no_layer = acts.select(layer=16)  # Remove LAYER axis
+
+        # Pipeline WITHOUT SelectLayer
+        pipeline = Pipeline([
+            ("pool", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic()),
+        ])
+
+        labels = create_labels(batch_size=20)
+        pipeline.fit(acts_no_layer, labels)
+        assert pipeline._probe._fitted
+
+    def test_error_message_includes_options(self):
+        """Test that error message for multi-layer includes helpful options."""
+        pipeline = Pipeline([
+            ("pool", Pool(dim="sequence", method="mean")),
+            ("probe", Logistic()),
+        ])
+
+        acts = create_activations(n_layers=2, batch_size=10, layer_indices=[12, 20])
+        labels = create_labels(batch_size=10)
+
+        with pytest.raises(ValueError) as exc_info:
+            pipeline.fit(acts, labels)
+
+        error_msg = str(exc_info.value)
+        assert "12" in error_msg  # First layer index mentioned
+        assert "SelectLayer" in error_msg  # Option 2
+        assert "Pool(dim='layer'" in error_msg  # Option 3

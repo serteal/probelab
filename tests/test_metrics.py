@@ -11,6 +11,7 @@ from probelab.metrics import (
     fpr,
     fpr_at_threshold,
     mean_score,
+    optimal_threshold,
     partial_auroc,
     percentile,
     precision,
@@ -18,6 +19,7 @@ from probelab.metrics import (
     recall_at_fpr,
     std_score,
     tpr_at_fpr,
+    weighted_error_rate,
     with_bootstrap,
 )
 
@@ -371,3 +373,159 @@ class TestCustomMetrics:
         result = bootstrapped_custom(y_true, y_pred)
         assert isinstance(result, tuple)
         assert len(result) == 3
+
+
+class TestWeightedErrorMetrics:
+    """Test weighted error rate metrics from GDM paper."""
+
+    def test_weighted_error_rate_basic(self):
+        """Test basic weighted error rate calculation."""
+        y_true = np.array([0, 0, 1, 1])
+        y_pred = np.array([0.3, 0.6, 0.4, 0.9])  # One FP, one FN
+
+        result = weighted_error_rate(
+            y_true, y_pred, threshold=0.5, fnr_weight=5.0, fpr_weight=50.0
+        )
+
+        # FNR = 1/2 = 0.5 (one FN out of 2 positives)
+        # FPR = 1/2 = 0.5 (one FP out of 2 negatives)
+        # weighted_error = (5 * 0.5 + 50 * 0.5) / 55 = 27.5 / 55 = 0.5
+        assert result == pytest.approx(0.5)
+
+    def test_weighted_error_rate_perfect_classifier(self):
+        """Test weighted error rate with perfect classification."""
+        y_true = np.array([0, 0, 1, 1])
+        y_pred = np.array([0.1, 0.2, 0.8, 0.9])  # Perfect separation
+
+        result = weighted_error_rate(y_true, y_pred, threshold=0.5)
+        assert result == 0.0
+
+    def test_weighted_error_rate_all_false_positives(self):
+        """Test weighted error rate with all false positives."""
+        y_true = np.array([0, 0, 0, 0])  # All negative
+        y_pred = np.array([0.8, 0.9, 0.6, 0.7])  # All predicted positive
+
+        result = weighted_error_rate(
+            y_true, y_pred, threshold=0.5, fnr_weight=5.0, fpr_weight=50.0
+        )
+
+        # FNR = 0 (no positives)
+        # FPR = 1.0 (all negatives predicted positive)
+        # weighted_error = (5 * 0 + 50 * 1) / 55 = 50/55
+        assert result == pytest.approx(50 / 55)
+
+    def test_weighted_error_rate_all_false_negatives(self):
+        """Test weighted error rate with all false negatives."""
+        y_true = np.array([1, 1, 1, 1])  # All positive
+        y_pred = np.array([0.1, 0.2, 0.3, 0.4])  # All predicted negative
+
+        result = weighted_error_rate(
+            y_true, y_pred, threshold=0.5, fnr_weight=5.0, fpr_weight=50.0
+        )
+
+        # FNR = 1.0 (all positives predicted negative)
+        # FPR = 0 (no negatives)
+        # weighted_error = (5 * 1 + 50 * 0) / 55 = 5/55
+        assert result == pytest.approx(5 / 55)
+
+    def test_weighted_error_rate_different_weights(self):
+        """Test weighted error rate with different weight configurations."""
+        y_true = np.array([0, 0, 1, 1])
+        y_pred = np.array([0.3, 0.6, 0.4, 0.9])  # One FP, one FN
+
+        # Equal weights
+        result_equal = weighted_error_rate(
+            y_true, y_pred, threshold=0.5, fnr_weight=1.0, fpr_weight=1.0
+        )
+        # FNR = 0.5, FPR = 0.5
+        # weighted_error = (1 * 0.5 + 1 * 0.5) / 2 = 0.5
+        assert result_equal == pytest.approx(0.5)
+
+        # Heavy FPR penalty
+        result_heavy_fpr = weighted_error_rate(
+            y_true, y_pred, threshold=0.5, fnr_weight=1.0, fpr_weight=10.0
+        )
+        # weighted_error = (1 * 0.5 + 10 * 0.5) / 11 = 5.5/11 ≈ 0.5
+        assert result_heavy_fpr == pytest.approx(5.5 / 11)
+
+    def test_weighted_error_rate_custom_threshold(self):
+        """Test weighted error rate with custom threshold."""
+        y_true = np.array([0, 0, 1, 1])
+        y_pred = np.array([0.3, 0.6, 0.4, 0.9])
+
+        # Threshold at 0.7
+        result = weighted_error_rate(y_true, y_pred, threshold=0.7)
+        # With threshold 0.7:
+        # FNR = 0.5 (0.4 < 0.7, 0.9 > 0.7) -> 1 FN out of 2
+        # FPR = 0.0 (0.3 < 0.7, 0.6 < 0.7) -> 0 FP out of 2
+        # Default weights: fnr=5, fpr=50
+        # weighted_error = (5 * 0.5 + 50 * 0) / 55 = 2.5/55
+        assert result == pytest.approx(2.5 / 55)
+
+    def test_optimal_threshold_basic(self):
+        """Test optimal threshold finding."""
+        y_true = np.array([0, 0, 1, 1])
+        y_pred = np.array([0.1, 0.3, 0.7, 0.9])
+
+        threshold, error = optimal_threshold(y_true, y_pred)
+
+        # Optimal threshold should separate the classes perfectly
+        # (somewhere between 0.3 and 0.7)
+        assert 0.3 < threshold < 0.7
+        assert error == 0.0
+
+    def test_optimal_threshold_returns_tuple(self):
+        """Test that optimal_threshold returns a tuple."""
+        y_true = np.array([0, 0, 1, 1])
+        y_pred = np.array([0.1, 0.3, 0.7, 0.9])
+
+        result = optimal_threshold(y_true, y_pred)
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert isinstance(result[0], float)  # threshold
+        assert isinstance(result[1], float)  # error
+
+    def test_optimal_threshold_with_overlap(self):
+        """Test optimal threshold with overlapping distributions."""
+        y_true = np.array([0, 0, 0, 1, 1, 1])
+        y_pred = np.array([0.2, 0.4, 0.5, 0.5, 0.6, 0.8])  # Overlapping
+
+        threshold, error = optimal_threshold(y_true, y_pred)
+
+        # Should find a reasonable threshold
+        assert 0.0 <= threshold <= 1.0
+        assert 0.0 <= error <= 1.0
+
+        # Error at optimal should be lower than at worst threshold
+        worst_error = weighted_error_rate(y_true, y_pred, threshold=0.0)
+        assert error <= worst_error
+
+    def test_optimal_threshold_custom_weights(self):
+        """Test optimal threshold with custom weights."""
+        # Use data with more separation to ensure different optimal thresholds
+        y_true = np.array([0, 0, 0, 0, 0, 1, 1, 1, 1, 1])
+        y_pred = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.5, 0.6, 0.7, 0.8, 0.9])
+
+        # With heavy FPR penalty, threshold should be higher to avoid FPs
+        threshold_heavy_fpr, _ = optimal_threshold(
+            y_true, y_pred, fnr_weight=1.0, fpr_weight=100.0, n_thresholds=200
+        )
+
+        # With heavy FNR penalty, threshold should be lower to avoid FNs
+        threshold_heavy_fnr, _ = optimal_threshold(
+            y_true, y_pred, fnr_weight=100.0, fpr_weight=1.0, n_thresholds=200
+        )
+
+        # Thresholds should be different (or at least heavy_fpr >= heavy_fnr)
+        assert threshold_heavy_fpr >= threshold_heavy_fnr
+
+    def test_weighted_error_rate_with_2d_proba(self):
+        """Test weighted error rate with 2D probability array."""
+        y_true = np.array([0, 0, 1, 1])
+        y_pred_2d = np.array([[0.7, 0.3], [0.4, 0.6], [0.6, 0.4], [0.1, 0.9]])
+
+        result = weighted_error_rate(y_true, y_pred_2d, threshold=0.5)
+
+        # Same as 1D case: [0.3, 0.6, 0.4, 0.9]
+        # FNR = 0.5, FPR = 0.5
+        assert result == pytest.approx(0.5)

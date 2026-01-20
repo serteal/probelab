@@ -208,9 +208,6 @@ class Attention(BaseProbe):
         self._d_model = None
         self.attention_weights = None  # Store for interpretability
 
-        # Streaming state
-        self._streaming_steps = 0
-
         # Set random seed for reproducibility
         if random_state is not None:
             torch.manual_seed(random_state)
@@ -357,68 +354,6 @@ class Attention(BaseProbe):
                     break
 
         self._network.eval()
-        self._fitted = True
-        return self
-
-    def partial_fit(self, X: Activations, y: list | torch.Tensor) -> "Attention":
-        """Perform single gradient step for streaming/online learning.
-
-        Args:
-            X: Batch of activations (must have SEQ axis)
-            y: Batch of labels [batch]
-
-        Returns:
-            self: Updated probe instance
-        """
-        # Convert labels to tensor
-        y_tensor = self._to_tensor(y)
-
-        # Check for LAYER axis
-        if X.has_axis(Axis.LAYER):
-            raise ValueError(
-                "Attention probe expects single layer activations. "
-                "Use SelectLayer transformer in pipeline before probe."
-            )
-
-        # Check for SEQ axis (REQUIRED)
-        if not X.has_axis(Axis.SEQ):
-            raise ValueError(
-                "Attention probe requires sequences (SEQ axis). "
-                "Do not use AggregateSequences before this probe."
-            )
-
-        # Extract sequences and detection mask
-        sequences = X.activations  # [batch, seq, hidden]
-        detection_mask = X.detection_mask  # [batch, seq]
-        labels = y_tensor  # [batch]
-
-        if labels.ndim != 1:
-            raise ValueError(
-                f"Expected 1D labels for attention probe, got shape {labels.shape}"
-            )
-
-        # Move to device and ensure tensors are safe for autograd
-        sequences = sequences.to(self.device).clone()
-        detection_mask = detection_mask.to(self.device)
-        labels = labels.to(self.device).float()
-
-        # Skip empty batches
-        if sequences.shape[0] == 0:
-            return self
-
-        # Initialize network if needed
-        if self._network is None:
-            self._init_network(sequences.shape[-1], dtype=sequences.dtype)
-
-        # Single gradient step
-        self._network.train()
-        self._optimizer.zero_grad()
-        logits, _ = self._network(sequences, detection_mask)
-        loss = F.binary_cross_entropy_with_logits(logits, labels)
-        loss.backward()
-        self._optimizer.step()
-
-        self._streaming_steps += 1
         self._fitted = True
         return self
 

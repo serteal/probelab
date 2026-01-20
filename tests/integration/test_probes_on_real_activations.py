@@ -114,65 +114,6 @@ def test_logistic_sequence_mean_llama3():
 
 
 @pytest.mark.integration
-@pytest.mark.llama3
-def test_logistic_token_mean_streaming_fit_llama3():
-    _cuda_required()
-    model_name = "meta-llama/Llama-3.1-8B-Instruct"
-    dialogues = _common_dialogues("llama3")
-    acts = _collect_small_activations(model_name, dialogues)
-
-    # Build a streaming iterator using the same parameters
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.padding_side = "left"
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16, device_map="cuda"
-    )
-    model.eval()
-
-    # Wrap in dataset (disable shuffle for deterministic comparison)
-    dataset = _TestDialogueDataset(
-        dialogues=dialogues,
-        labels=[pl.Label.POSITIVE, pl.Label.NEGATIVE],
-        shuffle_upon_init=False,
-    )
-
-    acts_iter = pl.processing.collect_activations(
-        model=model,
-        tokenizer=tokenizer,
-        dataset=dataset,
-        layers=[0],
-        batch_size=1,
-        streaming=True,
-        verbose=False,
-        add_generation_prompt=False,
-        mask=pl.masks.assistant(include_padding=False),
-    )
-
-    labels = [1, 0]
-    # Note: Streaming (partial_fit) doesn't support post-transformers,
-    # so we use sequence-level aggregation before the probe
-    pipeline = pl.Pipeline([
-        ("select", pl.preprocessing.SelectLayer(0)),
-        ("agg", pl.preprocessing.Pool(dim="sequence", method="mean")),
-        ("probe", pl.probes.Logistic(
-            device="cuda",
-            random_state=0,
-        )),
-    ])
-
-    # Use partial_fit for streaming (convert to float32 for probe compatibility)
-    for batch_acts in acts_iter:
-        batch_acts_f32 = batch_acts.to(dtype=torch.float32)
-        batch_labels = [labels[i] for i in batch_acts.batch_indices]
-        pipeline.partial_fit(batch_acts_f32, batch_labels)
-
-    probs = pipeline.predict_proba(acts)
-
-    assert probs.shape == (2, 2)
-    assert torch.allclose(probs.sum(dim=1), torch.ones(2, device=probs.device), atol=1e-5)
-
-
-@pytest.mark.integration
 @pytest.mark.gemma2
 def test_logistic_sequence_mean_gemma2():
     _cuda_required()

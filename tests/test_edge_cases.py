@@ -1,9 +1,8 @@
 """
 Comprehensive edge case tests for probelab.
-Focuses on aggregation methods, streaming, memory management, and boundary conditions.
+Focuses on aggregation methods, memory management, and boundary conditions.
 """
 
-import gc
 import tempfile
 from pathlib import Path
 
@@ -13,7 +12,7 @@ import torch
 from probelab import Pipeline
 from probelab.preprocessing import SelectLayer, Pool
 from probelab.probes import MLP, Attention, Logistic
-from probelab.processing.activations import ActivationIterator, Activations
+from probelab.processing.activations import Activations
 from probelab.types import AggregationMethod, Label
 
 
@@ -168,219 +167,6 @@ class TestAggregationEdgeCases:
 
         aggregated = activations.select(layer=0).pool(dim="sequence", method="mean").activations
         assert aggregated.device.type == device
-
-
-class TestStreamingEdgeCases:
-    """Test edge cases for streaming functionality.
-
-    These tests verify that partial_fit/streaming works correctly for various
-    edge cases including single batches, uneven batch sizes, and memory efficiency.
-    """
-
-    def test_empty_dataset_streaming(self):
-        """Test that streaming handles empty iterators correctly."""
-
-        # Iterator with empty batches
-        class EmptyIterator(ActivationIterator):
-            def __init__(self):
-                self._layers = [0]
-                self._num_batches = 0
-
-            def __iter__(self):
-                return iter([])
-
-            def __len__(self):
-                return 0
-
-            @property
-            def layers(self):
-                return self._layers
-
-        iterator = EmptyIterator()
-
-        pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("agg", Pool(dim="sequence", method="mean")),
-            ("probe", Logistic()),
-        ])
-
-        # Empty iterator doesn't trigger any operations
-        labels = []
-        batch_count = 0
-        for batch in iterator:
-            batch_idx = batch.batch_indices
-            batch_labels = [labels[i] for i in batch_idx]
-            pipeline.partial_fit(batch, batch_labels)
-            batch_count += 1
-
-        # No batches should have been processed
-        assert batch_count == 0
-
-    def test_single_batch_streaming(self):
-        """Test that streaming works correctly with a single batch."""
-        acts = torch.randn(1, 5, 10, 8)
-
-        batch = Activations.from_tensor(
-            activations=acts,
-            attention_mask=torch.ones(5, 10),
-            input_ids=torch.ones(5, 10, dtype=torch.long),
-            detection_mask=torch.ones(5, 10),
-            layer_indices=[0],
-            batch_indices=torch.arange(5, dtype=torch.long),
-        )
-
-        class SingleBatchIterator(ActivationIterator):
-            def __init__(self, batch):
-                self.batch = batch
-                self._layers = [0]
-                self._num_batches = 1
-
-            def __iter__(self):
-                yield self.batch
-
-            def __len__(self):
-                return 1
-
-            @property
-            def layers(self):
-                return self._layers
-
-        iterator = SingleBatchIterator(batch)
-        labels = [Label.POSITIVE] * 3 + [Label.NEGATIVE] * 2
-
-        pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("agg", Pool(dim="sequence", method="mean")),
-            ("probe", Logistic()),
-        ])
-
-        # Verify that partial_fit works
-        for batch_acts in iterator:
-            batch_idx = batch_acts.batch_indices
-            batch_labels = [labels[i] for i in batch_idx]
-            pipeline.partial_fit(batch_acts, batch_labels)
-
-        # Probe should be fitted after streaming
-        assert pipeline._probe._fitted
-        assert pipeline._probe._streaming_steps == 1
-
-    def test_uneven_batch_sizes(self):
-        """Test that streaming works correctly with varying batch sizes."""
-        # Create batches with different sizes
-        batch1 = Activations.from_tensor(
-            activations=torch.randn(1, 10, 20, 16),
-            attention_mask=torch.ones(10, 20),
-            input_ids=torch.ones(10, 20, dtype=torch.long),
-            detection_mask=torch.ones(10, 20),
-            layer_indices=[0],
-            batch_indices=torch.arange(0, 10, dtype=torch.long),
-        )
-
-        batch2 = Activations.from_tensor(
-            activations=torch.randn(1, 5, 20, 16),
-            attention_mask=torch.ones(5, 20),
-            input_ids=torch.ones(5, 20, dtype=torch.long),
-            detection_mask=torch.ones(5, 20),
-            layer_indices=[0],
-            batch_indices=torch.arange(10, 15, dtype=torch.long),
-        )
-
-        batch3 = Activations.from_tensor(
-            activations=torch.randn(1, 3, 20, 16),
-            attention_mask=torch.ones(3, 20),
-            input_ids=torch.ones(3, 20, dtype=torch.long),
-            detection_mask=torch.ones(3, 20),
-            layer_indices=[0],
-            batch_indices=torch.arange(15, 18, dtype=torch.long),
-        )
-
-        class UnevenIterator(ActivationIterator):
-            def __init__(self):
-                self.batches = [batch1, batch2, batch3]
-                self._layers = [0]
-                self._num_batches = 3
-
-            def __iter__(self):
-                return iter(self.batches)
-
-            def __len__(self):
-                return 3
-
-            @property
-            def layers(self):
-                return self._layers
-
-        iterator = UnevenIterator()
-        labels = [Label.POSITIVE] * 9 + [Label.NEGATIVE] * 9  # 18 total
-
-        pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("agg", Pool(dim="sequence", method="mean")),
-            ("probe", Logistic()),
-        ])
-
-        # Verify that partial_fit works with uneven batches
-        for batch_acts in iterator:
-            batch_idx = batch_acts.batch_indices
-            batch_labels = [labels[i] for i in batch_idx]
-            pipeline.partial_fit(batch_acts, batch_labels)
-
-        # Probe should be fitted after all batches
-        assert pipeline._probe._fitted
-        assert pipeline._probe._streaming_steps == 3
-
-    def test_streaming_memory_efficiency(self):
-        """Test that streaming works for memory-efficient scenarios."""
-        # This test verifies that streaming works for large iterators
-
-        class MemoryTrackingIterator(ActivationIterator):
-            def __init__(self, n_batches=10, batch_size=100):
-                self.n_batches = n_batches
-                self.batch_size = batch_size
-                self._layers = [0]
-                self._num_batches = n_batches
-
-            def __iter__(self):
-                for i in range(self.n_batches):
-                    # Create a batch
-                    start_idx = i * self.batch_size
-                    batch = Activations.from_tensor(
-                        activations=torch.randn(1, self.batch_size, 100, 512),
-                        attention_mask=torch.ones(self.batch_size, 100),
-                        input_ids=torch.ones(self.batch_size, 100, dtype=torch.long),
-                        detection_mask=torch.ones(self.batch_size, 100),
-                        layer_indices=[0],
-                        batch_indices=torch.arange(start_idx, start_idx + self.batch_size, dtype=torch.long),
-                    )
-                    yield batch
-                    # Force garbage collection to ensure memory is freed
-                    gc.collect()
-
-            def __len__(self):
-                return self.n_batches
-
-            @property
-            def layers(self):
-                return self._layers
-
-        iterator = MemoryTrackingIterator(n_batches=5, batch_size=50)
-        labels = [Label.POSITIVE] * 125 + [Label.NEGATIVE] * 125  # 250 total
-
-        pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("agg", Pool(dim="sequence", method="mean")),
-            ("probe", Logistic()),
-        ])
-
-        # Verify that partial_fit works for all batches
-        for batch_acts in iterator:
-            batch_idx = batch_acts.batch_indices
-            batch_labels = [labels[i] for i in batch_idx]
-            pipeline.partial_fit(batch_acts, batch_labels)
-
-        # Probe should be fitted after all batches
-        assert pipeline._probe._fitted
-        assert pipeline._probe._streaming_steps == 5
 
 
 class TestProbeEdgeCases:

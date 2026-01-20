@@ -129,9 +129,6 @@ class MLP(BaseProbe):
         self._d_model = None
         self._trained_on_tokens = False
 
-        # Streaming state
-        self._streaming_steps = 0
-
         # Set random seed
         if random_state is not None:
             torch.manual_seed(random_state)
@@ -267,72 +264,6 @@ class MLP(BaseProbe):
                 print(f"Epoch {epoch + 1}/{self.n_epochs}: loss={avg_loss:.4f}")
 
         self._network.eval()
-        self._fitted = True
-        return self
-
-    def partial_fit(self, X: Activations, y: list | torch.Tensor) -> "MLP":
-        """Perform single gradient step for streaming/online learning.
-
-        Args:
-            X: Batch of activations
-            y: Batch of labels
-
-        Returns:
-            self: Updated probe instance
-        """
-        # Convert labels to tensor
-        y_tensor = self._to_tensor(y)
-
-        # Check for LAYER axis
-        if X.has_axis(Axis.LAYER):
-            raise ValueError(
-                "MLP probe expects single layer activations. "
-                "Use SelectLayer transformer in pipeline before probe."
-            )
-
-        # Extract features based on dimensionality
-        if X.has_axis(Axis.SEQ):
-            # Token-level training
-            features, tokens_per_sample = X.extract_tokens()
-
-            # Expand labels if needed (ensure device compatibility)
-            if y_tensor.ndim == 1:
-                labels = torch.repeat_interleave(y_tensor, tokens_per_sample.cpu())
-            elif y_tensor.ndim == 2:
-                labels = y_tensor[X.detection_mask.cpu().bool()]
-            else:
-                raise ValueError(f"Invalid label shape: {y_tensor.shape}")
-
-            self._trained_on_tokens = True
-            self._tokens_per_sample = tokens_per_sample
-        else:
-            # Sequence-level training
-            features = X.activations
-            labels = y_tensor
-            self._trained_on_tokens = False
-            self._tokens_per_sample = None
-
-        # Skip empty batches
-        if features.shape[0] == 0:
-            return self
-
-        # Move to device
-        features = features.to(self.device, dtype=torch.float32)
-        labels = labels.to(self.device, dtype=torch.float32)
-
-        # Initialize network if needed
-        if self._network is None:
-            self._init_network(features.shape[1])
-
-        # Single gradient step
-        self._network.train()
-        self._optimizer.zero_grad()
-        logits = self._network(features)
-        loss = F.binary_cross_entropy_with_logits(logits, labels)
-        loss.backward()
-        self._optimizer.step()
-
-        self._streaming_steps += 1
         self._fitted = True
         return self
 

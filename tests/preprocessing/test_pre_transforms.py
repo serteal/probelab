@@ -290,52 +290,34 @@ class TestNormalize:
         with pytest.raises(ValueError, match="must be fitted"):
             transform.transform(acts)
 
-    def test_partial_fit_online_learning(self):
-        """Test partial_fit for online learning."""
-        torch.manual_seed(42)
-        transform = Normalize()
-
-        # Fit with multiple batches
-        for _ in range(5):
-            acts = create_activations(n_layers=1, batch_size=10)
-            transform.partial_fit(acts)
-
-        assert transform._fitted
-        assert transform._n_samples_seen > 0
-
-    def test_freeze_locks_statistics(self):
-        """Test that freeze prevents further updates."""
+    def test_freeze_preserves_statistics(self):
+        """Test that freeze preserves statistics on transform."""
         transform = Normalize()
 
         # Initial fit
-        acts1 = create_activations(n_layers=1, batch_size=10)
-        transform.partial_fit(acts1)
+        acts = create_activations(n_layers=1, batch_size=10)
+        transform.fit(acts)
         mean_before = transform.mean_.clone()
 
         # Freeze
         transform.freeze()
 
-        # Further partial_fit should not change statistics
-        acts2 = create_activations(n_layers=1, batch_size=10)
-        transform.partial_fit(acts2)
-
+        # Transform should still work with frozen statistics
+        result = transform.transform(acts)
         assert torch.equal(transform.mean_, mean_before)
+        assert result.activations.shape == acts.activations.shape
 
-    def test_unfreeze_allows_updates(self):
-        """Test that unfreeze allows further updates."""
+    def test_unfreeze_unfrozen_state(self):
+        """Test that unfreeze correctly changes state."""
         transform = Normalize()
 
-        acts1 = create_activations(n_layers=1, batch_size=10)
-        transform.partial_fit(acts1)
+        acts = create_activations(n_layers=1, batch_size=10)
+        transform.fit(acts)
         transform.freeze()
+        assert transform._frozen
+
         transform.unfreeze()
-
-        # Should be able to update after unfreeze
-        n_before = transform._n_samples_seen
-        acts2 = create_activations(n_layers=1, batch_size=10)
-        transform.partial_fit(acts2)
-
-        assert transform._n_samples_seen > n_before
+        assert not transform._frozen
 
     def test_normalization_preserves_shape(self):
         """Test that normalization preserves activation shape."""

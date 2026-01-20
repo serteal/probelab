@@ -5,12 +5,10 @@ from .workflows import (
     evaluate_pipelines,
     train_from_model,
     train_pipelines,
-    train_pipelines_streaming,
 )
 
 __all__ = [
     "train_pipelines",
-    "train_pipelines_streaming",
     "train_from_model",
     "evaluate_pipelines",
     "evaluate_from_model",
