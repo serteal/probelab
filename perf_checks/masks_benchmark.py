@@ -20,7 +20,7 @@ from probelab.masks import (
 from probelab.preprocessing import Pool, SelectLayer
 
 torch.set_float32_matmul_precision("high")
-pl.logger.logger.setLevel(logging.WARNING)  # type: ignore
+pl.logger.setLevel(logging.WARNING)
 
 
 def benchmark_probe_training_with_masks(

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import torch
 
+from ..config import DEFAULT_DEVICE, VERBOSE
 from ..processing.activations import Activations
 from ..processing.scores import Scores
 
@@ -45,23 +46,29 @@ class BaseProbe(ABC):
         self,
         device: str | None = None,
         random_state: int | None = None,
-        verbose: bool = False,
+        verbose: bool | None = None,
     ):
         """Initialize base probe.
 
         Args:
-            device: Device for computation (auto-detected if None)
+            device: Device for computation. If None, uses DEFAULT_DEVICE from config
+                   (default: "cuda" if available, else "cpu")
             random_state: Random seed for reproducibility
-            verbose: Whether to print progress information
+            verbose: Whether to print progress information. If None, uses VERBOSE from config.
         """
-        # Set device - auto-detect if None
+        # Set device - use config default, then auto-detect
         if device is None:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            config_device = DEFAULT_DEVICE.get()
+            # Validate device availability
+            if config_device.startswith("cuda") and not torch.cuda.is_available():
+                self.device = "cpu"
+            else:
+                self.device = config_device
         else:
             self.device = device
 
         self.random_state = random_state
-        self.verbose = verbose
+        self.verbose = verbose if verbose is not None else VERBOSE.get()
 
         # Track fitting state
         self._fitted = False

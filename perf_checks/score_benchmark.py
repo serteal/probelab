@@ -4,6 +4,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
+from probelab.visualization import print_metrics
 
 model = AutoModelForCausalLM.from_pretrained(
     "google/gemma-3-27b-it", torch_dtype=torch.bfloat16, device_map="auto"
@@ -124,4 +125,4 @@ predictions, metrics = pl.scripts.evaluate_pipelines(
     ],
 )
 
-pl.visualization.print_metrics(metrics)
+print_metrics(metrics)

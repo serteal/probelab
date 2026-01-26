@@ -3,6 +3,7 @@
 import pytest
 
 import probelab as pl
+from probelab.types import Message
 from tests.utils.assertions import (
     assert_detection_mask_text_equal,
     get_formatted_dialogue_texts,
@@ -20,9 +21,9 @@ def test_assistant_mask_content_llama3():
     model_name = "meta-llama/Llama-3.1-8B-Instruct"
     dialogues = [
         [
-            pl.Message("system", "You are helpful."),
-            pl.Message("user", "Hello"),
-            pl.Message("assistant", "Hi!"),
+            Message("system", "You are helpful."),
+            Message("user", "Hello"),
+            Message("assistant", "Hi!"),
         ]
     ]
 
@@ -40,9 +41,9 @@ def test_assistant_mask_content_gemma2():
     model_name = "google/gemma-2-2b-it"
     dialogues = [
         [
-            pl.Message("system", "Follow the user instructions."),
-            pl.Message("user", "Translate 'hello' to French."),
-            pl.Message("assistant", "Bonjour"),
+            Message("system", "Follow the user instructions."),
+            Message("user", "Translate 'hello' to French."),
+            Message("assistant", "Bonjour"),
         ]
     ]
 
@@ -60,13 +61,13 @@ def test_all_and_none_masks_llama3_multiple_dialogues():
     model_name = "meta-llama/Llama-3.1-8B-Instruct"
     dialogues = [
         [
-            pl.Message("system", "You are helpful."),
-            pl.Message("user", "Say hi"),
-            pl.Message("assistant", "Hi!"),
+            Message("system", "You are helpful."),
+            Message("user", "Say hi"),
+            Message("assistant", "Hi!"),
         ],
         [
-            pl.Message("user", "What is 2+2?"),
-            pl.Message("assistant", "4"),
+            Message("user", "What is 2+2?"),
+            Message("assistant", "4"),
         ],
     ]
 
@@ -103,13 +104,13 @@ def test_role_masks_multiple_dialogues():
         if "gemma" in model_name:
             dialogues = [
                 [
-                    pl.Message("system", "Follow the user instructions."),
-                    pl.Message("user", "Question A"),
-                    pl.Message("assistant", "Answer A"),
+                    Message("system", "Follow the user instructions."),
+                    Message("user", "Question A"),
+                    Message("assistant", "Answer A"),
                 ],
                 [
-                    pl.Message("user", "Question B"),
-                    pl.Message("assistant", "Answer B"),
+                    Message("user", "Question B"),
+                    Message("assistant", "Answer B"),
                 ],
             ]
             # With folding, the first user message includes the system content
@@ -120,13 +121,13 @@ def test_role_masks_multiple_dialogues():
         else:
             dialogues = [
                 [
-                    pl.Message("system", "System Preamble."),
-                    pl.Message("user", "Question A"),
-                    pl.Message("assistant", "Answer A"),
+                    Message("system", "System Preamble."),
+                    Message("user", "Question A"),
+                    Message("assistant", "Answer A"),
                 ],
                 [
-                    pl.Message("user", "Question B"),
-                    pl.Message("assistant", "Answer B"),
+                    Message("user", "Question B"),
+                    Message("assistant", "Answer B"),
                 ],
             ]
             expected_user = ["Question A", "Question B"]
@@ -171,12 +172,12 @@ def test_text_masks_contains_and_regex_llama3():
     model_name = "meta-llama/Llama-3.1-8B-Instruct"
     dialogues = [
         [
-            pl.Message("user", "Find the keyword ZEBRA here."),
-            pl.Message("assistant", "I found ZEBRA and noted it."),
+            Message("user", "Find the keyword ZEBRA here."),
+            Message("assistant", "I found ZEBRA and noted it."),
         ],
         [
-            pl.Message("user", "Nothing to see here."),
-            pl.Message("assistant", "No animals mentioned."),
+            Message("user", "Nothing to see here."),
+            Message("assistant", "No animals mentioned."),
         ],
     ]
 
@@ -208,9 +209,9 @@ def test_nth_message_mask_gemma2():
     model_name = "google/gemma-2-2b-it"
     dialogues = [
         [
-            pl.Message("system", "Be precise."),
-            pl.Message("user", "State the color."),
-            pl.Message("assistant", "Blue."),
+            Message("system", "Be precise."),
+            Message("user", "State the color."),
+            Message("assistant", "Blue."),
         ]
     ]
 

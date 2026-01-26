@@ -9,10 +9,12 @@ from utils import TimingResult, measure_with_warmup, timer
 
 import probelab as pl
 from probelab import Pipeline
+from probelab.models import HookedModel
 from probelab.preprocessing import Pool, SelectLayer
+from probelab.processing import tokenize_dataset
 
 torch.set_float32_matmul_precision("high")
-pl.logger.logger.setLevel(logging.WARNING)  # type: ignore
+pl.logger.setLevel(logging.WARNING)
 
 
 def benchmark_activation_collection(
@@ -35,7 +37,7 @@ def benchmark_activation_collection(
 
     # Measure tokenization
     def tokenize_fn():
-        return pl.processing.tokenize_dataset(tokenizer=tokenizer, dataset=dataset)
+        return tokenize_dataset(tokenizer=tokenizer, dataset=dataset)
 
     tokenize_result = measure_with_warmup(
         tokenize_fn, warmup_runs=1, measurement_runs=3, name="Tokenization"
@@ -43,11 +45,11 @@ def benchmark_activation_collection(
     results["tokenization"] = tokenize_result
 
     # Get tokenized inputs for activation collection
-    inputs = pl.processing.tokenize_dataset(dataset, tokenizer)
+    inputs = tokenize_dataset(dataset, tokenizer)
 
     # Measure activation collection with HookedModel
     def collect_with_hooks():
-        with pl.HookedModel(model, layers=layers) as hooked_model:
+        with HookedModel(model, layers=layers) as hooked_model:
             activations = []
 
             # Process in batches

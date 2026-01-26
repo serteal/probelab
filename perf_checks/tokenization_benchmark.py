@@ -30,7 +30,7 @@ from probelab.masks import (
 from probelab.processing.tokenization import tokenize_dataset
 
 torch.set_float32_matmul_precision("high")
-pl.logger.logger.setLevel(logging.WARNING)  # type: ignore
+pl.logger.setLevel(logging.WARNING)
 
 
 def benchmark_tokenization_only(

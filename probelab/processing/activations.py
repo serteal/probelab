@@ -24,9 +24,11 @@ import torch
 from jaxtyping import Float
 from tqdm.auto import tqdm
 
+from ..config import DISABLE_PROGRESS, VERBOSE
 from ..datasets import DialogueDataset
 from ..models import HookedModel
 from ..models.architectures import ArchitectureRegistry
+from ..profiling import ProbelabCounters, is_profiling, profile_section
 from ..types import AggregationMethod, Dialogue, HookPoint
 from .tokenization import tokenize_dialogues
 
@@ -119,6 +121,22 @@ def get_hidden_dim(model: "PreTrainedModel") -> int:
         return config.text_config.hidden_size  # type: ignore
     else:
         raise ValueError(f"Cannot determine hidden dimension for {model.name_or_path}")
+
+
+def _resolve_verbose(verbose: bool | None) -> bool:
+    """Resolve verbose parameter using config defaults.
+
+    Args:
+        verbose: Explicit verbose setting, or None to use config.
+
+    Returns:
+        Resolved verbose flag (False if progress is disabled).
+    """
+    if verbose is None:
+        verbose = VERBOSE.get()
+    if DISABLE_PROGRESS.get():
+        verbose = False
+    return verbose
 
 
 class Axis(Enum):
@@ -1064,7 +1082,7 @@ def streaming_activations(
     tokenized_inputs: dict[str, torch.Tensor],
     layers: list[int],
     batch_size: int = 8,
-    verbose: bool = False,
+    verbose: bool | None = None,
     hook_point: HookPoint = HookPoint.POST_BLOCK,
     detach_activations: bool = True,
 ) -> Generator[Activations, None, None]:
@@ -1085,7 +1103,7 @@ def streaming_activations(
         tokenized_inputs: Pre-tokenized inputs dictionary
         layers: Layer indices to extract
         batch_size: Batch size for processing
-        verbose: Whether to show progress bar
+        verbose: Whether to show progress bar. If None, uses VERBOSE from config.
         hook_point: Where to extract activations:
             - "post_block": After transformer block (aligns with HF hidden_states)
             - "pre_layernorm": Before layer normalization (legacy behavior)
@@ -1093,6 +1111,7 @@ def streaming_activations(
     Yields:
         Activations objects for each batch
     """
+    verbose = _resolve_verbose(verbose)
     n_samples = tokenized_inputs["input_ids"].shape[0]
 
     with HookedModel(
@@ -1109,8 +1128,17 @@ def streaming_activations(
 
         for batch_inputs, batch_indices in batch_iter:
             batch_inputs = _ensure_on_device(batch_inputs, model.device)
+
+            with profile_section("forward_pass", batch_size=len(batch_indices)):
+                batch_acts = hooked_model.get_activations(batch_inputs)
+                if is_profiling():
+                    batch_tokens = batch_acts.shape[1] * batch_acts.shape[2]
+                    ProbelabCounters.forward_passes += 1
+                    ProbelabCounters.tokens_processed += batch_tokens
+                    ProbelabCounters.batches_processed += 1
+
             yield Activations(
-                activations=hooked_model.get_activations(batch_inputs),
+                activations=batch_acts,
                 axes=_DEFAULT_AXES,
                 layer_meta=LayerMeta(tuple(layers)),
                 sequence_meta=SequenceMeta(
@@ -1128,7 +1156,7 @@ def batch_activations(
     tokenized_inputs: dict[str, torch.Tensor],
     layers: list[int],
     batch_size: int = 8,
-    verbose: bool = False,
+    verbose: bool | None = None,
     hook_point: HookPoint = HookPoint.POST_BLOCK,
     detach_activations: bool = True,
 ) -> Activations:
@@ -1145,7 +1173,7 @@ def batch_activations(
         tokenized_inputs: Pre-tokenized inputs
         layers: Layer indices to extract
         batch_size: Batch size for processing
-        verbose: Whether to show progress
+        verbose: Whether to show progress. If None, uses VERBOSE from config.
         hook_point: Where to extract activations:
             - "post_block": After transformer block (aligns with HF hidden_states)
             - "pre_layernorm": Before layer normalization (legacy behavior)
@@ -1153,6 +1181,7 @@ def batch_activations(
     Returns:
         Single Activations object with all data
     """
+    verbose = _resolve_verbose(verbose)
     n_samples, max_seq_len = tokenized_inputs["input_ids"].shape
     hidden_dim = get_hidden_dim(model)
 
@@ -1181,7 +1210,15 @@ def batch_activations(
                 batch_inputs = _ensure_on_device(batch_inputs, model.device)
 
                 seq_len = batch_inputs["input_ids"].shape[1]
-                batch_acts = hooked_model.get_activations(batch_inputs)
+
+                with profile_section("forward_pass", batch_size=len(batch_indices)):
+                    batch_acts = hooked_model.get_activations(batch_inputs)
+                    if is_profiling():
+                        batch_tokens = batch_acts.shape[1] * batch_acts.shape[2]
+                        ProbelabCounters.forward_passes += 1
+                        ProbelabCounters.tokens_processed += batch_tokens
+                        ProbelabCounters.batches_processed += 1
+
                 # Use blocking transfer for small datasets to avoid race conditions
                 batch_acts = batch_acts.to("cpu")
 
@@ -1210,7 +1247,14 @@ def batch_activations(
             for batch_idx, (batch_inputs, batch_indices) in enumerate(batches):
                 batch_inputs = _ensure_on_device(batch_inputs, model.device)
 
-                batch_acts = hooked_model.get_activations(batch_inputs)
+                with profile_section("forward_pass", batch_size=len(batch_indices)):
+                    batch_acts = hooked_model.get_activations(batch_inputs)
+                    if is_profiling():
+                        batch_tokens = batch_acts.shape[1] * batch_acts.shape[2]
+                        ProbelabCounters.forward_passes += 1
+                        ProbelabCounters.tokens_processed += batch_tokens
+                        ProbelabCounters.batches_processed += 1
+
                 batch_acts = batch_acts.to("cpu", non_blocking=True)
                 batch_list.append(batch_acts)
                 indices_list.append(batch_indices)
@@ -1236,6 +1280,9 @@ def batch_activations(
             else:
                 all_activations[:, batch_indices, -seq_len:] = batch_acts
 
+    if is_profiling():
+        ProbelabCounters.activations_collected += n_samples
+
     return Activations(
         activations=all_activations,
         axes=_DEFAULT_AXES,
@@ -1256,7 +1303,7 @@ def batch_activations_pooled(
     layers: list[int],
     batch_size: int,
     pooling_method: AggregationMethod | str,
-    verbose: bool = False,
+    verbose: bool | None = None,
     hook_point: HookPoint = HookPoint.POST_BLOCK,
     detach_activations: bool = True,
 ) -> Activations:
@@ -1272,13 +1319,15 @@ def batch_activations_pooled(
         layers: Layer indices to extract
         batch_size: Batch size for processing
         pooling_method: How to pool sequences ("mean", "max", "last_token")
-        verbose: Whether to show progress
+        verbose: Whether to show progress. If None, uses VERBOSE from config.
         hook_point: Where to extract activations
         detach_activations: Whether to detach from computation graph
 
     Returns:
         Activations without sequence axis (pooled)
     """
+    verbose = _resolve_verbose(verbose)
+
     # Normalize pooling method
     if isinstance(pooling_method, str):
         pooling_method = AggregationMethod(pooling_method)
@@ -1310,8 +1359,14 @@ def batch_activations_pooled(
         for batch_idx, (batch_inputs, batch_indices) in enumerate(batches):
             batch_inputs_gpu = _ensure_on_device(batch_inputs, model.device)
 
-            # Get batch activations [n_layers, batch_size, seq_len, hidden]
-            batch_acts = hooked_model.get_activations(batch_inputs_gpu)
+            with profile_section("forward_pass", batch_size=len(batch_indices)):
+                # Get batch activations [n_layers, batch_size, seq_len, hidden]
+                batch_acts = hooked_model.get_activations(batch_inputs_gpu)
+                if is_profiling():
+                    batch_tokens = batch_acts.shape[1] * batch_acts.shape[2]
+                    ProbelabCounters.forward_passes += 1
+                    ProbelabCounters.tokens_processed += batch_tokens
+                    ProbelabCounters.batches_processed += 1
 
             # Pool inline - no Activations object creation
             detection_mask = batch_inputs_gpu["detection_mask"]  # [batch, seq]
@@ -1363,6 +1418,9 @@ def batch_activations_pooled(
             if batch_idx % 10 == 0 and torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+    if is_profiling():
+        ProbelabCounters.activations_collected += n_samples
+
     # Return WITHOUT sequence axis
     return Activations(
         activations=pooled_storage,
@@ -1389,7 +1447,7 @@ class ActivationIterator:
         tokenized_inputs: dict[str, torch.Tensor],
         layers: list[int],
         batch_size: int,
-        verbose: bool,
+        verbose: bool | None,
         num_batches: int,
         hook_point: HookPoint = HookPoint.POST_BLOCK,
         detach_activations: bool = True,
@@ -1403,7 +1461,7 @@ class ActivationIterator:
             tokenized_inputs: Pre-tokenized inputs
             layers: Layer indices to extract
             batch_size: Batch size for processing
-            verbose: Whether to show progress
+            verbose: Whether to show progress. If None, uses VERBOSE from config.
             num_batches: Total number of batches
             detach_activations: Whether to detach activations
             hook_point: Where to extract activations
@@ -1413,7 +1471,7 @@ class ActivationIterator:
         self._tokenized_inputs = tokenized_inputs
         self._layers = layers
         self._batch_size = batch_size
-        self._verbose = verbose
+        self._verbose = _resolve_verbose(verbose)
         self._num_batches = num_batches
         self._hook_point = hook_point
         self._detach_activations = detach_activations
@@ -1460,7 +1518,7 @@ def collect_activations(
     hook_point: HookPoint = HookPoint.POST_BLOCK,
     add_generation_prompt: bool = False,
     detach_activations: bool = True,
-    verbose: bool = True,
+    verbose: bool | None = None,
 ) -> Activations: ...
 
 
@@ -1479,7 +1537,7 @@ def collect_activations(
     hook_point: HookPoint = HookPoint.POST_BLOCK,
     add_generation_prompt: bool = False,
     detach_activations: bool = True,
-    verbose: bool = True,
+    verbose: bool | None = None,
 ) -> ActivationIterator: ...
 
 
@@ -1496,7 +1554,7 @@ def collect_activations(
     hook_point: HookPoint = HookPoint.POST_BLOCK,
     add_generation_prompt: bool = False,
     detach_activations: bool = True,
-    verbose: bool = True,
+    verbose: bool | None = None,
 ) -> Activations | ActivationIterator:
     """Entry point for activation collection from datasets.
 
@@ -1527,7 +1585,7 @@ def collect_activations(
         detach_activations: Whether to detach activations from the computation graph.
             - True (default): Detach for memory efficiency (probe training/evaluation)
             - False: Keep gradients (enables differentiable probe predictions)
-        verbose: Toggle progress reporting. Default: True.
+        verbose: Toggle progress reporting. If None, uses VERBOSE from config.
 
     Returns:
         - Activations: Dense or pooled collection depending on collection_strategy
@@ -1598,26 +1656,38 @@ def collect_activations(
         )
     elif collection_strategy in ("mean", "max", "last_token"):
         # Pooled collection - pools each batch during collection for memory efficiency
-        return batch_activations_pooled(
-            model,
-            tokenizer,
-            tokenized_inputs,
-            layers,
-            batch_size,
-            collection_strategy,
-            verbose,
-            hook_point,
-            detach_activations,
-        )
+        with profile_section(
+            "collect_activations", layers=layers, batch_size=batch_size, n_samples=n_samples
+        ) as ctx:
+            result = batch_activations_pooled(
+                model,
+                tokenizer,
+                tokenized_inputs,
+                layers,
+                batch_size,
+                collection_strategy,
+                verbose,
+                hook_point,
+                detach_activations,
+            )
+            if is_profiling():
+                ProbelabCounters.total_collection_time_s += ctx.get("duration_s", 0)
+        return result
     else:
         # Dense collection - full sequences [layers, batch, seq, hidden]
-        return batch_activations(
-            model,
-            tokenizer,
-            tokenized_inputs,
-            layers,
-            batch_size,
-            verbose,
-            hook_point,
-            detach_activations,
-        )
+        with profile_section(
+            "collect_activations", layers=layers, batch_size=batch_size, n_samples=n_samples
+        ) as ctx:
+            result = batch_activations(
+                model,
+                tokenizer,
+                tokenized_inputs,
+                layers,
+                batch_size,
+                verbose,
+                hook_point,
+                detach_activations,
+            )
+            if is_profiling():
+                ProbelabCounters.total_collection_time_s += ctx.get("duration_s", 0)
+        return result

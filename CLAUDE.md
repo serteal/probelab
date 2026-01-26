@@ -22,38 +22,72 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Main API Imports
 
+The public API follows a tiered structure to make the "happy path" obvious:
+
+### Primary API (via `import probelab as pl`)
+
 ```python
-# Core types
-from probelab import Message, Dialogue, Label
+import probelab as pl
 
-# Activation handling
-from probelab import HookedModel, Activations, collect_activations
+# These are always available at top level:
+pl.Pipeline          # Core composition
+pl.Activations       # Core data container
+pl.collect_activations  # Main activation function
+pl.Label             # Classification labels
+pl.Context           # Config scoping
+```
 
-# Pipeline and preprocessing
-from probelab import Pipeline
-from probelab import preprocessing
-from probelab.preprocessing import SelectLayer, SelectLayers, Pool, Normalize
+### Submodule Access (via `pl.submodule.X`)
 
-# Probes (used within pipelines)
-from probelab.probes import BaseProbe, Logistic, MLP, Attention
+```python
+# Preprocessing transformers
+pl.preprocessing.SelectLayer
+pl.preprocessing.Pool
+pl.preprocessing.Normalize
 
-# High-level workflows
-from probelab.scripts import (
-    train_pipelines, evaluate_pipelines,  # Core: work with pre-collected activations
-    train_from_model, evaluate_from_model,  # Convenience: one-step from model
-)
+# Probe classes
+pl.probes.Logistic
+pl.probes.MLP
+pl.probes.Attention
 
-# Datasets
-from probelab.datasets import DialogueDataset, CircuitBreakersDataset, DolusChatDataset
+# Mask functions
+pl.masks.assistant()
+pl.masks.user()
+pl.masks.contains("pattern")
+
+# Dataset classes
+pl.datasets.CircuitBreakersDataset
+pl.datasets.REPEDataset
 
 # Metrics
-from probelab.metrics import auroc, recall_at_fpr, get_metric_by_name
+pl.metrics.auroc
+pl.metrics.recall_at_fpr
 
-# Visualization
+# High-level workflows
+pl.scripts.train_pipelines
+pl.scripts.evaluate_pipelines
+pl.scripts.train_from_model
+pl.scripts.evaluate_from_model
+```
+
+### Explicit Imports (for advanced use)
+
+```python
+# Types (for type annotations or manual dialogue construction)
+from probelab.types import Message, Dialogue, Role, HookPoint, AggregationMethod
+
+# Internal implementations
+from probelab.models import HookedModel
+from probelab.processing import Scores
+
+# Visualization utilities
 from probelab.visualization import print_metrics, visualize_mask
 
-# Masks for selective token processing
-from probelab import masks
+# Advanced config
+from probelab.config import get_config, set_defaults
+
+# Profiling utilities
+from probelab.profiling import ProbelabCounters, profile_section, is_profiling
 ```
 
 ## Commands

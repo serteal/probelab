@@ -9,6 +9,7 @@ Checks that:
 import pytest
 
 import probelab as pl
+from probelab.types import Message
 from tests.utils.assertions import (
     assert_detection_mask_text_equal,
     assert_tokenization_equal,
@@ -21,13 +22,13 @@ def test_llama3_tokenization_and_assistant_mask():
     model_name = "meta-llama/Llama-3.1-8B-Instruct"
     dialogues = [
         [
-            pl.Message("system", "You are a helpful assistant."),
-            pl.Message("user", "What is 2+2?"),
-            pl.Message("assistant", "2+2 equals 4."),
+            Message("system", "You are a helpful assistant."),
+            Message("user", "What is 2+2?"),
+            Message("assistant", "2+2 equals 4."),
         ],
         [
-            pl.Message("user", "Say hello"),
-            pl.Message("assistant", "Hello!"),
+            Message("user", "Say hello"),
+            Message("assistant", "Hello!"),
         ],
     ]
 
@@ -64,13 +65,13 @@ def test_gemma2_tokenization_and_assistant_mask():
     model_name = "google/gemma-2-2b-it"
     dialogues = [
         [
-            pl.Message("system", "Follow the user instructions."),
-            pl.Message("user", "Translate 'hello' to French."),
-            pl.Message("assistant", "Bonjour"),
+            Message("system", "Follow the user instructions."),
+            Message("user", "Translate 'hello' to French."),
+            Message("assistant", "Bonjour"),
         ],
         [
-            pl.Message("user", "What is the capital of France?"),
-            pl.Message("assistant", "Paris."),
+            Message("user", "What is the capital of France?"),
+            Message("assistant", "Paris."),
         ],
     ]
 

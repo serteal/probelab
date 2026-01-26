@@ -12,7 +12,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
 from probelab.datasets.base import DialogueDataset
-from probelab.types import Dialogue, Label
+from probelab.types import Dialogue, Label, Message
 
 
 class _TestDialogueDataset(DialogueDataset):
@@ -34,25 +34,25 @@ def _common_dialogues(model_family: str):
     if model_family == "llama3":
         return [
             [
-                pl.Message("system", "You are a helpful assistant."),
-                pl.Message("user", "What is 2+2?"),
-                pl.Message("assistant", "2+2 equals 4."),
+                Message("system", "You are a helpful assistant."),
+                Message("user", "What is 2+2?"),
+                Message("assistant", "2+2 equals 4."),
             ],
             [
-                pl.Message("user", "Say hello"),
-                pl.Message("assistant", "Hello!"),
+                Message("user", "Say hello"),
+                Message("assistant", "Hello!"),
             ],
         ]
     else:  # gemma2
         return [
             [
-                pl.Message("system", "Follow the user instructions."),
-                pl.Message("user", "Translate 'hello' to French."),
-                pl.Message("assistant", "Bonjour"),
+                Message("system", "Follow the user instructions."),
+                Message("user", "Translate 'hello' to French."),
+                Message("assistant", "Bonjour"),
             ],
             [
-                pl.Message("user", "What is the capital of France?"),
-                pl.Message("assistant", "Paris."),
+                Message("user", "What is the capital of France?"),
+                Message("assistant", "Paris."),
             ],
         ]
 

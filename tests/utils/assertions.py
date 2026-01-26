@@ -12,6 +12,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
 from probelab.processing.activations import get_batches
+from probelab.types import Message
 
 
 def set_deterministic():
@@ -58,7 +59,7 @@ def get_model(
 
 
 def _preprocess_dialogue(
-    dialogue: list[pl.Message], family: str
+    dialogue: list[Message], family: str
 ) -> list[dict[str, str]]:
     # Fold system into first user for Gemma; concatenate adjacent same-role messages; strip whitespace
     processed: list[dict[str, str]] = []
@@ -119,7 +120,7 @@ def _tokenize_strings(
 
 def assert_tokenization_equal(
     model_name: str,
-    dialogues: list[list[pl.Message]],
+    dialogues: list[list[Message]],
     *,
     add_generation_prompt: bool = False,
     padding_side: str = "left",
@@ -157,7 +158,7 @@ def assert_tokenization_equal(
 
 def get_formatted_dialogue_texts(
     model_name: str,
-    dialogues: list[list[pl.Message]],
+    dialogues: list[list[Message]],
     *,
     add_generation_prompt: bool = False,
     padding_side: str = "left",
@@ -180,7 +181,7 @@ def get_formatted_dialogue_texts(
 
 def assert_collect_activations_equal(
     model_name: str,
-    dialogues: list[list[pl.Message]],
+    dialogues: list[list[Message]],
     layers: list[int],
     *,
     add_generation_prompt: bool = False,
@@ -295,7 +296,7 @@ def _normalize_text(
 
 def assert_detection_mask_text_equal(
     model_name: str,
-    dialogues: list[list[pl.Message]],
+    dialogues: list[list[Message]],
     mask: object,
     expected_texts: list[str],
     *,
