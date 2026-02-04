@@ -21,7 +21,6 @@ from probelab.metrics import (
     recall_at_fpr,
     std_score,
     weighted_error_rate,
-    with_bootstrap,
 )
 
 
@@ -107,25 +106,20 @@ class TestBootstrap:
         assert point == 1.0
         assert ci_low <= point <= ci_high
 
-    def test_bootstrap_decorator(self):
-        """Test applying bootstrap decorator to metrics."""
-        def custom_mean(y_true, y_pred_proba):
-            return float(np.mean(y_pred_proba))
-
-        bootstrapped_metric = with_bootstrap(n_bootstrap=100, random_state=42)(custom_mean)
+    def test_bootstrap_with_custom_metric(self):
+        """Test bootstrap with custom metric function."""
+        def custom_mean(yt, yp):
+            return float(np.mean(yp))
 
         y_true = np.array([1, 1, 0, 0])
         y_pred = np.array([0.8, 0.7, 0.2, 0.3])
 
-        result = bootstrapped_metric(y_true, y_pred)
-        assert isinstance(result, tuple)
-        assert len(result) == 3
+        point, ci_low, ci_high = bootstrap(custom_mean, y_true, y_pred, n=100, seed=42)
+        assert point == pytest.approx(0.5)
+        assert ci_low <= point <= ci_high
 
-        point_est, ci_lower, ci_upper = result
-        assert ci_lower <= point_est <= ci_upper
-
-    def test_bootstrap_with_existing_metrics(self):
-        """Test that bootstrap can be applied to built-in metrics."""
+    def test_bootstrap_with_builtin_metrics(self):
+        """Test bootstrap with built-in metrics."""
         y_true = np.array([1, 1, 1, 0, 0, 0])
         y_pred = np.array([0.8, 0.9, 0.7, 0.2, 0.3, 0.1])
 
@@ -133,11 +127,13 @@ class TestBootstrap:
         result = auroc(y_true, y_pred)
         assert isinstance(result, float)
 
-        # Opt-in bootstrap via decorator
-        bootstrapped_auroc = with_bootstrap(n_bootstrap=100, random_state=42)(auroc)
-        result = bootstrapped_auroc(y_true, y_pred)
-        assert isinstance(result, tuple)
-        assert len(result) == 3
+        # Use bootstrap() function for CIs
+        point, ci_low, ci_high = bootstrap(
+            lambda yt, yp: float(__import__('sklearn.metrics', fromlist=['roc_auc_score']).roc_auc_score(yt, yp)),
+            y_true, y_pred, n=100, seed=42
+        )
+        assert isinstance(point, float)
+        assert ci_low <= point <= ci_high
 
 
 class TestDistributionMetrics:

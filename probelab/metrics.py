@@ -251,20 +251,3 @@ def get_metric_by_name(name):
         return functools.partial(fpr, threshold=t)
 
     raise ValueError(f"Unknown metric: {name}")
-
-
-# =============================================================================
-# Backward Compatibility - Decorator API
-# =============================================================================
-
-
-def with_bootstrap(n_bootstrap=1000, confidence_level=0.95, random_state=None):
-    """Decorator to add bootstrap CIs to a metric. Returns (point, ci_lower, ci_upper)."""
-    def decorator(metric_fn):
-        @functools.wraps(metric_fn)
-        def wrapped(y_true, y_pred, **kwargs):
-            def inner(yt, yp):
-                return metric_fn(yt, yp, **kwargs)
-            return bootstrap(inner, y_true, y_pred, n=n_bootstrap, confidence=confidence_level, seed=random_state)
-        return wrapped
-    return decorator
