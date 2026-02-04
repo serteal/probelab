@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 
 import probelab as pl
-from probelab.datasets.base import DialogueDataset
+from probelab.datasets.base import Dataset
 from probelab.processing.activations import (
     ActivationIterator,
     Activations,
@@ -17,15 +17,7 @@ from probelab.processing.activations import (
     get_hidden_dim,
     get_n_layers,
 )
-from probelab.types import Dialogue, DialogueDataType, Label, Message
-
-
-class MockDialogueDataset(DialogueDataset):
-    """Concrete implementation of DialogueDataset for testing."""
-
-    def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        """Not used since we pass dialogues directly."""
-        raise NotImplementedError("This method should not be called in tests")
+from probelab.types import Dialogue, Label, Message
 
 
 class SimpleModel(nn.Module):
@@ -140,11 +132,7 @@ def sample_dialogues():
 def sample_dataset(sample_dialogues):
     """Create a sample dataset."""
     labels = [Label.POSITIVE, Label.NEGATIVE, Label.POSITIVE]
-    return MockDialogueDataset(
-        dialogues=sample_dialogues,
-        labels=labels,
-        metadata={"source": "test"},
-    )
+    return Dataset(sample_dialogues, labels, "test", {"source": ["test"] * 3})
 
 
 class TestGetBatches:
@@ -966,7 +954,7 @@ class TestRealModelIntegration:
                     ]
                 )
             ]
-            dataset = MockDialogueDataset(dialogues=dialogues, labels=[Label.POSITIVE])
+            dataset = Dataset(dialogues, [Label.POSITIVE], "test")
 
             # Collect activations
             activations = collect_activations(

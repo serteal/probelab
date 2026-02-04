@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 import pytest
 import torch
 
-from probelab.datasets.base import DialogueDataset
+from probelab.datasets.base import Dataset
 from probelab.masks import all as all_tokens
 from probelab.processing.tokenization import (
     _get_prefix_pattern,
@@ -14,15 +14,7 @@ from probelab.processing.tokenization import (
     tokenize_dataset,
     tokenize_dialogues,
 )
-from probelab.types import Dialogue, DialogueDataType, Message
-
-
-class MockDialogueDataset(DialogueDataset):
-    """Concrete implementation of DialogueDataset for testing."""
-
-    def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        """Not used since we pass dialogues directly."""
-        raise NotImplementedError("This method should not be called in tests")
+from probelab.types import Dialogue, Label, Message
 
 
 class TestPreprocessDialogue:
@@ -445,7 +437,7 @@ class TestTokenizeDataset:
                 ]
             ),
         ]
-        dataset = MockDialogueDataset(dialogues=dialogues, labels=[1])
+        dataset = Dataset(dialogues, [Label.POSITIVE], "test")
 
         mock_tokenizer = Mock()
         mock_tokenizer.name_or_path = "llama"
@@ -508,14 +500,8 @@ class TestIntegration:
             ),
         ]
 
-        # Create dataset with shuffling disabled for predictable test behavior
-        dataset = MockDialogueDataset(
-            dialogues=dialogues,
-            labels=[1, 0],
-            metadata={"source": "test"},
-            padding={"llama": {"left": 2, "right": 1}},
-            shuffle_upon_init=False,  # Disable shuffling for test
-        )
+        # Create dataset
+        dataset = Dataset(dialogues, [Label.POSITIVE, Label.NEGATIVE], "test", {"source": ["test", "test"]})
 
         # Mock tokenizer
         tokenizer = Mock()

@@ -11,12 +11,6 @@ from typing import Any, Literal
 
 
 class Role(str, Enum):
-    """Message roles in a dialogue.
-
-    Inherits from str so Role values can be used in string operations
-    and compared directly with strings for backward compatibility.
-    """
-
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
@@ -38,13 +32,6 @@ class HookPoint(str, Enum):
 
 
 class AggregationMethod(str, Enum):
-    """Methods for aggregating activations over sequences or layers.
-
-    MEAN: Average across dimension (most common)
-    MAX: Maximum value across dimension
-    LAST_TOKEN: Take the last token in sequence (for sequence aggregation only)
-    """
-
     MEAN = "mean"
     MAX = "max"
     LAST_TOKEN = "last_token"

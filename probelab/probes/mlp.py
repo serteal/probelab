@@ -129,12 +129,6 @@ class MLP(BaseProbe):
         self._d_model = None
         self._trained_on_tokens = False
 
-        # Set random seed
-        if random_state is not None:
-            torch.manual_seed(random_state)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed(random_state)
-
     def _init_network(self, d_model: int, dtype: torch.dtype | None = None):
         """Initialize the network and optimizer once we know the input dimension."""
         self._d_model = d_model

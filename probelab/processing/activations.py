@@ -25,7 +25,7 @@ import torch
 from jaxtyping import Float
 from tqdm.auto import tqdm
 
-from ..datasets import DialogueDataset
+from ..datasets import Dataset
 from ..models import HookedModel
 from ..models.architectures import ArchitectureRegistry
 from ..types import AggregationMethod, Dialogue, HookPoint
@@ -841,7 +841,7 @@ class ActivationIterator:
 def collect_activations(
     model: "PreTrainedModel",
     tokenizer: "PreTrainedTokenizerBase",
-    dataset: DialogueDataset,
+    dataset: Dataset,
     *,
     layers: int | list[int],
     mask: "MaskFunction",
@@ -859,7 +859,7 @@ def collect_activations(
 def collect_activations(
     model: "PreTrainedModel",
     tokenizer: "PreTrainedTokenizerBase",
-    dataset: DialogueDataset,
+    dataset: Dataset,
     *,
     layers: int | list[int],
     mask: "MaskFunction",
@@ -876,7 +876,7 @@ def collect_activations(
 def collect_activations(
     model: "PreTrainedModel",
     tokenizer: "PreTrainedTokenizerBase",
-    dataset: DialogueDataset,
+    dataset: Dataset,
     *,
     layers: int | list[int],
     mask: "MaskFunction",
@@ -893,7 +893,7 @@ def collect_activations(
     Args:
         model: Model providing hidden states.
         tokenizer: Tokenizer aligned with model.
-        dataset: DialogueDataset containing dialogues and labels.
+        dataset: Dataset containing dialogues and labels.
         layers: Layer index or indices to record.
         mask: Mask function determining which tokens to detect.
         batch_size: Sequences per batch. Default: 32.

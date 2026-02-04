@@ -13,117 +13,44 @@ Example:
     ['ai_audit', 'ai_liar', 'dolus_chat', ...]
 """
 
-from .base import DialogueDataset
+from .base import Dataset
 from .registry import info, list_categories, list_datasets, load
 
-# Deception detection datasets
-from .deception import (
-    AIAuditDataset,
-    AILiarDataset,
-    DolusChatDataset,
-    InsiderTradingDataset,
-    REPEDataset,
-    RoleplayingDataset,
-    SandbaggingDataset,
-    TruthfulQADataset,
-    WerewolfDataset,
-)
+# Deception
+from .deception import ai_audit, ai_liar, dolus_chat, insider_trading, repe, roleplaying, sandbagging, truthful_qa, werewolf
 
-# Harmfulness detection datasets
-from .harmfulness import (
-    BenignInstructionsDataset,
-    CircuitBreakersDataset,
-    ClearHarmLlama3Dataset,
-    ClearHarmMistralSmallDataset,
-    WildGuardMixDataset,
-    WildJailbreakDataset,
-    XSTestResponseDataset,
-)
+# Harmfulness
+from .harmfulness import benign_instructions, circuit_breakers, clearharm_llama3, clearharm_mistral, wild_jailbreak, wildguard_mix, xstest_response
 
-# General conversation datasets
-from .ood import (
-    AlpacaDataset,
-    ChatbotArenaDataset,
-    GenericSpanishDataset,
-    LmsysChatDataset,
-    MathInstructDataset,
-    ShareGPTDataset,
-    UltraChat200kDataset,
-    UltraChatDataset,
-)
+# OOD / General
+from .ood import alpaca, chatbot_arena, generic_spanish, lmsys_chat, math_instruct, sharegpt, ultrachat, ultrachat_200k
 
-# Multilingual datasets
-from .multilingual import (
-    MultilingualThinkingDataset,
-    PaloMultilingualDataset,
-    WildChatDataset,
-)
+# Multilingual
+from .multilingual import multilingual_thinking, palo_multilingual, wildchat
 
-# Medical datasets
-from .medical import (
-    ClinicalNotesDataset,
-    KnowMedicalDialogueDataset,
-    MedDialogDataset,
-    MedicalDialogueSOAPDataset,
-)
+# Medical
+from .medical import clinical_notes, know_medical, meddialog, medical_soap
 
-# Mental health datasets
-from .mental_health import (
-    EmotionalSupportDataset,
-    MentalChatDataset,
-    MentalHealthCounselingDataset,
-    ProsocialDialogDataset,
-)
+# Mental health
+from .mental_health import emotional_support, mentalchat, mental_health_counseling, prosocial_dialog
 
-# Cybersecurity datasets
-from .cybersecurity import (
-    CybersecurityDPODataset,
-    DefensiveCybersecurityDataset,
-    TrendyolCybersecurityDataset,
-)
+# Cybersecurity
+from .cybersecurity import cybersecurity_dpo, defensive_cybersecurity, trendyol_cybersecurity
 
-# Agent and function calling datasets
-from .agents import (
-    FunctionCallingShareGPTDataset,
-    GlaiveFunctionCallingDataset,
-    HermesFunctionCallingDataset,
-    XLAMFunctionCallingDataset,
-)
+# Agents
+from .agents import function_calling_sharegpt, glaive_function_calling, hermes_function_calling, xlam_function_calling
 
-# Math and reasoning datasets
-from .reasoning import (
-    MathInstructEnhancedDataset,
-    NuminaMathCoTDataset,
-    OpenMathReasoningDataset,
-    OpenR1MathDataset,
-)
+# Reasoning
+from .reasoning import math_instruct_enhanced, numina_math, openmath_reasoning, openr1_math
 
-# Creative writing and roleplay datasets
-from .creative import (
-    LiteraryGenreDataset,
-    MultiCharacterDialogueDataset,
-    PersonaBasedChatDataset,
-    RoleplayDataset,
-    SyntheticPersonaChatDataset,
-    WritingPromptsDataset,
-)
+# Creative
+from .creative import literary_genre, multi_character_dialogue, persona_based_chat, roleplay, synthetic_persona_chat, writing_prompts
 
-# Legal and finance datasets
-from .legal_finance import (
-    CaselawDataset,
-    FinancialPhrasebankDataset,
-    FinanceTasksDataset,
-    LegalAdviceRedditDataset,
-)
+# Legal/Finance
+from .legal_finance import caselaw, finance_tasks, financial_phrasebank, legal_advice_reddit
 
-# Science and STEM datasets
-from .science import (
-    BiochemReasoningDataset,
-    BiologyToTDataset,
-    MMMUDataset,
-    ScienceQADataset,
-    StemQADataset,
-)
+# Science
+from .science import biochem_reasoning, biology_tot, mmmu, scienceqa, stem_qa
 
 __all__ = [
     # Registry API
@@ -132,78 +59,78 @@ __all__ = [
     "list_categories",
     "info",
     # Base
-    "DialogueDataset",
+    "Dataset",
     # Deception
-    "AIAuditDataset",
-    "AILiarDataset",
-    "DolusChatDataset",
-    "InsiderTradingDataset",
-    "REPEDataset",
-    "RoleplayingDataset",
-    "SandbaggingDataset",
-    "TruthfulQADataset",
-    "WerewolfDataset",
+    "ai_audit",
+    "ai_liar",
+    "dolus_chat",
+    "insider_trading",
+    "repe",
+    "roleplaying",
+    "sandbagging",
+    "truthful_qa",
+    "werewolf",
     # Harmfulness
-    "BenignInstructionsDataset",
-    "CircuitBreakersDataset",
-    "ClearHarmLlama3Dataset",
-    "ClearHarmMistralSmallDataset",
-    "WildGuardMixDataset",
-    "WildJailbreakDataset",
-    "XSTestResponseDataset",
-    # General / OOD
-    "AlpacaDataset",
-    "ChatbotArenaDataset",
-    "GenericSpanishDataset",
-    "LmsysChatDataset",
-    "MathInstructDataset",
-    "ShareGPTDataset",
-    "UltraChat200kDataset",
-    "UltraChatDataset",
+    "benign_instructions",
+    "circuit_breakers",
+    "clearharm_llama3",
+    "clearharm_mistral",
+    "wild_jailbreak",
+    "wildguard_mix",
+    "xstest_response",
+    # OOD / General
+    "alpaca",
+    "chatbot_arena",
+    "generic_spanish",
+    "lmsys_chat",
+    "math_instruct",
+    "sharegpt",
+    "ultrachat",
+    "ultrachat_200k",
     # Multilingual
-    "MultilingualThinkingDataset",
-    "PaloMultilingualDataset",
-    "WildChatDataset",
+    "multilingual_thinking",
+    "palo_multilingual",
+    "wildchat",
     # Medical
-    "ClinicalNotesDataset",
-    "KnowMedicalDialogueDataset",
-    "MedDialogDataset",
-    "MedicalDialogueSOAPDataset",
-    # Mental Health
-    "EmotionalSupportDataset",
-    "MentalChatDataset",
-    "MentalHealthCounselingDataset",
-    "ProsocialDialogDataset",
+    "clinical_notes",
+    "know_medical",
+    "meddialog",
+    "medical_soap",
+    # Mental health
+    "emotional_support",
+    "mentalchat",
+    "mental_health_counseling",
+    "prosocial_dialog",
     # Cybersecurity
-    "CybersecurityDPODataset",
-    "DefensiveCybersecurityDataset",
-    "TrendyolCybersecurityDataset",
-    # Agents / Function Calling
-    "FunctionCallingShareGPTDataset",
-    "GlaiveFunctionCallingDataset",
-    "HermesFunctionCallingDataset",
-    "XLAMFunctionCallingDataset",
-    # Math / Reasoning
-    "MathInstructEnhancedDataset",
-    "NuminaMathCoTDataset",
-    "OpenMathReasoningDataset",
-    "OpenR1MathDataset",
-    # Creative / Roleplay
-    "LiteraryGenreDataset",
-    "MultiCharacterDialogueDataset",
-    "PersonaBasedChatDataset",
-    "RoleplayDataset",
-    "SyntheticPersonaChatDataset",
-    "WritingPromptsDataset",
-    # Legal / Finance
-    "CaselawDataset",
-    "FinancialPhrasebankDataset",
-    "FinanceTasksDataset",
-    "LegalAdviceRedditDataset",
-    # Science / STEM
-    "BiochemReasoningDataset",
-    "BiologyToTDataset",
-    "MMMUDataset",
-    "ScienceQADataset",
-    "StemQADataset",
+    "cybersecurity_dpo",
+    "defensive_cybersecurity",
+    "trendyol_cybersecurity",
+    # Agents
+    "function_calling_sharegpt",
+    "glaive_function_calling",
+    "hermes_function_calling",
+    "xlam_function_calling",
+    # Reasoning
+    "math_instruct_enhanced",
+    "numina_math",
+    "openmath_reasoning",
+    "openr1_math",
+    # Creative
+    "literary_genre",
+    "multi_character_dialogue",
+    "persona_based_chat",
+    "roleplay",
+    "synthetic_persona_chat",
+    "writing_prompts",
+    # Legal/Finance
+    "caselaw",
+    "finance_tasks",
+    "financial_phrasebank",
+    "legal_advice_reddit",
+    # Science
+    "biochem_reasoning",
+    "biology_tot",
+    "mmmu",
+    "scienceqa",
+    "stem_qa",
 ]

@@ -73,6 +73,9 @@ class BaseProbe(ABC):
             verbose = os.environ.get("PROBELAB_VERBOSE", "true").lower() != "false"
         self.verbose = verbose
 
+        # Set random seed for reproducibility
+        self._set_seed()
+
         # Track fitting state
         self._fitted = False
         self._tokens_per_sample = None  # Set when training on tokens
@@ -106,6 +109,17 @@ class BaseProbe(ABC):
             )
 
         return labels
+
+    def _set_seed(self) -> None:
+        """Set random seed for reproducibility.
+
+        Called automatically during __init__. Sets both PyTorch CPU and CUDA seeds
+        if random_state is provided.
+        """
+        if self.random_state is not None:
+            torch.manual_seed(self.random_state)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(self.random_state)
 
     # Abstract methods that subclasses must implement
     @abstractmethod

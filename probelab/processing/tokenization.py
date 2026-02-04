@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from ..datasets import DialogueDataset
+from ..datasets import Dataset
 from ..logger import logger
 from ..masks import MaskFunction, TokenMetadata
 from ..models.architectures import ArchitectureRegistry
@@ -295,7 +295,7 @@ def tokenize_dialogues(
 
 
 def tokenize_dataset(
-    dataset: DialogueDataset,
+    dataset: Dataset,
     tokenizer: "PreTrainedTokenizerBase",
     mask: MaskFunction,
     device: torch.device | str = "cpu",
@@ -304,7 +304,7 @@ def tokenize_dataset(
     """Tokenize a dataset with explicit mask for detection control.
 
     Args:
-        dataset: DialogueDataset to tokenize.
+        dataset: Dataset to tokenize.
         tokenizer: HuggingFace tokenizer aligned with the model.
         mask: Mask function determining which tokens to detect. Required.
             Use ``masks.all()`` to detect all non-padding tokens.

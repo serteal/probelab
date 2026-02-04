@@ -221,10 +221,6 @@ class GatedBipolar(BaseProbe):
         self._optimizer = None
         self._d_model = None
 
-        # Set random seed for reproducibility
-        if random_state is not None:
-            torch.manual_seed(random_state)
-
     def _init_network(self, d_model: int, dtype: torch.dtype | None = None):
         """Initialize the network once we know the input dimension."""
         self._d_model = d_model
