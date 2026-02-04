@@ -22,7 +22,6 @@ from typing import (
 )
 
 import torch
-from jaxtyping import Float
 from tqdm.auto import tqdm
 
 from ..datasets import Dataset
@@ -147,7 +146,7 @@ def _ensure_canonical_axes(axes: tuple[Axis, ...]) -> tuple[Axis, ...]:
 class Activations:
     """Axis-aware container for activation tensors and metadata."""
 
-    activations: Float[torch.Tensor, "..."]
+    activations: torch.Tensor
     axes: tuple[Axis, ...] = _DEFAULT_AXES
     layer_meta: LayerMeta | None = None
     sequence_meta: SequenceMeta | None = None
