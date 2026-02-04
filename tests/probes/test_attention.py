@@ -6,8 +6,6 @@ from pathlib import Path
 import pytest
 import torch
 
-from probelab import Pipeline
-from probelab.transforms import pre
 from probelab.probes.attention import Attention
 from probelab.processing.activations import Activations
 from probelab.types import Label
@@ -66,69 +64,60 @@ class TestAttention:
     def test_initialization(self):
         """Test probe initialization."""
         # Attention probe doesn't need aggregation - it handles sequences internally
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(5)),
-            ("probe", Attention(
-                hidden_dim=32,
-                learning_rate=0.001,
-                weight_decay=0.01,
-                n_epochs=100,
-                patience=5,
-                device="cpu",
-                random_state=42,
-                verbose=False,
-            )),
-        ])
+        probe = Attention(
+            hidden_dim=32,
+            learning_rate=0.001,
+            weight_decay=0.01,
+            n_epochs=100,
+            patience=5,
+            device="cpu",
+        )
 
-        assert pipeline["select"].layer == 5
-        assert pipeline["probe"].hidden_dim == 32
-        assert pipeline["probe"].learning_rate == 0.001
-        assert pipeline["probe"].weight_decay == 0.01
-        assert pipeline["probe"].n_epochs == 100
-        assert pipeline["probe"].patience == 5
-        assert pipeline["probe"]._fitted is False
+        assert probe.hidden_dim == 32
+        assert probe.learning_rate == 0.001
+        assert probe.weight_decay == 0.01
+        assert probe.n_epochs == 100
+        assert probe.patience == 5
+        assert probe._fitted is False
 
     def test_fit(self):
         """Test fitting the attention probe."""
         activations, labels = create_separable_data(n_samples=20)
 
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", Attention(hidden_dim=16, n_epochs=50, device="cpu", random_state=42)),
-        ])
+        # Attention probe handles sequences internally - just select layer
+        prepared = activations.select(layer=0)
+        probe = Attention(hidden_dim=16, n_epochs=50, device="cpu")
 
-        fitted_pipeline = pipeline.fit(activations, labels)
+        fitted_probe = probe.fit(prepared, labels)
 
-        assert fitted_pipeline is pipeline
-        assert pipeline["probe"]._fitted is True
-        assert pipeline["probe"]._network is not None
-        assert pipeline["probe"]._d_model == 8
+        assert fitted_probe is probe
+        assert probe._fitted is True
+        assert probe._network is not None
+        assert probe._d_model == 8
 
     def test_predict(self):
         """Test probability prediction."""
         activations, labels = create_separable_data(n_samples=20)
 
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", Attention(
-                hidden_dim=32,
-                n_epochs=100,
-                patience=10,
-                device="cpu",
-                random_state=42,
-            )),
-        ])
-        pipeline.fit(activations, labels)
+        prepared = activations.select(layer=0)
+        probe = Attention(
+            hidden_dim=32,
+            n_epochs=100,
+            patience=10,
+            device="cpu",
+        )
+        probe.fit(prepared, labels)
 
-        probs = pipeline.predict(activations)
+        scores = probe.predict(prepared)
+        probs = scores.scores
 
         assert probs.shape == (20, 2)
         assert torch.all(probs >= 0) and torch.all(probs <= 1)
         assert torch.allclose(probs.sum(dim=1), torch.ones(20))
 
         # Check attention weights are stored
-        assert pipeline["probe"].attention_weights is not None
-        assert pipeline["probe"].attention_weights.shape == (20, 10)  # (n_samples, seq_len)
+        assert probe.attention_weights is not None
+        assert probe.attention_weights.shape == (20, 10)  # (n_samples, seq_len)
 
         # Just check that the probe is working (attention mechanisms can be hard to train on small data)
         # The key is that it runs without errors and produces valid outputs
@@ -139,61 +128,51 @@ class TestAttention:
     def test_predict_before_fit(self):
         """Test that prediction fails before fitting."""
         activations = create_test_activations()
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", Attention(device="cpu")),
-        ])
+        prepared = activations.select(layer=0)
+        probe = Attention(device="cpu")
 
-        with pytest.raises(ValueError, match="Pipeline must be fitted"):
-            pipeline.predict(activations)
+        with pytest.raises(RuntimeError, match="must be fit before predict"):
+            probe.predict(prepared)
 
     def test_save_and_load(self):
         """Test saving and loading probe."""
         activations, labels = create_separable_data(n_samples=20)
 
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", Attention(
-                hidden_dim=32,
-                learning_rate=0.001,
-                n_epochs=50,
-                device="cpu",
-                random_state=42,
-            )),
-        ])
-        pipeline.fit(activations, labels)
+        prepared = activations.select(layer=0)
+        probe = Attention(
+            hidden_dim=32,
+            learning_rate=0.001,
+            n_epochs=50,
+            device="cpu",
+        )
+        probe.fit(prepared, labels)
 
-        probs_before = pipeline.predict(activations)
+        scores_before = probe.predict(prepared)
+        probs_before = scores_before.scores
 
         with tempfile.TemporaryDirectory() as tmpdir:
             save_path = Path(tmpdir) / "probe.pt"
-            pipeline["probe"].save(save_path)
+            probe.save(save_path)
 
             loaded_probe = Attention.load(save_path)
 
             assert loaded_probe.hidden_dim == 32
             assert loaded_probe._fitted is True
 
-            # Create new pipeline with loaded probe
-            loaded_pipeline = Pipeline([
-                ("select", pre.SelectLayer(0)),
-                ("probe", loaded_probe),
-            ])
-
-            probs_after = loaded_pipeline.predict(activations)
+            scores_after = loaded_probe.predict(prepared)
+            probs_after = scores_after.scores
             assert torch.allclose(probs_before, probs_after, atol=1e-6)
 
     def test_no_aggregation_needed(self):
         """Test that attention probe doesn't need aggregation - it handles sequences internally."""
         activations, labels = create_separable_data(n_samples=20)
 
-        # Attention probe works without any aggregation transformers
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", Attention(hidden_dim=16, n_epochs=50, device="cpu", random_state=42)),
-        ])
+        # Attention probe works without sequence pooling - just select layer
+        prepared = activations.select(layer=0)
+        probe = Attention(hidden_dim=16, n_epochs=50, device="cpu")
 
         # Should work normally
-        pipeline.fit(activations, labels)
-        probs = pipeline.predict(activations)
+        probe.fit(prepared, labels)
+        scores = probe.predict(prepared)
+        probs = scores.scores
         assert probs.shape == (20, 2)

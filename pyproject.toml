@@ -8,7 +8,7 @@ version = "0.0.1"
 description = "A library for training activation monitors on language models."
 readme = "README.md"
 license = "Apache-2.0"
-authors = [{ name = "Alex Serrano", email = "alex.serrano.terre@gmail.com" }]
+authors = [{ name = "Alex Serrano", email = "mail@alexserrano.org" }]
 requires-python = ">=3.11"
 keywords = [
     "machine-learning",

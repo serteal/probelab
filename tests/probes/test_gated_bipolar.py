@@ -6,8 +6,6 @@ from pathlib import Path
 import pytest
 import torch
 
-from probelab import Pipeline
-from probelab.transforms import pre
 from probelab.probes.gated_bipolar import GatedBipolar
 from probelab.processing.activations import Activations
 from probelab.types import Label
@@ -65,76 +63,66 @@ class TestGatedBipolar:
 
     def test_initialization(self):
         """Test probe initialization."""
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(5)),
-            ("probe", GatedBipolar(
-                mlp_hidden_dim=64,
-                gate_dim=32,
-                dropout=0.15,
-                lambda_l1=1e-4,
-                lambda_orth=1e-3,
-                learning_rate=0.001,
-                weight_decay=0.01,
-                n_epochs=100,
-                patience=5,
-                device="cpu",
-                random_state=42,
-                verbose=False,
-            )),
-        ])
+        probe = GatedBipolar(
+            mlp_hidden_dim=64,
+            gate_dim=32,
+            dropout=0.15,
+            lambda_l1=1e-4,
+            lambda_orth=1e-3,
+            learning_rate=0.001,
+            weight_decay=0.01,
+            n_epochs=100,
+            patience=5,
+            device="cpu",
+        )
 
-        assert pipeline["select"].layer == 5
-        assert pipeline["probe"].mlp_hidden_dim == 64
-        assert pipeline["probe"].gate_dim == 32
-        assert pipeline["probe"].dropout == 0.15
-        assert pipeline["probe"].lambda_l1 == 1e-4
-        assert pipeline["probe"].lambda_orth == 1e-3
-        assert pipeline["probe"].learning_rate == 0.001
-        assert pipeline["probe"].weight_decay == 0.01
-        assert pipeline["probe"].n_epochs == 100
-        assert pipeline["probe"].patience == 5
-        assert pipeline["probe"]._fitted is False
+        assert probe.mlp_hidden_dim == 64
+        assert probe.gate_dim == 32
+        assert probe.dropout == 0.15
+        assert probe.lambda_l1 == 1e-4
+        assert probe.lambda_orth == 1e-3
+        assert probe.learning_rate == 0.001
+        assert probe.weight_decay == 0.01
+        assert probe.n_epochs == 100
+        assert probe.patience == 5
+        assert probe._fitted is False
 
     def test_fit(self):
         """Test fitting the GatedBipolar probe."""
         activations, labels = create_separable_data(n_samples=20)
 
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", GatedBipolar(
-                mlp_hidden_dim=32,
-                gate_dim=16,
-                n_epochs=50,
-                device="cpu",
-                random_state=42
-            )),
-        ])
+        # GatedBipolar handles sequences internally - just select layer
+        prepared = activations.select(layer=0)
+        probe = GatedBipolar(
+            mlp_hidden_dim=32,
+            gate_dim=16,
+            n_epochs=50,
+            device="cpu",
+        )
 
-        fitted_pipeline = pipeline.fit(activations, labels)
+        fitted_probe = probe.fit(prepared, labels)
 
-        assert fitted_pipeline is pipeline
-        assert pipeline["probe"]._fitted is True
-        assert pipeline["probe"]._network is not None
-        assert pipeline["probe"]._d_model == 8
+        assert fitted_probe is probe
+        assert probe._fitted is True
+        assert probe._network is not None
+        assert probe._d_model == 8
 
     def test_predict(self):
         """Test probability prediction."""
         activations, labels = create_separable_data(n_samples=20)
 
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", GatedBipolar(
-                mlp_hidden_dim=64,
-                gate_dim=32,
-                n_epochs=100,
-                patience=10,
-                device="cpu",
-                random_state=42,
-            )),
-        ])
-        pipeline.fit(activations, labels)
+        prepared = activations.select(layer=0)
+        probe = GatedBipolar(
+            mlp_hidden_dim=64,
+            gate_dim=32,
+            n_epochs=100,
+            patience=10,
+            device="cpu",
+        )
+        probe.fit(prepared, labels)
 
-        probs = pipeline.predict(activations)
+        scores = probe.predict(prepared)
+        probs = scores.scores
 
         assert probs.shape == (20, 2)
         assert torch.all(probs >= 0) and torch.all(probs <= 1)
@@ -148,38 +136,34 @@ class TestGatedBipolar:
     def test_predict_before_fit(self):
         """Test that prediction fails before fitting."""
         activations = create_test_activations()
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", GatedBipolar(device="cpu")),
-        ])
+        prepared = activations.select(layer=0)
+        probe = GatedBipolar(device="cpu")
 
-        with pytest.raises(ValueError, match="Pipeline must be fitted"):
-            pipeline.predict(activations)
+        with pytest.raises(RuntimeError, match="must be fit before predict"):
+            probe.predict(prepared)
 
     def test_save_and_load(self):
         """Test saving and loading probe."""
         activations, labels = create_separable_data(n_samples=20)
 
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", GatedBipolar(
-                mlp_hidden_dim=32,
-                gate_dim=16,
-                lambda_l1=1e-4,
-                lambda_orth=1e-3,
-                learning_rate=0.001,
-                n_epochs=50,
-                device="cpu",
-                random_state=42,
-            )),
-        ])
-        pipeline.fit(activations, labels)
+        prepared = activations.select(layer=0)
+        probe = GatedBipolar(
+            mlp_hidden_dim=32,
+            gate_dim=16,
+            lambda_l1=1e-4,
+            lambda_orth=1e-3,
+            learning_rate=0.001,
+            n_epochs=50,
+            device="cpu",
+        )
+        probe.fit(prepared, labels)
 
-        probs_before = pipeline.predict(activations)
+        scores_before = probe.predict(prepared)
+        probs_before = scores_before.scores
 
         with tempfile.TemporaryDirectory() as tmpdir:
             save_path = Path(tmpdir) / "probe.pt"
-            pipeline["probe"].save(save_path)
+            probe.save(save_path)
 
             loaded_probe = GatedBipolar.load(save_path)
 
@@ -189,34 +173,27 @@ class TestGatedBipolar:
             assert loaded_probe.lambda_orth == 1e-3
             assert loaded_probe._fitted is True
 
-            # Create new pipeline with loaded probe
-            loaded_pipeline = Pipeline([
-                ("select", pre.SelectLayer(0)),
-                ("probe", loaded_probe),
-            ])
-
-            probs_after = loaded_pipeline.predict(activations)
+            scores_after = loaded_probe.predict(prepared)
+            probs_after = scores_after.scores
             assert torch.allclose(probs_before, probs_after, atol=1e-6)
 
     def test_no_aggregation_needed(self):
         """Test that GatedBipolar probe doesn't need aggregation - it handles sequences internally."""
         activations, labels = create_separable_data(n_samples=20)
 
-        # GatedBipolar probe works without any aggregation transformers
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", GatedBipolar(
-                mlp_hidden_dim=32,
-                gate_dim=16,
-                n_epochs=50,
-                device="cpu",
-                random_state=42
-            )),
-        ])
+        # GatedBipolar probe works without sequence pooling - just select layer
+        prepared = activations.select(layer=0)
+        probe = GatedBipolar(
+            mlp_hidden_dim=32,
+            gate_dim=16,
+            n_epochs=50,
+            device="cpu",
+        )
 
         # Should work normally
-        pipeline.fit(activations, labels)
-        probs = pipeline.predict(activations)
+        probe.fit(prepared, labels)
+        scores = probe.predict(prepared)
+        probs = scores.scores
         assert probs.shape == (20, 2)
 
     def test_different_gate_dims(self):
@@ -224,18 +201,16 @@ class TestGatedBipolar:
         activations, labels = create_separable_data(n_samples=20)
 
         for gate_dim in [8, 32, 64]:
-            pipeline = Pipeline([
-                ("select", pre.SelectLayer(0)),
-                ("probe", GatedBipolar(
-                    gate_dim=gate_dim,
-                    n_epochs=30,
-                    device="cpu",
-                    random_state=42
-                )),
-            ])
+            prepared = activations.select(layer=0)
+            probe = GatedBipolar(
+                gate_dim=gate_dim,
+                n_epochs=30,
+                device="cpu",
+            )
 
-            pipeline.fit(activations, labels)
-            probs = pipeline.predict(activations)
+            probe.fit(prepared, labels)
+            scores = probe.predict(prepared)
+            probs = scores.scores
 
             assert probs.shape == (20, 2)
             assert torch.all(probs >= 0) and torch.all(probs <= 1)
@@ -251,7 +226,6 @@ class TestGatedBipolar:
             lambda_orth=1e-3,
             n_epochs=10,
             device="cpu",
-            random_state=42
         )
 
         # Fit the probe to initialize the network
@@ -283,7 +257,7 @@ class TestGatedBipolar:
 
         probe = GatedBipolar(device="cpu")
 
-        with pytest.raises(ValueError, match="expects single layer activations"):
+        with pytest.raises(ValueError, match="expects no LAYER axis"):
             probe.fit(activations, labels)
 
     def test_repr(self):
@@ -292,8 +266,7 @@ class TestGatedBipolar:
         repr_str = repr(probe)
         assert "GatedBipolar" in repr_str
         assert "gate_dim=64" in repr_str
-        assert "mlp_hidden_dim=128" in repr_str
-        assert "not fitted" in repr_str
+        assert "fitted=False" in repr_str
 
     def test_bipolar_pooling_captures_extremes(self):
         """Test that bipolar pooling captures both max and min."""
@@ -321,18 +294,16 @@ class TestGatedBipolar:
 
         labels = [Label.POSITIVE] * (n_samples // 2) + [Label.NEGATIVE] * (n_samples // 2)
 
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", GatedBipolar(
-                gate_dim=16,
-                n_epochs=100,
-                device="cpu",
-                random_state=42
-            )),
-        ])
+        prepared = activations.select(layer=0)
+        probe = GatedBipolar(
+            gate_dim=16,
+            n_epochs=100,
+            device="cpu",
+        )
 
-        pipeline.fit(activations, labels)
-        probs = pipeline.predict(activations)
+        probe.fit(prepared, labels)
+        scores = probe.predict(prepared)
+        probs = scores.scores
 
         # The probe should be able to learn this pattern
         assert probs.shape == (20, 2)

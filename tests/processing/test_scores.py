@@ -364,3 +364,232 @@ class TestPoolDeviceHandling:
 
         # Should work without error
         assert pooled.device.type == "cuda"
+
+
+class TestScoresEMA:
+    """Test Scores.ema() method."""
+
+    def test_ema_basic(self):
+        """Test basic EMA pooling."""
+        scores = torch.ones(5, 10, 2) * 0.5
+        tokens_per_sample = torch.tensor([10, 10, 10, 10, 10])
+
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+        result = obj.ema(alpha=0.5)
+
+        assert result.shape == (5, 2)
+        assert not result.has_axis(ScoreAxis.SEQ)
+
+    def test_ema_removes_seq_axis(self):
+        """Test that EMA removes SEQ axis."""
+        scores = torch.randn(5, 10, 2).softmax(dim=-1)
+        tokens_per_sample = torch.tensor([10, 8, 6, 4, 2])
+
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+        result = obj.ema(alpha=0.5)
+
+        assert not result.has_axis(ScoreAxis.SEQ)
+        assert result.has_axis(ScoreAxis.BATCH)
+        assert result.has_axis(ScoreAxis.CLASS)
+
+    def test_ema_returns_valid_probabilities(self):
+        """Test that EMA returns valid probabilities."""
+        scores = torch.randn(5, 10, 2).softmax(dim=-1)
+        tokens_per_sample = torch.tensor([10, 8, 6, 4, 2])
+
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+        result = obj.ema(alpha=0.5)
+
+        assert torch.all(result.scores >= 0)
+        assert torch.all(result.scores <= 1)
+        assert torch.allclose(result.scores.sum(dim=-1), torch.ones(5), atol=1e-5)
+
+    def test_ema_exact_computation(self):
+        """Test exact EMA computation."""
+        # Positive class probs: [0.1, 0.2, 0.3, 0.4, 0.5]
+        probs = torch.tensor([[[0.9, 0.1], [0.8, 0.2], [0.7, 0.3], [0.6, 0.4], [0.5, 0.5]]])
+        tokens_per_sample = torch.tensor([5])
+
+        obj = Scores.from_token_scores(probs, tokens_per_sample)
+        result = obj.ema(alpha=0.5)
+
+        # EMA with alpha=0.5, starting from 0:
+        # ema[0] = 0.5*0.1 + 0.5*0 = 0.05
+        # ema[1] = 0.5*0.2 + 0.5*0.05 = 0.125
+        # ema[2] = 0.5*0.3 + 0.5*0.125 = 0.2125
+        # ema[3] = 0.5*0.4 + 0.5*0.2125 = 0.30625
+        # ema[4] = 0.5*0.5 + 0.5*0.30625 = 0.403125
+        # max = 0.403125
+        assert result.scores[0, 1].item() == pytest.approx(0.403125, rel=1e-4)
+
+    def test_ema_handles_variable_lengths(self):
+        """Test EMA with variable-length sequences."""
+        scores = torch.randn(3, 10, 2).softmax(dim=-1)
+        tokens_per_sample = torch.tensor([10, 5, 2])
+
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+        result = obj.ema(alpha=0.5)
+
+        assert result.shape == (3, 2)
+        assert torch.all(result.scores >= 0)
+        assert torch.all(result.scores <= 1)
+
+    def test_ema_handles_empty_sequence(self):
+        """Test EMA with empty sequence."""
+        scores = torch.randn(3, 10, 2).softmax(dim=-1)
+        tokens_per_sample = torch.tensor([10, 0, 5])  # Middle is empty
+
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+        result = obj.ema(alpha=0.5)
+
+        assert result.shape == (3, 2)
+        assert result.scores[1, 1].item() == 0.0  # Empty sequence -> 0
+
+    def test_ema_invalid_alpha_raises(self):
+        """Test error for invalid alpha values."""
+        scores = torch.randn(5, 10, 2)
+        tokens_per_sample = torch.tensor([10, 8, 6, 4, 2])
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+
+        with pytest.raises(ValueError, match="alpha must be in"):
+            obj.ema(alpha=0.0)
+
+        with pytest.raises(ValueError, match="alpha must be in"):
+            obj.ema(alpha=1.5)
+
+    def test_ema_idempotent_without_seq_axis(self):
+        """Test that EMA is idempotent when applied to sequence-level scores."""
+        scores = torch.randn(5, 2).softmax(dim=-1)
+        obj = Scores.from_sequence_scores(scores)
+
+        result = obj.ema(alpha=0.5)
+        assert torch.equal(result.scores, obj.scores)
+
+
+class TestScoresRolling:
+    """Test Scores.rolling() method."""
+
+    def test_rolling_basic(self):
+        """Test basic rolling window pooling."""
+        scores = torch.ones(5, 10, 2) * 0.5
+        tokens_per_sample = torch.tensor([10, 10, 10, 10, 10])
+
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+        result = obj.rolling(window_size=3)
+
+        assert result.shape == (5, 2)
+        assert not result.has_axis(ScoreAxis.SEQ)
+
+    def test_rolling_removes_seq_axis(self):
+        """Test that rolling removes SEQ axis."""
+        scores = torch.randn(5, 10, 2).softmax(dim=-1)
+        tokens_per_sample = torch.tensor([10, 8, 6, 4, 2])
+
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+        result = obj.rolling(window_size=3)
+
+        assert not result.has_axis(ScoreAxis.SEQ)
+        assert result.has_axis(ScoreAxis.BATCH)
+        assert result.has_axis(ScoreAxis.CLASS)
+
+    def test_rolling_returns_valid_probabilities(self):
+        """Test that rolling returns valid probabilities."""
+        scores = torch.randn(5, 10, 2).softmax(dim=-1)
+        tokens_per_sample = torch.tensor([10, 8, 6, 4, 2])
+
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+        result = obj.rolling(window_size=3)
+
+        assert torch.all(result.scores >= 0)
+        assert torch.all(result.scores <= 1)
+        assert torch.allclose(result.scores.sum(dim=-1), torch.ones(5), atol=1e-5)
+
+    def test_rolling_exact_computation(self):
+        """Test exact rolling window computation."""
+        # Positive class probs: [0.1, 0.2, 0.9, 0.1, 0.1]
+        positive_probs = [0.1, 0.2, 0.9, 0.1, 0.1]
+        probs = torch.tensor([[[1 - p, p] for p in positive_probs]])
+        tokens_per_sample = torch.tensor([5])
+
+        obj = Scores.from_token_scores(probs, tokens_per_sample)
+        result = obj.rolling(window_size=3)
+
+        # Rolling means with window=3:
+        # pos 0: [0.1] / 1 = 0.1
+        # pos 1: [0.1, 0.2] / 2 = 0.15
+        # pos 2: [0.1, 0.2, 0.9] / 3 = 0.4
+        # pos 3: [0.2, 0.9, 0.1] / 3 = 0.4
+        # pos 4: [0.9, 0.1, 0.1] / 3 = 0.366...
+        # max = 0.4
+        assert result.scores[0, 1].item() == pytest.approx(0.4, rel=1e-4)
+
+    def test_rolling_handles_variable_lengths(self):
+        """Test rolling with variable-length sequences."""
+        scores = torch.randn(3, 10, 2).softmax(dim=-1)
+        tokens_per_sample = torch.tensor([10, 5, 2])
+
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+        result = obj.rolling(window_size=3)
+
+        assert result.shape == (3, 2)
+        assert torch.all(result.scores >= 0)
+        assert torch.all(result.scores <= 1)
+
+    def test_rolling_window_larger_than_sequence(self):
+        """Test rolling when window is larger than some sequences."""
+        scores = torch.randn(3, 10, 2).softmax(dim=-1)
+        tokens_per_sample = torch.tensor([10, 3, 2])  # window_size=5 > last two
+
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+        result = obj.rolling(window_size=5)
+
+        assert result.shape == (3, 2)
+        assert torch.all(result.scores >= 0)
+        assert torch.all(result.scores <= 1)
+
+    def test_rolling_handles_empty_sequence(self):
+        """Test rolling with empty sequence."""
+        scores = torch.randn(3, 10, 2).softmax(dim=-1)
+        tokens_per_sample = torch.tensor([10, 0, 5])  # Middle is empty
+
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+        result = obj.rolling(window_size=3)
+
+        assert result.shape == (3, 2)
+        assert result.scores[1, 1].item() == 0.0  # Empty sequence -> 0
+
+    def test_rolling_invalid_window_raises(self):
+        """Test error for invalid window size."""
+        scores = torch.randn(5, 10, 2)
+        tokens_per_sample = torch.tensor([10, 8, 6, 4, 2])
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+
+        with pytest.raises(ValueError, match="window_size must be >= 1"):
+            obj.rolling(window_size=0)
+
+        with pytest.raises(ValueError, match="window_size must be >= 1"):
+            obj.rolling(window_size=-1)
+
+    def test_rolling_idempotent_without_seq_axis(self):
+        """Test that rolling is idempotent when applied to sequence-level scores."""
+        scores = torch.randn(5, 2).softmax(dim=-1)
+        obj = Scores.from_sequence_scores(scores)
+
+        result = obj.rolling(window_size=3)
+        assert torch.equal(result.scores, obj.scores)
+
+    def test_different_window_sizes(self):
+        """Test behavior with different window sizes."""
+        torch.manual_seed(42)
+        scores = torch.randn(5, 20, 2).softmax(dim=-1)
+        tokens_per_sample = torch.tensor([20, 20, 20, 20, 20])
+
+        obj = Scores.from_token_scores(scores, tokens_per_sample)
+
+        result_small = obj.rolling(window_size=3)
+        result_large = obj.rolling(window_size=10)
+
+        # Both should produce valid results
+        assert result_small.shape == result_large.shape == (5, 2)
+        # Results should be different due to different window sizes
+        assert not torch.allclose(result_small.scores, result_large.scores)

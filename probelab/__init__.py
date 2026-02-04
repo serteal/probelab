@@ -1,31 +1,28 @@
 """probelab: A library for training classifiers on LLM activations."""
 
 # Submodules (for pl.submodule.X access)
-from . import coordination, datasets, metrics, probes, transforms
+from . import datasets, metrics, probes
 from . import masks  # Single-file module (not a package)
 
 # Primary API
 from .logger import logger
-from .pipeline import Pipeline
-from .coordination import PipelineSet
-from .processing import Activations, collect_activations
+from .processing import Activations, Scores, collect_activations
 from .types import Label
+from .utils import Normalize
 
 __version__ = "0.1.0"
 
 __all__ = [
-    # Primary API (what 90% of users need)
-    "Pipeline",
-    "PipelineSet",
+    # Primary API
     "Activations",
+    "Scores",
     "collect_activations",
     "Label",
+    "Normalize",
     "logger",
-    # Submodule access (use transforms.pre.* and transforms.post.*)
-    "transforms",
+    # Submodule access
     "probes",
     "masks",
     "datasets",
     "metrics",
-    "coordination",
 ]

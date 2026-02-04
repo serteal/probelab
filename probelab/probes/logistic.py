@@ -1,6 +1,5 @@
-"""GPU-accelerated L2-regularized logistic regression probe."""
+"""L2-regularized logistic regression probe."""
 
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
@@ -25,366 +24,138 @@ class _LogisticNetwork(nn.Module):
         return self.linear(x).squeeze(-1)
 
 
-@dataclass(slots=True)
-class _GPUScaler:
-    """Standard scaler for GPU tensors."""
-
-    device: str = "cuda"
-    mean_: torch.Tensor | None = field(default=None, repr=False)
-    std_: torch.Tensor | None = field(default=None, repr=False)
-
-    def fit_transform(self, X: torch.Tensor) -> torch.Tensor:
-        X = X.to(self.device)
-        self.mean_, self.std_ = X.mean(0), X.std(0).clamp(min=1e-8)
-        return (X - self.mean_) / self.std_
-
-    def transform(self, X: torch.Tensor) -> torch.Tensor:
-        X = X.to(self.device)
-        return (X - self.mean_.to(X.dtype)) / self.std_.to(X.dtype)
-
-
 class Logistic(BaseProbe):
-    """GPU-accelerated L2-regularized logistic regression probe.
+    """L2-regularized logistic regression probe.
 
-    This probe adapts to input dimensionality:
+    Adapts to input dimensionality:
     - If X has SEQ axis: Trains on tokens, returns token-level scores
     - If X has no SEQ axis: Trains on sequences, returns sequence-level scores
-
-    Uses LBFGS optimizer for batch training.
-
-    Args:
-        C: Inverse of regularization strength (higher = less regularization)
-        max_iter: Maximum number of iterations for LBFGS
-        device: Device for computation (auto-detected if None)
-        random_state: Random seed for reproducibility
-        verbose: Whether to print progress information
-
-    Example:
-        >>> # Sequence-level (with preprocessing)
-        >>> pipeline = Pipeline([
-        ...     ("select", SelectLayer(16)),
-        ...     ("agg", AggregateSequences("mean")),
-        ...     ("probe", Logistic(C=1.0)),
-        ... ])
-        >>> pipeline.fit(acts, labels)
-
-        >>> # Token-level (no aggregation)
-        >>> pipeline = Pipeline([
-        ...     ("select", SelectLayer(16)),
-        ...     ("probe", Logistic(C=1.0)),
-        ...     ("agg_scores", AggregateTokenScores("mean")),
-        ... ])
     """
 
-    def __init__(
-        self,
-        C: float = 1.0,
-        max_iter: int = 100,
-        device: str | None = None,
-        random_state: int | None = None,
-        verbose: bool = False,
-    ):
-        """Initialize logistic regression probe.
-
-        Args:
-            C: Inverse of regularization strength
-            max_iter: Maximum iterations for LBFGS
-            device: Device for PyTorch operations
-            random_state: Random seed for reproducibility
-            verbose: Whether to print progress information
-        """
-        super().__init__(
-            device=device,
-            random_state=random_state,
-            verbose=verbose,
-        )
-
-        # Training parameters
+    def __init__(self, C: float = 1.0, max_iter: int = 100, device: str = "cuda"):
+        super().__init__(device=device)
         self.C = C
         self.max_iter = max_iter
-
-        # Model components (initialized during fit)
         self._network = None
-        self._optimizer = None
-        self._scaler = _GPUScaler(device=self.device)
+        self._scaler_mean = None
+        self._scaler_std = None
         self._d_model = None
         self._trained_on_tokens = False
+        self._tokens_per_sample = None
 
     def fit(self, X: Activations, y: list | torch.Tensor) -> "Logistic":
-        """Fit the probe on activations.
-
-        Adapts to input dimensionality:
-        - If X has SEQ axis: Trains on individual tokens
-        - Otherwise: Trains on sequence-level features
-
-        Args:
-            X: Activations to train on
-            y: Labels [batch] or [batch, seq]
-
-        Returns:
-            self: Fitted probe instance
-
-        Raises:
-            ValueError: If X has unexpected axes (e.g., LAYER axis)
-        """
-        self._fit_impl(X, y)
-        return self
-
-    def _fit_impl(self, X: Activations, y: list | torch.Tensor) -> None:
-        """Internal fit implementation."""
-        # Convert labels to tensor
-        y_tensor = self._to_tensor(y)
-
-        # Check for LAYER axis
         if X.has_axis(Axis.LAYER):
             raise ValueError(
-                "Logistic probe expects single layer activations. "
-                "Use SelectLayer transformer in pipeline before probe."
+                f"Logistic expects no LAYER axis. "
+                f"Add SelectLayer({X.layer_indices[0]}) to pipeline."
             )
 
-        # Adapt based on SEQ axis
+        y_tensor = self._to_labels(y).to(self.device)
+
+        # Get features based on shape
         if X.has_axis(Axis.SEQ):
-            # TOKEN-LEVEL training
-            features, tokens_per_sample = X.extract_tokens()  # [n_tokens, hidden]
-
-            # Handle labels (ensure device compatibility)
-            if y_tensor.ndim == 1:
-                # Labels are [batch] → expand to [n_tokens]
-                labels = torch.repeat_interleave(y_tensor, tokens_per_sample.cpu())
-            elif y_tensor.ndim == 2:
-                # Labels are [batch, seq] → extract tokens
-                labels = y_tensor[X.detection_mask.cpu().bool()]
-            else:
-                raise ValueError(
-                    f"Invalid label shape: {y_tensor.shape}. "
-                    f"Expected [batch] or [batch, seq]"
-                )
-
+            features, self._tokens_per_sample = X.extract_tokens()
+            labels = torch.repeat_interleave(y_tensor, self._tokens_per_sample.cpu())
             self._trained_on_tokens = True
-            self._tokens_per_sample = tokens_per_sample
         else:
-            # SEQUENCE-LEVEL training
-            features = X.activations  # [batch, hidden]
-            labels = y_tensor  # [batch]
-
-            if labels.ndim != 1:
-                raise ValueError(
-                    f"Expected 1D labels for sequence-level training, "
-                    f"got shape {labels.shape}"
-                )
-
+            features = X.activations
+            labels = y_tensor
             self._trained_on_tokens = False
             self._tokens_per_sample = None
 
-        # Skip if no features
         if features.shape[0] == 0:
-            if self.verbose:
-                print("No features to train on (empty batch)")
             return self
 
-        # Move to device
         features = features.to(self.device)
         labels = labels.to(self.device).float()
 
-        # Initialize network if needed
-        if self._network is None:
-            d_model = features.shape[1]
-            self._d_model = d_model
-            self._network = _LogisticNetwork(d_model).to(self.device)
+        # Initialize network
+        self._d_model = features.shape[1]
+        self._network = _LogisticNetwork(self._d_model).to(self.device)
+        if features.dtype != torch.float32:
+            self._network = self._network.to(features.dtype)
 
-            if features.dtype != torch.float32:
-                self._network = self._network.to(features.dtype)
+        # Standardize
+        self._scaler_mean = features.mean(0)
+        self._scaler_std = features.std(0).clamp(min=1e-8)
+        features_scaled = (features - self._scaler_mean) / self._scaler_std
 
-            self._optimizer = torch.optim.LBFGS(
-                self._network.parameters(),
-                max_iter=self.max_iter,
-                line_search_fn="strong_wolfe",
-            )
-
-        # Standardize features
-        features_scaled = self._scaler.fit_transform(features)
-
-        # Compute L2 regularization weight
-        n_samples = features.shape[0]
-        l2_weight = 1.0 / (2.0 * self.C * n_samples) if self.C > 0 else 0.0
-
-        self._network.train()
-
-        # Cache weight tensor reference for L2 regularization (avoid loop in closure)
+        # Train with LBFGS
+        optimizer = torch.optim.LBFGS(
+            self._network.parameters(), max_iter=self.max_iter, line_search_fn="strong_wolfe"
+        )
+        l2_weight = 1.0 / (2.0 * self.C * len(labels)) if self.C > 0 else 0.0
         weight_param = self._network.linear.weight
 
-        # LBFGS requires a closure
         def closure():
-            self._optimizer.zero_grad()
-            logits = self._network(features_scaled)
-
-            # Binary cross entropy loss
-            bce_loss = F.binary_cross_entropy_with_logits(logits, labels)
-
-            # Add L2 regularization on weights (direct access, no loop)
+            optimizer.zero_grad()
+            loss = F.binary_cross_entropy_with_logits(self._network(features_scaled), labels)
             if l2_weight > 0:
-                l2_reg = torch.sum(weight_param**2)
-                loss = bce_loss + l2_weight * l2_reg
-            else:
-                loss = bce_loss
-
+                loss = loss + l2_weight * weight_param.pow(2).sum()
             loss.backward()
             return loss
 
-        # Run LBFGS optimization
-        self._optimizer.step(closure)
-
-        if self.verbose:
-            # Evaluate final loss
-            self._network.eval()
-            with torch.no_grad():
-                logits = self._network(features_scaled)
-                bce_loss = F.binary_cross_entropy_with_logits(logits, labels)
-                print(f"LBFGS converged with BCE loss: {bce_loss.item():.4f}")
-
-        self._network.eval()
+        optimizer.step(closure)
         self._fitted = True
+        return self
 
     def predict(self, X: Activations) -> Scores:
-        """Predict class probabilities.
+        self._check_fitted()
 
-        Returns Scores object matching input dimensionality:
-        - If X has SEQ axis: Returns token-level Scores [batch, seq, 2]
-        - Otherwise: Returns sequence-level Scores [batch, 2]
-
-        Args:
-            X: Activations to predict on
-
-        Returns:
-            Scores object with class probabilities [batch, 2] or [batch, seq, 2]
-
-        Raises:
-            ValueError: If probe not fitted or X has unexpected axes
-        """
-        return self._predict_impl(X)
-
-    def _predict_impl(self, X: Activations) -> Scores:
-        """Internal predict implementation."""
-        if not self._fitted:
-            raise RuntimeError("Probe must be fitted before prediction")
-
-        # Check for LAYER axis
         if X.has_axis(Axis.LAYER):
-            raise ValueError(
-                "Expected single layer activations. "
-                "Use SelectLayer transformer in pipeline."
-            )
+            raise ValueError("Logistic expects no LAYER axis")
 
-        # Extract features based on dimensionality
         if X.has_axis(Axis.SEQ):
-            # Token-level prediction
-            features, tokens_per_sample = X.extract_tokens()  # [n_tokens, hidden]
+            features, tokens_per_sample = X.extract_tokens()
             is_token_level = True
         else:
-            # Sequence-level prediction
-            features = X.activations  # [batch, hidden]
+            features = X.activations
             tokens_per_sample = None
             is_token_level = False
 
-        # Move to device and standardize
         features = features.to(self.device)
-        features_scaled = self._scaler.transform(features)
+        features_scaled = (features - self._scaler_mean.to(features.dtype)) / self._scaler_std.to(features.dtype)
 
-        # Get predictions
         self._network.eval()
         with torch.no_grad():
-            # Cast to network dtype to avoid dtype mismatch
             network_dtype = next(self._network.parameters()).dtype
             features_scaled = features_scaled.to(network_dtype)
-            logits = self._network(features_scaled)
-            probs_positive = torch.sigmoid(logits)
+            probs_pos = torch.sigmoid(self._network(features_scaled))
+            probs = torch.stack([1 - probs_pos, probs_pos], dim=-1)
 
-            # Create 2-class probability matrix
-            probs = torch.stack([1 - probs_positive, probs_positive], dim=-1)
-
-        # Wrap in Scores object
         if is_token_level:
-            return Scores.from_token_scores(
-                probs, tokens_per_sample, batch_indices=X.batch_indices
-            )
-        else:
-            return Scores.from_sequence_scores(probs, batch_indices=X.batch_indices)
+            return Scores.from_token_scores(probs, tokens_per_sample, X.batch_indices)
+        return Scores.from_sequence_scores(probs, X.batch_indices)
 
     def save(self, path: Path | str) -> None:
-        """Save the probe to disk.
-
-        Args:
-            path: File path to save the probe
-
-        Raises:
-            RuntimeError: If probe not fitted
-        """
-        if not self._fitted:
-            raise RuntimeError("Cannot save unfitted probe")
-
+        self._check_fitted()
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Prepare state dict
-        state = {
+        torch.save({
             "C": self.C,
             "max_iter": self.max_iter,
             "device": self.device,
-            "random_state": self.random_state,
-            "verbose": self.verbose,
             "network_state": self._network.state_dict(),
-            "scaler_mean": self._scaler.mean_,
-            "scaler_std": self._scaler.std_,
+            "scaler_mean": self._scaler_mean,
+            "scaler_std": self._scaler_std,
             "d_model": self._d_model,
             "trained_on_tokens": self._trained_on_tokens,
-        }
-
-        torch.save(state, path)
-
-        if self.verbose:
-            print(f"Probe saved to {path}")
+        }, path)
 
     @classmethod
-    def load(cls, path: Path | str, device: str | None = None) -> "Logistic":
-        """Load a probe from disk.
-
-        Args:
-            path: File path to load the probe from
-            device: Device to load the probe onto (auto-detected if None)
-
-        Returns:
-            Loaded probe instance
-        """
-        path = Path(path)
-        state = torch.load(path, map_location="cpu")
-
-        # Create probe instance
-        probe = cls(
-            C=state["C"],
-            max_iter=state["max_iter"],
-            device=device or state.get("device"),
-            random_state=state.get("random_state"),
-            verbose=state.get("verbose", False),
-        )
-
-        # Restore network
+    def load(cls, path: Path | str, device: str = "cuda") -> "Logistic":
+        state = torch.load(Path(path), map_location="cpu")
+        probe = cls(C=state["C"], max_iter=state["max_iter"], device=device)
         probe._d_model = state["d_model"]
         probe._network = _LogisticNetwork(probe._d_model).to(probe.device)
         probe._network.load_state_dict(state["network_state"])
         probe._network.eval()
-
-        # Restore scaler
-        probe._scaler.mean_ = state["scaler_mean"].to(probe.device)
-        probe._scaler.std_ = state["scaler_std"].to(probe.device)
-
-        # Restore training state
+        probe._scaler_mean = state["scaler_mean"].to(probe.device)
+        probe._scaler_std = state["scaler_std"].to(probe.device)
         probe._trained_on_tokens = state.get("trained_on_tokens", False)
         probe._fitted = True
-
         return probe
 
     def __repr__(self) -> str:
-        """String representation of the probe."""
-        fitted_str = "fitted" if self._fitted else "not fitted"
         token_str = ", token-level" if self._trained_on_tokens else ""
-        return f"Logistic(C={self.C}, {fitted_str}{token_str})"
+        return f"Logistic(C={self.C}, fitted={self._fitted}{token_str})"

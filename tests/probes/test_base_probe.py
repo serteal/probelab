@@ -43,17 +43,8 @@ class TestBaseProbe:
 
     def test_initialization(self):
         """Test probe initialization."""
-        probe = ConcreteProbe(
-            device="cpu",
-            random_state=42,
-            verbose=False,
-        )
-
-        # Note: layer and sequence_pooling are no longer probe parameters
-        # They're handled by Pipeline transformers
+        probe = ConcreteProbe(device="cpu")
         assert probe.device == "cpu"
-        assert probe.random_state == 42
-        assert probe.verbose is False
         assert probe._fitted is False
 
     def test_initialization_auto_device(self):
@@ -62,40 +53,27 @@ class TestBaseProbe:
         # Should default to cuda if available, else cpu
         assert probe.device in ["cuda", "cpu"]
 
-    def test_to_tensor_from_list(self):
+    def test_to_labels_from_list(self):
         """Test label conversion from list."""
         probe = ConcreteProbe()
 
         # Test with Label enum
         labels = [Label.POSITIVE, Label.NEGATIVE, Label.POSITIVE]
-        y = probe._to_tensor(labels)
+        y = probe._to_labels(labels)
         assert y.tolist() == [1, 0, 1]
 
         # Test with raw values
         labels = [0, 1, 1, 0]
-        y = probe._to_tensor(labels)
+        y = probe._to_labels(labels)
         assert y.tolist() == [0, 1, 1, 0]
 
-    def test_to_tensor_from_tensor(self):
+    def test_to_labels_from_tensor(self):
         """Test label conversion from tensor."""
         probe = ConcreteProbe(device="cpu")
 
         labels = torch.tensor([0, 1, 1, 0])
-        y = probe._to_tensor(labels)
+        y = probe._to_labels(labels)
         assert torch.equal(y, labels)
-
-    def test_to_tensor_invalid_classes(self):
-        """Test that non-binary labels raise error."""
-        probe = ConcreteProbe()
-
-        # Test with invalid class values
-        labels = [0, 1, 2]
-        with pytest.raises(ValueError, match="Only binary classification is supported"):
-            probe._to_tensor(labels)
-
-        labels = [-1, 0, 1]
-        with pytest.raises(ValueError, match="Only binary classification is supported"):
-            probe._to_tensor(labels)
 
     def test_abstract_methods_required(self):
         """Test that abstract methods must be implemented."""

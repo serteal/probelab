@@ -9,8 +9,6 @@ from pathlib import Path
 import pytest
 import torch
 
-from probelab import Pipeline
-from probelab.transforms import pre
 from probelab.probes import MLP, Attention, Logistic
 from probelab.processing.activations import Activations
 from probelab.types import AggregationMethod, Label
@@ -184,18 +182,15 @@ class TestProbeEdgeCases:
             layer_indices=[0],
         )
 
+        prepared = activations.select(layer=0).pool("sequence", "mean")
+
         # Can't train with single class - PyTorch implementation may not raise
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("agg", pre.Pool(dim="sequence", method="mean")),
-            ("probe", Logistic()),
-        ])
+        probe = Logistic()
 
         # Try to fit with single sample - may not raise in PyTorch implementation
         try:
-            pipeline.fit(activations, [Label.POSITIVE])
+            probe.fit(prepared, [Label.POSITIVE])
             # If no error, check that it's not properly fitted
-            probe = pipeline.get_probe()
             if hasattr(probe, "_network") and probe._network is not None:
                 # May have created network but not trained properly
                 pass
@@ -216,21 +211,18 @@ class TestProbeEdgeCases:
             layer_indices=[0],
         )
 
+        prepared = activations.select(layer=0).pool("sequence", "mean")
+
         # 99 positive, 1 negative
         labels = [Label.POSITIVE] * 99 + [Label.NEGATIVE] * 1
 
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("agg", pre.Pool(dim="sequence", method="mean")),
-            ("probe", Logistic()),
-        ])
-        pipeline.fit(activations, labels)
+        probe = Logistic().fit(prepared, labels)
 
         # Should still train, but might have poor performance
-        assert pipeline.get_probe()._fitted
+        assert probe._fitted
 
-        predictions = pipeline.predict(activations)
-        assert predictions.shape == (100, 2)
+        scores = probe.predict(prepared)
+        assert scores.shape == (100, 2)
 
     def test_probe_layer_mismatch(self):
         """Test probe when requested layer doesn't exist."""
@@ -245,16 +237,8 @@ class TestProbeEdgeCases:
         )
 
         # Request non-existent layer 5
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(5)),
-            ("agg", pre.Pool(dim="sequence", method="mean")),
-            ("probe", Logistic()),
-        ])
-
-        labels = [Label.POSITIVE] * 5 + [Label.NEGATIVE] * 5
-
         with pytest.raises(ValueError, match="Layer 5 is not available"):
-            pipeline.fit(activations, labels)
+            activations.select(layer=5)
 
     def test_probe_with_all_zero_features(self):
         """Test probe when all features are zero."""
@@ -270,20 +254,16 @@ class TestProbeEdgeCases:
 
         labels = [Label.POSITIVE] * 5 + [Label.NEGATIVE] * 5
 
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("agg", pre.Pool(dim="sequence", method="mean")),
-            ("probe", Logistic()),
-        ])
-        pipeline.fit(activations, labels)
+        prepared = activations.select(layer=0).pool("sequence", "mean")
+        probe = Logistic().fit(prepared, labels)
 
         # Should still train, but predictions might be uniform
-        assert pipeline.get_probe()._fitted
+        assert probe._fitted
 
-        predictions = pipeline.predict(activations)
-        assert predictions.shape == (10, 2)
+        scores = probe.predict(prepared)
+        assert scores.shape == (10, 2)
         # With zero features, should predict roughly uniform
-        assert torch.all(predictions >= 0) and torch.all(predictions <= 1)
+        assert torch.all(scores.scores >= 0) and torch.all(scores.scores <= 1)
 
     def test_mlp_probe_edge_cases(self):
         """Test MLP probe specific edge cases."""
@@ -298,33 +278,19 @@ class TestProbeEdgeCases:
         )
 
         labels = [Label.POSITIVE] * 5 + [Label.NEGATIVE] * 5
+        prepared = activations.select(layer=0).pool("sequence", "mean")
 
         # Test with very small hidden dimension
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("agg", pre.Pool(dim="sequence", method="mean")),
-            ("probe", MLP(hidden_dim=1)),
-        ])
-        pipeline.fit(activations, labels)
-        assert pipeline.get_probe()._fitted
+        probe = MLP(hidden_dim=1).fit(prepared, labels)
+        assert probe._fitted
 
         # Test with very large hidden dimension
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("agg", pre.Pool(dim="sequence", method="mean")),
-            ("probe", MLP(hidden_dim=1024)),
-        ])
-        pipeline.fit(activations, labels)
-        assert pipeline.get_probe()._fitted
+        probe = MLP(hidden_dim=1024).fit(prepared, labels)
+        assert probe._fitted
 
         # Test with high dropout
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("agg", pre.Pool(dim="sequence", method="mean")),
-            ("probe", MLP(dropout=0.9)),
-        ])
-        pipeline.fit(activations, labels)
-        assert pipeline.get_probe()._fitted
+        probe = MLP(dropout=0.9).fit(prepared, labels)
+        assert probe._fitted
 
     def test_attention_probe_edge_cases(self):
         """Test Attention probe specific edge cases."""
@@ -340,22 +306,16 @@ class TestProbeEdgeCases:
 
         labels = [Label.POSITIVE] * 5 + [Label.NEGATIVE] * 5
 
+        # Attention probe does its own aggregation, so no pool needed
+        prepared = activations.select(layer=0)
+
         # Test with small hidden dimension
-        # Attention probe does its own aggregation, so no Pool needed
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", Attention(hidden_dim=8)),
-        ])
-        pipeline.fit(activations, labels)
-        assert pipeline.get_probe()._fitted
+        probe = Attention(hidden_dim=8).fit(prepared, labels)
+        assert probe._fitted
 
         # Test with larger hidden dimension
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("probe", Attention(hidden_dim=128)),
-        ])
-        pipeline.fit(activations, labels)
-        assert pipeline.get_probe()._fitted
+        probe = Attention(hidden_dim=128).fit(prepared, labels)
+        assert probe._fitted
 
 
 class TestBoundaryConditions:
@@ -411,14 +371,10 @@ class TestBoundaryConditions:
         labels = [Label.POSITIVE, Label.NEGATIVE]
 
         # Should handle high dimensions (might be slow)
-        pipeline = Pipeline([
-            ("select", pre.SelectLayer(0)),
-            ("agg", pre.Pool(dim="sequence", method="mean")),
-            ("probe", Logistic()),
-        ])
-        pipeline.fit(activations, labels)
-        probe = pipeline.get_probe()
+        prepared = activations.select(layer=0).pool("sequence", "mean")
+        probe = Logistic().fit(prepared, labels)
         assert probe._fitted
+
         # Check network was created with correct input dimension
         assert probe._network is not None
         # Linear layer should accept d_model inputs
@@ -438,24 +394,20 @@ class TestBoundaryConditions:
 
         labels = [Label.POSITIVE] * 5 + [Label.NEGATIVE] * 5
 
-        # Train pipelines on different layers
-        pipelines = []
+        # Train probes on different layers
+        probes = []
         for layer in [0, 1, 2]:
-            pipeline = Pipeline([
-                ("select", pre.SelectLayer(layer)),
-                ("agg", pre.Pool(dim="sequence", method="mean")),
-                ("probe", Logistic()),
-            ])
-            pipeline.fit(activations, labels)
-            pipelines.append(pipeline)
+            prepared = activations.select(layer=layer).pool("sequence", "mean")
+            probe = Logistic().fit(prepared, labels)
+            probes.append((layer, probe, prepared))
 
         # All should be fitted
-        assert all(p.get_probe()._fitted for p in pipelines)
+        assert all(p._fitted for _, p, _ in probes)
 
         # Each should work independently
-        for pipeline in pipelines:
-            preds = pipeline.predict(activations)
-            assert preds.shape == (10, 2)
+        for layer, probe, prepared in probes:
+            scores = probe.predict(prepared)
+            assert scores.shape == (10, 2)
 
     def test_save_load_with_edge_cases(self):
         """Test saving and loading probes in edge cases."""
@@ -475,25 +427,16 @@ class TestBoundaryConditions:
             # Test with special characters in path
             save_path = Path(tmpdir) / "probe with spaces & symbols!.pt"
 
-            pipeline = Pipeline([
-                ("select", pre.SelectLayer(0)),
-                ("agg", pre.Pool(dim="sequence", method="mean")),
-                ("probe", Logistic()),
-            ])
-            pipeline.fit(activations, labels)
-            pipeline.get_probe().save(save_path)
+            prepared = activations.select(layer=0).pool("sequence", "mean")
+            probe = Logistic().fit(prepared, labels)
+            probe.save(save_path)
 
             loaded = Logistic.load(save_path)
             assert loaded._fitted
 
             # Test overwriting existing file
-            pipeline2 = Pipeline([
-                ("select", pre.SelectLayer(0)),
-                ("agg", pre.Pool(dim="sequence", method="mean")),
-                ("probe", MLP()),
-            ])
-            pipeline2.fit(activations, labels)
-            pipeline2.get_probe().save(save_path)  # Should overwrite
+            probe2 = MLP().fit(prepared, labels)
+            probe2.save(save_path)  # Should overwrite
 
             # Loading should get the MLP, not Logistic
             loaded2 = MLP.load(save_path)
