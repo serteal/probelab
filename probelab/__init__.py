@@ -1,7 +1,8 @@
 """probelab: A library for training classifiers on LLM activations."""
 
 # Submodules (for pl.submodule.X access)
-from . import coordination, datasets, masks, metrics, probes, transforms
+from . import coordination, datasets, metrics, probes, transforms
+from . import masks  # Single-file module (not a package)
 
 # Primary API
 from .logger import logger

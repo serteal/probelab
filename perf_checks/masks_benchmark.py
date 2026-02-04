@@ -8,16 +8,8 @@ from utils import TimingResult, measure_with_warmup, timer
 
 import probelab as pl
 from probelab import Pipeline
-from probelab.masks import (
-    after,
-    assistant,
-    between,
-    contains,
-    nth_message,
-    regex,
-    user,
-)
-from probelab.transforms import Pool, SelectLayer
+from probelab.masks import after, assistant, between, contains, nth_message, regex, user
+from probelab.transforms import pre
 
 torch.set_float32_matmul_precision("high")
 pl.logger.setLevel(logging.WARNING)
@@ -64,8 +56,8 @@ def benchmark_probe_training_with_masks(
             )
 
             pipeline = Pipeline([
-                ("select", SelectLayer(layers[0])),
-                ("agg", Pool(dim="sequence", method="mean")),
+                ("select", pre.SelectLayer(layers[0])),
+                ("agg", pre.Pool(dim="sequence", method="mean")),
                 ("probe", pl.probes.Logistic()),
             ])
             pipeline.fit_streaming(acts, dataset.labels)
@@ -101,17 +93,17 @@ def benchmark_probe_training_with_masks(
 
         pipelines = {
             "logistic": Pipeline([
-                ("select", SelectLayer(layers[0])),
-                ("agg", Pool(dim="sequence", method="mean")),
+                ("select", pre.SelectLayer(layers[0])),
+                ("agg", pre.Pool(dim="sequence", method="mean")),
                 ("probe", pl.probes.Logistic()),
             ]),
             "mlp": Pipeline([
-                ("select", SelectLayer(layers[0])),
-                ("agg", Pool(dim="sequence", method="mean")),
+                ("select", pre.SelectLayer(layers[0])),
+                ("agg", pre.Pool(dim="sequence", method="mean")),
                 ("probe", pl.probes.MLP()),
             ]),
             "attention": Pipeline([
-                ("select", SelectLayer(layers[0])),
+                ("select", pre.SelectLayer(layers[0])),
                 ("probe", pl.probes.Attention()),
             ]),
         }

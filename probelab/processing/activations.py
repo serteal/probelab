@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from transformers import PreTrainedModel
     from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-    from ..masks import MaskFunction
+    from ..masks import Mask
 
 # Type alias for collection strategy
 CollectionStrategy = Literal["mean", "max", "last_token"]
@@ -844,7 +844,7 @@ def collect_activations(
     dataset: Dataset,
     *,
     layers: int | list[int],
-    mask: "MaskFunction",
+    mask: "Mask",
     batch_size: int = 32,
     streaming: Literal[False] = False,
     collection_strategy: CollectionStrategy | None = None,
@@ -862,7 +862,7 @@ def collect_activations(
     dataset: Dataset,
     *,
     layers: int | list[int],
-    mask: "MaskFunction",
+    mask: "Mask",
     batch_size: int = 32,
     streaming: Literal[True],
     collection_strategy: CollectionStrategy | None = None,
@@ -879,7 +879,7 @@ def collect_activations(
     dataset: Dataset,
     *,
     layers: int | list[int],
-    mask: "MaskFunction",
+    mask: "Mask",
     batch_size: int = 32,
     streaming: bool = False,
     collection_strategy: CollectionStrategy | None = None,

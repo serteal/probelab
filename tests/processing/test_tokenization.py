@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from probelab.datasets.base import Dataset
-from probelab.masks import all as all_tokens
+from probelab.masks import all as all_tokens  # Functional mask API
 from probelab.processing.tokenization import (
     _get_prefix_pattern,
     get_model_family,

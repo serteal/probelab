@@ -13,7 +13,7 @@ import torch
 
 from ..datasets import Dataset
 from ..logger import logger
-from ..masks import MaskFunction, TokenMetadata
+from ..masks import Mask, TokenMetadata
 from ..models.architectures import ArchitectureRegistry
 from ..types import Dialogue, Message
 
@@ -201,7 +201,7 @@ def build_token_metadata(
 def tokenize_dialogues(
     tokenizer: "PreTrainedTokenizerBase",
     dialogues: Sequence[Dialogue],
-    mask: MaskFunction,
+    mask: Mask,
     device: torch.device | str = "cpu",
     add_generation_prompt: bool = False,
     **tokenize_kwargs: Any,
@@ -288,7 +288,7 @@ def tokenize_dialogues(
     )
 
     # Evaluate mask and create detection_mask
-    detection_mask = mask.evaluate(dialogues, metadata)
+    detection_mask = mask(dialogues, metadata)
     token_dict["detection_mask"] = detection_mask
 
     return token_dict  # type: ignore
@@ -297,7 +297,7 @@ def tokenize_dialogues(
 def tokenize_dataset(
     dataset: Dataset,
     tokenizer: "PreTrainedTokenizerBase",
-    mask: MaskFunction,
+    mask: Mask,
     device: torch.device | str = "cpu",
     **tokenize_kwargs: Any,
 ) -> dict[str, torch.Tensor]:
