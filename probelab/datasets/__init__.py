@@ -1,6 +1,20 @@
-"""Pre-built datasets for probe training and evaluation."""
+"""Pre-built datasets for probe training and evaluation.
+
+Registry API (recommended):
+    load(name)          - Load dataset by name
+    list_datasets()     - List available dataset names
+    list_categories()   - List available categories
+    info(name)          - Get dataset information
+
+Example:
+    >>> import probelab as pl
+    >>> dataset = pl.datasets.load("circuit_breakers")
+    >>> pl.datasets.list_datasets(category="deception")
+    ['ai_audit', 'ai_liar', 'dolus_chat', ...]
+"""
 
 from .base import DialogueDataset
+from .registry import info, list_categories, list_datasets, load
 
 # Deception detection datasets
 from .deception import (
@@ -112,6 +126,11 @@ from .science import (
 )
 
 __all__ = [
+    # Registry API
+    "load",
+    "list_datasets",
+    "list_categories",
+    "info",
     # Base
     "DialogueDataset",
     # Deception

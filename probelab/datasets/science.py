@@ -13,8 +13,10 @@ from ..types import Dialogue, DialogueDataType, Label, Message
 from .base import DialogueDataset
 from .builders import sample_hf_dataset
 from .hf_dataset import DatasetSpec, HFDataset
+from .registry import register
 
 
+@register("science", "Science QA dataset")
 class ScienceQADataset(DialogueDataset):
     """
     ScienceQA: Multimodal science question answering dataset.
@@ -100,6 +102,7 @@ class ScienceQADataset(DialogueDataset):
         return dialogues, labels, metadata
 
 
+@register("science", "MMMU benchmark")
 class MMMUDataset(DialogueDataset):
     """
     MMMU: Massive Multi-discipline Multimodal Understanding benchmark.
@@ -192,6 +195,7 @@ class MMMUDataset(DialogueDataset):
         return all_dialogues, all_labels, all_metadata
 
 
+@register("science", "Biology tree-of-thought")
 class BiologyToTDataset(HFDataset):
     """
     Biology Tree-of-Thought reasoning dataset.
@@ -224,6 +228,7 @@ class BiologyToTDataset(HFDataset):
     )
 
 
+@register("science", "Biochemistry reasoning")
 class BiochemReasoningDataset(HFDataset):
     """
     Biochemistry reasoning dataset from PrimeKG knowledge graph.
@@ -250,6 +255,7 @@ class BiochemReasoningDataset(HFDataset):
     )
 
 
+@register("science", "STEM Q&A")
 class StemQADataset(HFDataset):
     """
     Combined STEM Q&A from multiple sources.

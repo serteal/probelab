@@ -7,6 +7,7 @@ useful for training probes to detect medical domain content.
 
 from ..types import Dialogue, Message
 from .hf_dataset import DatasetSpec, HFDataset
+from .registry import register
 
 
 def _build_meddialog(item: dict) -> Dialogue:
@@ -45,6 +46,7 @@ def _build_clinical_notes(item: dict) -> Dialogue:
     return []
 
 
+@register("medical", "Medical dialogues")
 class MedDialogDataset(HFDataset):
     """
     MedDialog: Doctor-patient conversations in English.
@@ -66,6 +68,7 @@ class MedDialogDataset(HFDataset):
     )
 
 
+@register("medical", "Medical SOAP notes")
 class MedicalDialogueSOAPDataset(HFDataset):
     """
     Medical Dialogue to SOAP Summary dataset.
@@ -90,6 +93,7 @@ class MedicalDialogueSOAPDataset(HFDataset):
     )
 
 
+@register("medical", "Clinical notes")
 class ClinicalNotesDataset(HFDataset):
     """
     Augmented Clinical Notes with synthetic doctor-patient conversations.
@@ -114,6 +118,7 @@ class ClinicalNotesDataset(HFDataset):
     )
 
 
+@register("medical", "Knowledge-based medical dialogues")
 class KnowMedicalDialogueDataset(HFDataset):
     """
     Know Medical Dialogue V2: Medical Q&A conversations.

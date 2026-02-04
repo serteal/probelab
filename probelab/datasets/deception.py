@@ -14,6 +14,7 @@ from datasets import load_dataset
 
 from ..types import Dialogue, DialogueDataType, Label, Message, Role
 from .base import DialogueDataset
+from .registry import register
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DECEPTION_DATA_PATH = REPO_ROOT / "data" / "deception"
@@ -42,6 +43,7 @@ def get_dialogue_from_dict_list(sample: list[dict]) -> Dialogue:
     ]
 
 
+@register("deception", "Deceptive chat conversations from DolusChat")
 class DolusChatDataset(DialogueDataset):
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         dataset = load_dataset("AlignmentResearch/DolusChat")
@@ -102,6 +104,7 @@ class DolusChatDataset(DialogueDataset):
         return dialogues, labels, None
 
 
+@register("deception", "Roleplaying deception scenarios")
 class RoleplayingDataset(DialogueDataset):
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         with open(DECEPTION_DATA_PATH / "roleplaying" / "dataset.yaml") as f:
@@ -142,6 +145,7 @@ class RoleplayingDataset(DialogueDataset):
         return dialogues, labels, None
 
 
+@register("deception", "Insider trading deception scenarios")
 class InsiderTradingDataset(DialogueDataset):
     """
     Dataset for detecting deceptive financial behavior in insider trading scenarios.
@@ -410,6 +414,7 @@ class InsiderTradingDataset(DialogueDataset):
         }
 
 
+@register("deception", "Capability sandbagging scenarios")
 class SandbaggingDataset(DialogueDataset):
     """
     Dataset for sandbagging detection from Anthropic's Sabotage Evals.
@@ -587,6 +592,7 @@ D: {answer_d}"""
         return descriptions.get(skill, "general knowledge")
 
 
+@register("deception", "AI audit deception scenarios")
 class AIAuditDataset(DialogueDataset):
     """
     Scenarios from the paper "Uncovering Deceptive Tendencies in Large Language Models" by
@@ -860,6 +866,7 @@ class AIAuditDataset(DialogueDataset):
         return [self.get_message_from_txt(role, path) for role, path in txt_list]
 
 
+@register("deception", "Werewolf game deception")
 class WerewolfDataset(DialogueDataset):
     default_variant: str = "paired"
     all_variants: list[str] = ["open_response", "paired"]
@@ -1077,6 +1084,7 @@ class WerewolfDataset(DialogueDataset):
         ).strip()
 
 
+@register("deception", "TruthfulQA benchmark")
 class TruthfulQADataset(DialogueDataset):
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         raw_data = self._get_raw_data()
@@ -1121,6 +1129,7 @@ class TruthfulQADataset(DialogueDataset):
         return all_dialogues
 
 
+@register("deception", "AI liar detection scenarios")
 class AILiarDataset(DialogueDataset):
     """
     Dataset adapted from "How to Catch an AI Liar" paper.
@@ -1293,6 +1302,7 @@ class AILiarDataset(DialogueDataset):
         return {"system": system_prompt, "user": user_prompt}
 
 
+@register("deception", "REPE deception benchmark")
 class REPEDataset(DialogueDataset):
     """
     Dataset from the RepE paper which finds an honestly/untruthfulness direction.
@@ -1437,15 +1447,3 @@ class REPEDataset(DialogueDataset):
             "On-policy rollouts for REPEDataset are not yet available. "
             "Support for this dataset will be added once rollouts are published."
         )
-
-
-APOLLO_DATASETS = {
-    "roleplaying": RoleplayingDataset,
-    "insider-trading": InsiderTradingDataset,
-    "sandbagging": SandbaggingDataset,
-    "ai-audit": AIAuditDataset,
-    "werewolf": WerewolfDataset,
-    "truthful-qa": TruthfulQADataset,
-    "ai-liar": AILiarDataset,
-    "repe": REPEDataset,
-}

@@ -10,7 +10,6 @@ from typing import Any, Self
 
 import numpy as np
 
-from ..masks import MaskFunction, assistant
 from ..types import Dialogue, DialogueDataType, Label
 
 
@@ -29,16 +28,6 @@ class DialogueDataset(ABC):
 
     # Class attributes to be set by subclasses
     base_name: str = "base_dataset"
-
-    @property
-    def default_mask(self) -> MaskFunction:
-        """
-        Default mask for this dataset.
-
-        By default, uses assistant-only mask (most common case).
-        Subclasses can override this for different behavior.
-        """
-        return assistant()
 
     def __init__(
         self,

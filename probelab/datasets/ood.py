@@ -11,8 +11,11 @@ from datasets import load_dataset
 
 from ..types import Dialogue, DialogueDataType, Label, Message
 from .base import DialogueDataset
+from .builders import sample_hf_dataset
+from .registry import register
 
 
+@register("ood", "UltraChat conversations")
 class UltraChatDataset(DialogueDataset):
     """
     UltraChat dataset from causal-lm.
@@ -26,19 +29,11 @@ class UltraChatDataset(DialogueDataset):
 
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         dataset = load_dataset("causal-lm/ultrachat")
-
-        # Limit samples if requested
-        max_samples = kwargs.get("max_samples")
-        if max_samples and len(dataset["train"]) > max_samples:
-            import random
-
-            random.seed(42)
-            indices = random.sample(range(len(dataset["train"])), max_samples)
-            dataset["train"] = dataset["train"].select(indices)
+        split = sample_hf_dataset(dataset["train"], kwargs.get("max_samples"))
 
         dialogues = []
         labels = []
-        for element in dataset["train"]:
+        for element in split:
             dialogues.append(
                 [
                     Message(
@@ -56,6 +51,7 @@ class UltraChatDataset(DialogueDataset):
         return dialogues, labels, None
 
 
+@register("ood", "UltraChat 200k subset")
 class UltraChat200kDataset(DialogueDataset):
     """
     UltraChat 200k: High-quality multi-turn conversations from HuggingFaceH4.
@@ -70,17 +66,9 @@ class UltraChat200kDataset(DialogueDataset):
     base_name = "ultrachat_200k"
 
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        max_samples = kwargs.get("max_samples")
-        split = kwargs.get("split", "train_sft")
-
-        dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split=split)
-
-        if max_samples and len(dataset) > max_samples:
-            import random
-
-            random.seed(42)
-            indices = random.sample(range(len(dataset)), max_samples)
-            dataset = dataset.select(indices)
+        split_name = kwargs.get("split", "train_sft")
+        dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split=split_name)
+        dataset = sample_hf_dataset(dataset, kwargs.get("max_samples"))
 
         dialogues: list[Dialogue] = []
         labels: list[Label] = []
@@ -102,6 +90,7 @@ class UltraChat200kDataset(DialogueDataset):
         return dialogues, labels, None
 
 
+@register("ood", "LMSYS chat conversations")
 class LmsysChatDataset(DialogueDataset):
     """
     LMSYS-Chat-1M: Real conversations with 25 different LLMs.
@@ -122,17 +111,8 @@ class LmsysChatDataset(DialogueDataset):
     base_name = "lmsys_chat"
 
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        max_samples = kwargs.get("max_samples")
-
         dataset = load_dataset("lmsys/lmsys-chat-1m")
-        split = dataset["train"]
-
-        if max_samples and len(split) > max_samples:
-            import random
-
-            random.seed(42)
-            indices = random.sample(range(len(split)), max_samples)
-            split = split.select(indices)
+        split = sample_hf_dataset(dataset["train"], kwargs.get("max_samples"))
 
         dialogues: list[Dialogue] = []
         labels: list[Label] = []
@@ -166,6 +146,7 @@ class LmsysChatDataset(DialogueDataset):
         return dialogues, labels, metadata
 
 
+@register("ood", "ShareGPT conversations")
 class ShareGPTDataset(DialogueDataset):
     """
     ShareGPT52K: Early ChatGPT conversations scraped from ShareGPT.
@@ -178,17 +159,8 @@ class ShareGPTDataset(DialogueDataset):
     base_name = "sharegpt"
 
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        max_samples = kwargs.get("max_samples")
-
         dataset = load_dataset("RyokoAI/ShareGPT52K")
-        split = dataset["train"]
-
-        if max_samples and len(split) > max_samples:
-            import random
-
-            random.seed(42)
-            indices = random.sample(range(len(split)), max_samples)
-            split = split.select(indices)
+        split = sample_hf_dataset(dataset["train"], kwargs.get("max_samples"))
 
         dialogues: list[Dialogue] = []
         labels: list[Label] = []
@@ -219,6 +191,7 @@ class ShareGPTDataset(DialogueDataset):
         return dialogues, labels, metadata
 
 
+@register("ood", "Chatbot Arena conversations")
 class ChatbotArenaDataset(DialogueDataset):
     """
     Chatbot Arena Conversations: Pairwise human preferences on LLM responses.
@@ -237,17 +210,8 @@ class ChatbotArenaDataset(DialogueDataset):
     base_name = "chatbot_arena"
 
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        max_samples = kwargs.get("max_samples")
-
         dataset = load_dataset("lmsys/chatbot_arena_conversations")
-        split = dataset["train"]
-
-        if max_samples and len(split) > max_samples:
-            import random
-
-            random.seed(42)
-            indices = random.sample(range(len(split)), max_samples)
-            split = split.select(indices)
+        split = sample_hf_dataset(dataset["train"], kwargs.get("max_samples"))
 
         dialogues: list[Dialogue] = []
         labels: list[Label] = []
@@ -281,13 +245,17 @@ class ChatbotArenaDataset(DialogueDataset):
         return dialogues, labels, metadata
 
 
+@register("ood", "Alpaca instruction dataset")
 class AlpacaDataset(DialogueDataset):
+    base_name = "alpaca"
+
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         dataset = load_dataset("yahma/alpaca-cleaned")
+        split = sample_hf_dataset(dataset["train"], kwargs.get("max_samples"))
 
         dialogues = []
         labels = []
-        for element in dataset["train"]:
+        for element in split:
             dialogues.append(
                 [
                     Message(
@@ -305,26 +273,17 @@ class AlpacaDataset(DialogueDataset):
         return dialogues, labels, None
 
 
-class GPQAReasoningDataset(DialogueDataset):
-    def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        # spawn99/GPQA-diamond-ClaudeR1
-        raise NotImplementedError("GPQAReasoningDataset is not implemented yet.")
-
-
-class AlpacaFrenchDataset(DialogueDataset):
-    def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        # tbboukhari/Alpaca_french_instruct
-        raise NotImplementedError("AlpacaFrenchDataset is not implemented yet.")
-
-
+@register("ood", "Generic Spanish conversations")
 class GenericSpanishDataset(DialogueDataset):
+    base_name = "generic_spanish"
+
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        # FreedomIntelligence/evol-instruct-spanish, there's also in other langs
         dataset = load_dataset("FreedomIntelligence/evol-instruct-spanish")
+        split = sample_hf_dataset(dataset["train"], kwargs.get("max_samples"))
 
         dialogues = []
         labels = []
-        for element in dataset["train"]:
+        for element in split:
             dialogues.append(
                 [
                     Message(
@@ -342,14 +301,17 @@ class GenericSpanishDataset(DialogueDataset):
         return dialogues, labels, None
 
 
+@register("ood", "Math instruction dataset")
 class MathInstructDataset(DialogueDataset):
+    base_name = "math_instruct"
+
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        # TIGER-Lab/MathInstruct
         dataset = load_dataset("TIGER-Lab/MathInstruct")
+        split = sample_hf_dataset(dataset["train"], kwargs.get("max_samples"))
 
         dialogues = []
         labels = []
-        for element in dataset["train"]:
+        for element in split:
             dialogues.append(
                 [
                     Message(
@@ -365,9 +327,3 @@ class MathInstructDataset(DialogueDataset):
             labels.append(Label.NEGATIVE)
 
         return dialogues, labels, None
-
-
-class MATHInstructionDataset(DialogueDataset):
-    def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        # alpayariyak/MATH_Instruction_Format
-        raise NotImplementedError("MATHInstructionDataset is not implemented yet.")

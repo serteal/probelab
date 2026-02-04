@@ -7,6 +7,7 @@ useful for training probes to detect mental health domain content.
 
 from ..types import Label
 from .hf_dataset import DatasetSpec, HFDataset
+from .registry import register
 
 
 def _prosocial_label(item: dict) -> Label:
@@ -15,6 +16,7 @@ def _prosocial_label(item: dict) -> Label:
     return Label.NEGATIVE if safety_label == "__casual__" else Label.POSITIVE
 
 
+@register("mental_health", "Mental health chat")
 class MentalChatDataset(HFDataset):
     """
     MentalChat16K: Synthetic counselor-client conversations.
@@ -40,6 +42,7 @@ class MentalChatDataset(HFDataset):
     )
 
 
+@register("mental_health", "Mental health counseling")
 class MentalHealthCounselingDataset(HFDataset):
     """
     Mental Health Counseling Conversations dataset.
@@ -56,6 +59,7 @@ class MentalHealthCounselingDataset(HFDataset):
     )
 
 
+@register("mental_health", "Prosocial dialogue")
 class ProsocialDialogDataset(HFDataset):
     """
     ProsocialDialog: Teaching agents to respond prosocially to problematic content.
@@ -90,6 +94,7 @@ class ProsocialDialogDataset(HFDataset):
     )
 
 
+@register("mental_health", "Emotional support conversations")
 class EmotionalSupportDataset(HFDataset):
     """
     Mental Health Chatbot Dataset for emotional support conversations.

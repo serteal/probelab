@@ -9,6 +9,7 @@ import json
 
 from ..types import Dialogue, Message
 from .hf_dataset import DatasetSpec, HFDataset
+from .registry import register
 
 
 def _build_xlam_function_call(item: dict) -> Dialogue:
@@ -96,6 +97,7 @@ def _build_glaive_conversation(item: dict) -> Dialogue:
     return dialogue
 
 
+@register("agents", "XLAM function calling")
 class XLAMFunctionCallingDataset(HFDataset):
     """
     xLAM Function Calling 60K dataset from Salesforce.
@@ -127,6 +129,7 @@ class XLAMFunctionCallingDataset(HFDataset):
     )
 
 
+@register("agents", "Glaive function calling")
 class GlaiveFunctionCallingDataset(HFDataset):
     """
     Glaive Function Calling dataset.
@@ -145,6 +148,7 @@ class GlaiveFunctionCallingDataset(HFDataset):
     )
 
 
+@register("agents", "Hermes function calling")
 class HermesFunctionCallingDataset(HFDataset):
     """
     Hermes Function Calling V1 dataset from NousResearch.
@@ -167,6 +171,7 @@ class HermesFunctionCallingDataset(HFDataset):
     )
 
 
+@register("agents", "Function calling ShareGPT")
 class FunctionCallingShareGPTDataset(HFDataset):
     """
     Function Calling ShareGPT dataset.

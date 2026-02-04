@@ -13,8 +13,10 @@ from ..types import Dialogue, DialogueDataType, Label, Message
 from .base import DialogueDataset
 from .builders import sample_hf_dataset
 from .hf_dataset import DatasetSpec, HFDataset
+from .registry import register
 
 
+@register("legal_finance", "Case law documents")
 class CaselawDataset(HFDataset):
     """
     HFforLegal Case Law dataset.
@@ -43,6 +45,7 @@ class CaselawDataset(HFDataset):
     )
 
 
+@register("legal_finance", "Finance tasks")
 class FinanceTasksDataset(HFDataset):
     """
     AdaptLLM Finance Tasks dataset.
@@ -61,6 +64,7 @@ class FinanceTasksDataset(HFDataset):
     )
 
 
+@register("legal_finance", "Financial phrasebank")
 class FinancialPhrasebankDataset(DialogueDataset):
     """
     Financial Phrasebank: Financial news sentiment dataset.
@@ -113,6 +117,7 @@ class FinancialPhrasebankDataset(DialogueDataset):
         return dialogues, labels, metadata
 
 
+@register("legal_finance", "Legal advice from Reddit")
 class LegalAdviceRedditDataset(HFDataset):
     """
     Legal Advice from Reddit (subset of Pile of Law).

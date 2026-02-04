@@ -6,8 +6,10 @@ training probes to detect language or analyze cross-lingual patterns.
 """
 
 from .hf_dataset import DatasetSpec, HFDataset
+from .registry import register
 
 
+@register("multilingual", "WildChat multilingual conversations")
 class WildChatDataset(HFDataset):
     """
     WildChat-1M: Real conversations with ChatGPT from 210K unique users.
@@ -40,6 +42,7 @@ class WildChatDataset(HFDataset):
     )
 
 
+@register("multilingual", "Multilingual thinking traces")
 class MultilingualThinkingDataset(HFDataset):
     """
     Multilingual reasoning dataset with chain-of-thought in multiple languages.
@@ -64,6 +67,7 @@ class MultilingualThinkingDataset(HFDataset):
     )
 
 
+@register("multilingual", "Palo multilingual dataset")
 class PaloMultilingualDataset(HFDataset):
     """
     PALO multilingual vision-language conversation dataset.

@@ -3,10 +3,10 @@ from pathlib import Path
 import pandas as pd
 from datasets import load_dataset
 
-from ..masks import MaskFunction, user
-
 from ..types import DialogueDataType, Label, Message
 from .base import DialogueDataset
+from .builders import sample_hf_dataset
+from .registry import register
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -17,6 +17,7 @@ def sanitize_prompt(prompt: str) -> str:
     )
 
 
+@register("harmfulness", "Wild jailbreak attempts")
 class WildJailbreakDataset(DialogueDataset):
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         data_path = REPO_ROOT / "data" / "harmfulness"
@@ -48,6 +49,7 @@ class WildJailbreakDataset(DialogueDataset):
         return dialogues, labels, None
 
 
+@register("harmfulness", "Circuit breakers safety benchmark")
 class CircuitBreakersDataset(DialogueDataset):
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         dataset = load_dataset("Mechanistic-Anomaly-Detection/gemma2-jailbreaks")
@@ -77,27 +79,21 @@ class CircuitBreakersDataset(DialogueDataset):
         return dialogues, labels, None
 
 
+@register("harmfulness", "Benign instruction baseline")
 class BenignInstructionsDataset(DialogueDataset):
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         dataset = load_dataset("Mechanistic-Anomaly-Detection/gemma2-jailbreaks")
         if kwargs.get("split") == "test":
-            dataset = dataset["benign_instructions_test"]
+            split = dataset["benign_instructions_test"]
         else:
-            dataset = dataset["benign_instructions_train"]
+            split = dataset["benign_instructions_train"]
 
-        # Limit samples if requested
-        max_samples = kwargs.get("max_samples")
-        if max_samples and len(dataset) > max_samples:
-            import random
-
-            random.seed(42)
-            indices = random.sample(range(len(dataset)), max_samples)
-            dataset = dataset.select(indices)
+        split = sample_hf_dataset(split, kwargs.get("max_samples"))
 
         dialogues = []
         labels = []
 
-        for d in dataset:
+        for d in split:
             dialogues.append(
                 [
                     Message(
@@ -115,12 +111,9 @@ class BenignInstructionsDataset(DialogueDataset):
         return dialogues, labels, None
 
 
+@register("harmfulness", "WildGuard mixed dataset")
 class WildGuardMixDataset(DialogueDataset):
     base_name = "wildguardmix"
-
-    @property
-    def default_mask(self) -> MaskFunction:
-        return user(include_padding=False)
 
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         split = kwargs.get("split", "train")
@@ -160,6 +153,7 @@ class WildGuardMixDataset(DialogueDataset):
         return dialogues, labels, metadata
 
 
+@register("harmfulness", "XSTest response dataset")
 class XSTestResponseDataset(DialogueDataset):
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         # allenai/xstest-response
@@ -180,18 +174,7 @@ class XSTestResponseDataset(DialogueDataset):
         return dialogues, labels, None
 
 
-class CoconotDataset(DialogueDataset):
-    def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        # allenai/coconot
-        raise NotImplementedError("CoconotDataset is not implemented yet.")
-
-
-class ToxicChatDataset(DialogueDataset):
-    def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        # lmsys/toxic-chat
-        raise NotImplementedError("ToxicChatDataset is not implemented yet.")
-
-
+@register("harmfulness", "ClearHarm Llama3 responses")
 class ClearHarmLlama3Dataset(DialogueDataset):
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         data_path = REPO_ROOT / "data" / "harmfulness"
@@ -220,6 +203,7 @@ class ClearHarmLlama3Dataset(DialogueDataset):
         return dialogues, labels, None
 
 
+@register("harmfulness", "ClearHarm Mistral responses")
 class ClearHarmMistralSmallDataset(DialogueDataset):
     def _get_dialogues(self, **kwargs) -> DialogueDataType:
         data_path = REPO_ROOT / "data" / "harmfulness"

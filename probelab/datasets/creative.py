@@ -9,6 +9,7 @@ creative/roleplay content in model outputs.
 from ..types import Dialogue, Message
 from .builders import build_from_messages
 from .hf_dataset import DatasetSpec, HFDataset
+from .registry import register
 
 
 def _build_persona_chat(item: dict) -> Dialogue:
@@ -101,6 +102,7 @@ def _build_roleplay(item: dict) -> Dialogue:
     return dialogue
 
 
+@register("creative", "Synthetic persona chat")
 class SyntheticPersonaChatDataset(HFDataset):
     """
     Synthetic Persona Chat dataset from Google.
@@ -132,6 +134,7 @@ class SyntheticPersonaChatDataset(HFDataset):
     )
 
 
+@register("creative", "Persona-based chat")
 class PersonaBasedChatDataset(HFDataset):
     """
     Persona-Based Chat dataset.
@@ -162,6 +165,7 @@ class PersonaBasedChatDataset(HFDataset):
     )
 
 
+@register("creative", "Roleplay conversations")
 class RoleplayDataset(HFDataset):
     """
     Roleplay dataset with character-based conversations.
@@ -186,6 +190,7 @@ class RoleplayDataset(HFDataset):
     )
 
 
+@register("creative", "Multi-character dialogue")
 class MultiCharacterDialogueDataset(HFDataset):
     """
     Multi-Character Dialogue dataset.
@@ -211,6 +216,7 @@ class MultiCharacterDialogueDataset(HFDataset):
     )
 
 
+@register("creative", "Literary genre examples")
 class LiteraryGenreDataset(HFDataset):
     """
     Literary Genre Examples dataset.
@@ -235,6 +241,7 @@ class LiteraryGenreDataset(HFDataset):
     )
 
 
+@register("creative", "Writing prompts")
 class WritingPromptsDataset(HFDataset):
     """
     Writing Prompts dataset for story generation.

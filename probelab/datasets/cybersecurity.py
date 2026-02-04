@@ -13,8 +13,10 @@ from ..types import Dialogue, DialogueDataType, Label, Message
 from .base import DialogueDataset
 from .builders import sample_hf_dataset
 from .hf_dataset import DatasetSpec, HFDataset
+from .registry import register
 
 
+@register("cybersecurity", "Trendyol cybersecurity")
 class TrendyolCybersecurityDataset(HFDataset):
     """
     Trendyol Cybersecurity Instruction Tuning Dataset.
@@ -41,6 +43,7 @@ class TrendyolCybersecurityDataset(HFDataset):
     )
 
 
+@register("cybersecurity", "Cybersecurity DPO")
 class CybersecurityDPODataset(DialogueDataset):
     """
     Code Vulnerability Security DPO Dataset.
@@ -103,6 +106,7 @@ class CybersecurityDPODataset(DialogueDataset):
         return dialogues, labels, metadata
 
 
+@register("cybersecurity", "Defensive cybersecurity")
 class DefensiveCybersecurityDataset(HFDataset):
     """
     Defensive Cybersecurity Dataset V1.

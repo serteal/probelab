@@ -7,6 +7,7 @@ useful for training probes to detect reasoning patterns in model outputs.
 
 from ..types import Dialogue, Message
 from .hf_dataset import DatasetSpec, HFDataset
+from .registry import register
 
 
 def _build_math_with_messages_fallback(item: dict) -> Dialogue:
@@ -33,6 +34,7 @@ def _build_math_with_messages_fallback(item: dict) -> Dialogue:
     return dialogue
 
 
+@register("reasoning", "OpenR1 math reasoning")
 class OpenR1MathDataset(HFDataset):
     """
     OpenR1-Math-220k: Large-scale math reasoning dataset.
@@ -64,6 +66,7 @@ class OpenR1MathDataset(HFDataset):
     )
 
 
+@register("reasoning", "OpenMath reasoning")
 class OpenMathReasoningDataset(HFDataset):
     """
     OpenMathReasoning dataset from NVIDIA.
@@ -89,6 +92,7 @@ class OpenMathReasoningDataset(HFDataset):
     )
 
 
+@register("reasoning", "Numina math chain-of-thought")
 class NuminaMathCoTDataset(HFDataset):
     """
     NuminaMath Chain-of-Thought dataset.
@@ -112,6 +116,7 @@ class NuminaMathCoTDataset(HFDataset):
     )
 
 
+@register("reasoning", "Enhanced math instructions")
 class MathInstructEnhancedDataset(HFDataset):
     """
     Enhanced MathInstruct dataset from TIGER-Lab.
