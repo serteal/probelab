@@ -49,6 +49,11 @@ dependencies = [
     "transformers>=4.55.4",
 ]
 
+[project.optional-dependencies]
+storage = [
+    "h5py>=3.10",
+]
+
 [project.urls]
 Homepage = "https://github.com/serteal/probelab"
 Repository = "https://github.com/serteal/probelab"

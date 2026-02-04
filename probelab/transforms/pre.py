@@ -46,6 +46,14 @@ class SelectLayer(ActivationTransform):
     def __repr__(self) -> str:
         return f"SelectLayer(layer={self.layer})"
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SelectLayer):
+            return NotImplemented
+        return self.layer == other.layer
+
+    def __hash__(self) -> int:
+        return hash(("SelectLayer", self.layer))
+
 
 class SelectLayers(ActivationTransform):
     """Select multiple layers, keeping the LAYER axis.
@@ -71,6 +79,14 @@ class SelectLayers(ActivationTransform):
 
     def __repr__(self) -> str:
         return f"SelectLayers(layers={self.layers})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SelectLayers):
+            return NotImplemented
+        return self.layers == other.layers
+
+    def __hash__(self) -> int:
+        return hash(("SelectLayers", tuple(self.layers)))
 
 
 class Pool(ActivationTransform):
@@ -144,6 +160,14 @@ class Pool(ActivationTransform):
 
     def __repr__(self) -> str:
         return f"Pool(dim={self.dim!r}, method={self.method.value!r})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Pool):
+            return NotImplemented
+        return self.dim == other.dim and self.method == other.method
+
+    def __hash__(self) -> int:
+        return hash(("Pool", self.dim, self.method))
 
 
 class Normalize(ActivationTransform):
@@ -253,3 +277,12 @@ class Normalize(ActivationTransform):
             status_parts.append("frozen")
         status_str = ", ".join(status_parts)
         return f"Normalize(eps={self.eps}, {status_str})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Normalize):
+            return NotImplemented
+        # For fusion purposes, two Normalize with same eps are equivalent
+        return self.eps == other.eps
+
+    def __hash__(self) -> int:
+        return hash(("Normalize", self.eps))

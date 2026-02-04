@@ -74,6 +74,14 @@ class Pool(ScoreTransform):
     def __repr__(self) -> str:
         return f"Pool(method={self.method.value!r})"
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Pool):
+            return NotImplemented
+        return self.method == other.method
+
+    def __hash__(self) -> int:
+        return hash(("post.Pool", self.method))
+
 
 class EMAPool(ScoreTransform):
     """Exponential Moving Average pooling over sequence dimension.
@@ -163,6 +171,14 @@ class EMAPool(ScoreTransform):
 
     def __repr__(self) -> str:
         return f"EMAPool(alpha={self.alpha})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, EMAPool):
+            return NotImplemented
+        return self.alpha == other.alpha
+
+    def __hash__(self) -> int:
+        return hash(("EMAPool", self.alpha))
 
 
 class RollingPool(ScoreTransform):
@@ -258,3 +274,11 @@ class RollingPool(ScoreTransform):
 
     def __repr__(self) -> str:
         return f"RollingPool(window_size={self.window_size})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, RollingPool):
+            return NotImplemented
+        return self.window_size == other.window_size
+
+    def __hash__(self) -> int:
+        return hash(("RollingPool", self.window_size))
