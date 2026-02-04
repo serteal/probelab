@@ -6,10 +6,10 @@ Use cases for probelab:
   - Easy to visualize masks.
 - Training multiple pipelines on a model's layers. Pipelines compose preprocessing steps (layer selection, aggregation) with probes. All pipelines take the same input type (Activations object).
   - Be able to train multiple pipelines at the same time on different layers without having to recompute the activations.
-  - Explicit 2-step workflow: (1) collect activations, (2) train pipelines on those activations.
+  - Explicit 2-step workflow: (1) collect activations, (2) call `pipeline.fit()` on those activations.
   - Preprocessing is explicit in pipeline definition, enabling clear experimentation with different strategies.
-  - Core workflow functions (`train_pipelines`, `evaluate_pipelines`) work with pre-collected activations.
-  - Convenience functions (`train_from_model`, `evaluate_from_model`) handle both steps in one call.
+  - Direct use of `pipeline.fit()` and `pipeline.predict_proba()` for training and inference.
+  - Metrics computed manually with `pl.metrics.auroc()` etc.
 - Using a pipeline to generate signal for model finetuning (i.e. a backpropable signal that can be used to finetune the model).
   - Pipelines should have a `.predict()` method that returns a tensor of predictions. The `.predict()` op should be differentiable.
 

@@ -22,72 +22,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Main API Imports
 
-The public API follows a tiered structure to make the "happy path" obvious:
-
-### Primary API (via `import probelab as pl`)
-
 ```python
-import probelab as pl
+# Core types
+from probelab import Message, Dialogue, Label
 
-# These are always available at top level:
-pl.Pipeline          # Core composition
-pl.Activations       # Core data container
-pl.collect_activations  # Main activation function
-pl.Label             # Classification labels
-pl.Context           # Config scoping
-```
+# Activation handling
+from probelab import HookedModel, Activations, collect_activations
 
-### Submodule Access (via `pl.submodule.X`)
+# Pipeline and preprocessing
+from probelab import Pipeline
+from probelab import preprocessing
+from probelab.preprocessing import SelectLayer, SelectLayers, Pool, Normalize
 
-```python
-# Preprocessing transformers
-pl.preprocessing.SelectLayer
-pl.preprocessing.Pool
-pl.preprocessing.Normalize
+# Probes (used within pipelines)
+from probelab.probes import BaseProbe, Logistic, MLP, Attention
 
-# Probe classes
-pl.probes.Logistic
-pl.probes.MLP
-pl.probes.Attention
-
-# Mask functions
-pl.masks.assistant()
-pl.masks.user()
-pl.masks.contains("pattern")
-
-# Dataset classes
-pl.datasets.CircuitBreakersDataset
-pl.datasets.REPEDataset
+# Datasets
+from probelab.datasets import DialogueDataset, CircuitBreakersDataset, DolusChatDataset
 
 # Metrics
-pl.metrics.auroc
-pl.metrics.recall_at_fpr
+from probelab.metrics import auroc, recall_at_fpr, get_metric_by_name
 
-# High-level workflows
-pl.scripts.train_pipelines
-pl.scripts.evaluate_pipelines
-pl.scripts.train_from_model
-pl.scripts.evaluate_from_model
-```
-
-### Explicit Imports (for advanced use)
-
-```python
-# Types (for type annotations or manual dialogue construction)
-from probelab.types import Message, Dialogue, Role, HookPoint, AggregationMethod
-
-# Internal implementations
-from probelab.models import HookedModel
-from probelab.processing import Scores
-
-# Visualization utilities
+# Visualization
 from probelab.visualization import print_metrics, visualize_mask
 
-# Advanced config
-from probelab.config import get_config, set_defaults
-
-# Profiling utilities
-from probelab.profiling import ProbelabCounters, profile_section, is_profiling
+# Masks for selective token processing
+from probelab import masks
 ```
 
 ## Commands
@@ -216,8 +176,6 @@ probelab/
 │   ├── position.py     # Position masks (between, after, before, nth_message)
 │   ├── content.py      # Content masks (special_tokens, padding)
 │   └── composite.py    # Composite masks (AndMask, OrMask, NotMask)
-├── scripts/             # High-level workflows
-│   └── workflows.py    # train_pipelines, evaluate_pipelines, convenience functions
 ├── metrics.py           # Function-based metrics API
 ├── visualization.py     # Plotting and visualization
 └── logger.py           # Logging configuration
@@ -285,33 +243,19 @@ probelab/
 6. **Pipeline (`pipeline.py`)**: Composition framework
 
    - **Pipeline**: Compose preprocessing steps with probes
-   - Methods: `fit()`, `predict()`, `predict_proba()`
-   - **Auto-selection**: Single-layer activations work without `SelectLayer` (auto-selected)
-   - Multi-layer activations require explicit handling (`SelectLayer` or `Pool(dim="layer")`)
+   - Methods: `fit()`, `predict()`, `predict_proba()`, `partial_fit()`
    - Enables clear separation of concerns
-   - Example: `Pipeline([Pool(dim="sequence", method="mean"), Logistic()])` (single layer)
-   - Example: `Pipeline([SelectLayer(16), Pool(dim="sequence", method="mean"), Logistic()])` (multi-layer)
+   - Example: `Pipeline([SelectLayer(16), Pool(dim="sequence", method="mean"), Logistic()])`
 
 7. **Preprocessing (`preprocessing/`)**: Transformation steps
 
    - **SelectLayer**: Select a single layer from multi-layer activations (removes LAYER axis)
    - **SelectLayers**: Select multiple layers (keeps LAYER axis)
    - **Pool**: Unified pooling over sequence or layer dimension (mean, max, last_token)
-   - **Normalize**: Feature normalization (compute mean/std on training data)
+   - **Normalize**: Feature normalization with online learning support
    - All transformers follow sklearn-like API (fit, transform, fit_transform)
 
-8. **Scripts (`scripts/workflows.py`)**: High-level workflows
-
-   - **Core functions** (work with pre-collected activations):
-     - `train_pipelines`: Train pipelines on activation batches
-     - `evaluate_pipelines`: Evaluate pipelines on activation batches
-   - **Convenience functions** (one-step from model):
-     - `train_from_model`: Collect activations + train pipelines
-     - `evaluate_from_model`: Collect activations + evaluate pipelines (supports streaming evaluation)
-   - Explicit 2-step API preferred over convenience functions
-   - Multi-pipeline training with shared activations
-
-9. **Metrics (`metrics.py`)**: Function-based metrics API
+8. **Metrics (`metrics.py`)**: Function-based metrics API
 
    - Core metrics: `auroc`, `accuracy`, `balanced_accuracy`, `precision`, `recall`, `f1`
    - Special metrics: `recall_at_fpr`, `partial_auroc`, `fpr_at_threshold`
@@ -319,13 +263,13 @@ probelab/
    - String-based metric lookup: `get_metric_by_name("auroc")`
    - Parameterized metrics: `"recall@5"` (5% FPR), `"percentile95"`
 
-10. **Visualization (`visualization.py`)**: Result visualization
+9. **Visualization (`visualization.py`)**: Result visualization
     - ROC and precision-recall curves
     - Recall comparison bar charts
     - Detection mask visualization with `visualize_mask()`
     - Modern plotting theme with accessibility
 
-11. **Masks (`masks/`)**: Selective token processing
+10. **Masks (`masks/`)**: Selective token processing
 
    - **MaskFunction**: Base class for composable mask functions
    - **Basic masks**: `all()`, `none()`, `last_token()`, `first_n_tokens()`, `last_n_tokens()`
@@ -359,28 +303,27 @@ probelab/
 
 3. **Memory Efficiency**
 
-   - Streaming activation collection via `ActivationIterator` (for evaluation)
+   - Streaming activation collection via `ActivationIterator`
+   - Automatic streaming detection based on dataset size
    - Dynamic batching based on sequence lengths
    - Tensor views for efficient batch processing
    - Optional model pruning (keep only needed layers)
    - Activation caching with deterministic hashing
-   - Use `collection_strategy="mean"` for memory-efficient training on large datasets
+   - `partial_fit()` support for incremental training
 
 4. **Pipeline-Based Architecture**
 
    - Explicit composition of preprocessing steps and probes
    - Clear separation of concerns: layer selection, pooling, classification
-   - Pipelines follow sklearn-like API (fit, predict, predict_proba)
+   - Pipelines follow sklearn-like API (fit, predict, partial_fit)
    - Enables easy experimentation with different preprocessing strategies
    - Example: `Pipeline([SelectLayer(16), Pool(dim="sequence", method="mean"), Logistic()])`
 
 5. **Unified Interfaces**
 
-   - Core workflow functions for pre-collected activations (preferred)
-   - Convenience functions for one-step training from model
    - Unified `pool()` and `select()` methods for activation manipulation
    - Automatic format detection (DialogueDataset, list[Dialogue], HF hidden states)
-   - Works with both single pipelines and pipeline dictionaries
+   - Direct use of `pipeline.fit()` and `pipeline.predict_proba()` for training and inference
 
 6. **Extensibility**
    - Abstract base classes for datasets, probes, masks, and transformers
@@ -398,7 +341,7 @@ probelab/
    # Load data
    dataset = pl.datasets.CircuitBreakersDataset()
 
-   # Step 1: Collect activations (single layer)
+   # Step 1: Collect activations
    activations = pl.collect_activations(
        model=model,
        tokenizer=tokenizer,
@@ -409,8 +352,8 @@ probelab/
    )
 
    # Step 2: Create pipeline and train
-   # NOTE: SelectLayer not needed for single-layer activations (auto-selected)
    pipeline = pl.Pipeline([
+       ("select", pl.preprocessing.SelectLayer(12)),
        ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
        ("probe", pl.probes.Logistic(device="cuda")),
    ])
@@ -418,31 +361,7 @@ probelab/
    pipeline.fit(activations, dataset.labels)
    ```
 
-2. **Convenience Function (One-Step from Model)**
-
-   ```python
-   import probelab as pl
-
-   # Load data
-   dataset = pl.datasets.CircuitBreakersDataset()
-
-   # Create pipeline (SelectLayer not needed for single layer)
-   pipeline = pl.Pipeline([
-       ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
-       ("probe", pl.probes.Logistic(device="cuda")),
-   ])
-
-   # One-step training (collects activations internally)
-   pl.scripts.train_from_model(
-       pipeline, model, tokenizer, dataset,
-       layers=[12],  # required for convenience functions
-       labels=dataset.labels,
-       mask=pl.masks.assistant(),
-       batch_size=32
-   )
-   ```
-
-3. **Multi-Layer Analysis**
+2. **Multi-Layer Analysis**
 
    ```python
    # Collect activations from multiple layers
@@ -465,36 +384,37 @@ probelab/
        for i in [8, 12, 16, 20]
    }
 
-   pl.scripts.train_pipelines(pipelines, activations, dataset.labels)
+   # Train each pipeline
+   for name, pipeline in pipelines.items():
+       pipeline.fit(activations, dataset.labels)
    ```
 
-4. **Memory-Efficient Training for Large Datasets**
+3. **Streaming for Large Datasets**
    ```python
-   # Use collection_strategy to pool activations during collection
-   # This reduces memory ~440x by avoiding storing full sequences
-   activations = pl.collect_activations(
+   # Collect activations in streaming mode
+   activation_stream = pl.collect_activations(
        model=model,
        tokenizer=tokenizer,
        data=large_dataset,
        layers=[12],
        mask=pl.masks.assistant(),
        batch_size=8,
-       collection_strategy="mean"  # Pool during collection
+       streaming=True  # Returns ActivationIterator
    )
 
-   # Create pipeline (no Pool needed - already aggregated)
+   # Create pipeline
    pipeline = pl.Pipeline([
        ("select", pl.preprocessing.SelectLayer(12)),
+       ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
        ("probe", pl.probes.Logistic(device="cuda")),
    ])
 
-   pipeline.fit(activations, large_dataset.labels)
+   # Streaming training with pipeline.fit_streaming()
+   pipeline.fit_streaming(activation_stream, labels)
    ```
 
-5. **Evaluation with Custom Metrics**
+4. **Evaluation with Metrics**
    ```python
-   import functools
-
    # Collect test activations
    test_acts = pl.collect_activations(
        model=model,
@@ -505,19 +425,17 @@ probelab/
        batch_size=32
    )
 
-   # Evaluate with custom metrics
-   predictions, metrics = pl.scripts.evaluate_pipelines(
-       pipeline, test_acts,
-       labels=test_labels,
-       metrics=[
-           "auroc",
-           "balanced_accuracy",
-           functools.partial(pl.metrics.recall_at_fpr, fpr=0.01)
-       ]
-   )
+   # Get predictions
+   probs = pipeline.predict_proba(test_acts)
+   y_pred = probs[:, 1].cpu().numpy()
+   y_true = [label.value for label in test_labels]
+
+   # Compute metrics
+   print(f"AUROC: {pl.metrics.auroc(y_true, y_pred):.3f}")
+   print(f"Recall@1%: {pl.metrics.recall_at_fpr(y_true, y_pred, fpr=0.01):.3f}")
    ```
 
-6. **Using Masks for Fine-Grained Control**
+5. **Using Masks for Fine-Grained Control**
    ```python
    # Only detect on last assistant message
    mask = pl.masks.AndMask(
@@ -543,7 +461,7 @@ probelab/
    pipeline.fit(acts, dataset.labels)
    ```
 
-7. **Token-Level Prediction with Score Aggregation**
+6. **Token-Level Prediction with Score Aggregation**
    ```python
    # Collect activations
    acts = pl.collect_activations(
@@ -564,7 +482,7 @@ probelab/
    pipeline.fit(acts, dataset.labels)
    ```
 
-8. **Manual Activation Manipulation**
+7. **Manual Activation Manipulation**
    ```python
    # Collect activations
    acts = pl.collect_activations(
@@ -586,7 +504,7 @@ probelab/
    mid_layers = acts.select(layers=[8, 16])  # Keeps LAYER axis
    ```
 
-9. **Using Different Hook Points**
+8. **Using Different Hook Points**
     ```python
     # Extract activations before layernorm (earlier in computation)
     acts_pre = pl.collect_activations(
@@ -657,7 +575,7 @@ probelab/
 
 1. **Memory Management**
 
-   - Use `collection_strategy="mean"` for large datasets
+   - Use streaming for datasets > 10k examples
    - Enable model pruning when using few layers
    - Clear GPU cache between large operations
    - Use appropriate batch sizes for your GPU
@@ -673,6 +591,7 @@ probelab/
 
    - Test with both GPU and CPU
    - Include edge cases (empty datasets, single examples)
+   - Test streaming and batch modes
    - Verify numerical stability
 
 4. **Performance**
@@ -706,7 +625,7 @@ probelab/
    - Increase regularization for logistic probe
 
 4. **Slow Training**
-   - Use `collection_strategy="mean"` to reduce memory and improve throughput
+   - Enable streaming for large datasets
    - Use larger batch sizes if memory allows
    - Consider using fewer layers
    - Profile with PyTorch profiler
@@ -739,44 +658,34 @@ Located in `pyproject.toml`:
 ### Recent Updates & Future Enhancements
 
 **Recently Added (Latest):**
-- **Removed streaming training** (simplification):
-  - Removed `pipeline.partial_fit()`, `pipeline.fit_streaming()`
-  - Removed `train_pipelines_streaming()` function
-  - Removed `streaming` parameter from `train_from_model()`
-  - Removed all probe `partial_fit()` methods
-  - **Migration:** Use batch training. For large datasets, use `collection_strategy="mean"` in `collect_activations()` for memory efficiency
-  - Streaming evaluation is still supported via `evaluate_from_model(streaming=True)`
+- **Fully explicit API** (Breaking changes):
+  - Removed `scripts/` module entirely - no more wrapper functions
+  - Users call `pipeline.fit()` and `pipeline.predict_proba()` directly
+  - Metrics computed manually with `pl.metrics.auroc()` etc.
+  - No hidden behavior or implicit pipeline modification
 - **API refinements for research clarity:**
   - `tokenize_dialogues()` and `tokenize_dataset()` now require `mask` parameter (no hidden defaults)
   - `Activations.select()` now uses explicit `layer=` (single, removes axis) and `layers=` (multiple, keeps axis) parameters
   - Removed ambiguous `layers=int` overloading that automatically detected cardinality
-- **Pipeline-based API** (Breaking changes, no backward compatibility):
+- **Pipeline-based API**:
   - `Pipeline`: Explicit composition of preprocessing steps and probes
   - Preprocessing transformers: `SelectLayer`, `SelectLayers`, `Pool`, `Normalize`
-  - Workflow functions renamed:
-    - Core: `train_pipelines()`, `evaluate_pipelines()` (work with pre-collected activations)
-    - Convenience: `train_from_model()`, `evaluate_from_model()` (one-step from model)
   - Probes no longer have `layer`, `sequence_pooling`, or `score_aggregation` parameters
   - All preprocessing is now explicit in pipeline definition
   - Clear separation of concerns: layer selection, aggregation, classification
 
 **Removed (Breaking Changes):**
-- **Streaming training** (latest):
-  - `pipeline.partial_fit()` → Use `pipeline.fit()` with batch data
-  - `pipeline.fit_streaming()` → Use `pipeline.fit()` with batch data
-  - `train_pipelines_streaming()` → Use `train_pipelines()` with batch data
-  - `streaming` parameter in `train_from_model()` → Use batch training
-  - All probe `partial_fit()` methods → Use `probe.fit()` with batch data
-  - `Normalize.partial_fit()` → Use `Normalize.fit()` with batch data
-  - `Logistic.streaming_lr` parameter → Removed (no streaming training)
+- **scripts module**:
+  - `train_pipelines()` → Use `pipeline.fit(activations, labels)`
+  - `evaluate_pipelines()` → Use `pipeline.predict_proba(activations)` + manual metrics
+  - `train_from_model()` → Removed (use explicit 2-step)
+  - `evaluate_from_model()` → Removed (use explicit 2-step)
+  - `train_pipelines_streaming()` → Use `pipeline.fit_streaming(activation_iter, labels)`
 - **Probe parameters**:
   - `layer` parameter → Use `SelectLayer` transformer in pipeline
   - `sequence_pooling` parameter → Use `Pool(dim="sequence", ...)` transformer in pipeline
   - `score_aggregation` parameter → Use `Pool(dim="sequence", ...)` transformer after probe in pipeline
   - `SequencePooling` enum → Use string values in `Pool` ("mean", "max", "last_token")
-- **Workflow functions**:
-  - `train_probes()` → Use `train_pipelines()` or `train_from_model()`
-  - `evaluate_probes()` → Use `evaluate_pipelines()` or `evaluate_from_model()`
 - **Activation methods** (from previous refactoring):
   - `Activations.aggregate()` → Use `Activations.pool(dim="sequence")`
   - `Activations.sequence_pool()` → Use `Activations.pool(dim="sequence")`
@@ -786,18 +695,10 @@ Located in `pyproject.toml`:
 **API Migration Guide:**
 ```python
 # OLD API (removed)
-probe = pl.probes.Logistic(
-    layer=16,
-    sequence_pooling=SequencePooling.MEAN,
-    device="cuda"
-)
-pl.scripts.train_probes(
-    probe, model, tokenizer, dataset,
-    labels=dataset.labels,
-    mask=pl.masks.assistant()
-)
+pl.scripts.train_pipelines(pipeline, activations, labels)
+pl.scripts.evaluate_pipelines(pipeline, activations, labels)
 
-# NEW API (current) - 2-step approach (preferred)
+# NEW API (current) - direct pipeline methods
 # Step 1: Collect activations
 acts = pl.collect_activations(
     model=model,
@@ -816,13 +717,12 @@ pipeline = pl.Pipeline([
 ])
 pipeline.fit(acts, dataset.labels)
 
-# OR convenience function (one-step)
-pl.scripts.train_from_model(
-    pipeline, model, tokenizer, dataset,
-    layers=[16],  # required for convenience functions
-    labels=dataset.labels,
-    mask=pl.masks.assistant()
-)
+# Step 3: Evaluate
+test_acts = pl.collect_activations(...)
+probs = pipeline.predict_proba(test_acts)
+y_pred = probs[:, 1].cpu().numpy()
+y_true = [label.value for label in test_labels]
+print(f"AUROC: {pl.metrics.auroc(y_true, y_pred):.3f}")
 ```
 
 **Previous Updates:**
@@ -832,8 +732,7 @@ pl.scripts.train_from_model(
   - `Activations.from_hidden_states()`: Create from HuggingFace format
 - **Mask system**: Comprehensive composable mask functions
 - Function-based metrics API with bootstrap confidence intervals
-- `ActivationIterator` for streaming evaluation
-- Multi-pipeline parallel training with shared activations
+- Streaming support with `ActivationIterator`
 - Attention probe implementation
 
 **Future Enhancements:**

@@ -68,11 +68,9 @@ print(pl.metrics.auroc(test_ds.labels, predictions))
 
 ## What does `probelab` allow?
 
-### High-level, multi-pipeline training and evaluation
+### Multi-Pipeline Training and Evaluation
 
 ```python
-import functools
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -91,11 +89,9 @@ train_dataset, test_dataset = (
 ).split(0.8)
 
 # Compose a role-based mask and drop special tokens
-# This mask selects only assistant messages and drops special tokens (eg. bos, eos, pad)
 mask = pl.masks.assistant() & ~pl.masks.special_tokens()
 
 # Create pipelines with preprocessing steps + probe
-# Each pipeline selects layer 16, pools over sequence, then classifies
 pipelines = {
     "logistic": pl.Pipeline([
         ("select", pl.preprocessing.SelectLayer(16)),
@@ -109,36 +105,38 @@ pipelines = {
     ]),
 }
 
-# Convenience function: one-step training from model
-pl.scripts.train_from_model(
-    pipelines=pipelines,
+# Step 1: Collect activations
+train_acts = pl.collect_activations(
+    model=model,
+    tokenizer=tokenizer,
     data=train_dataset,
-    model=model,
-    tokenizer=tokenizer,
-    layers=[16],  # required for convenience functions
+    layers=[16],
     mask=mask,
     batch_size=32,
-    streaming=True,  # use streaming to train on large datasets efficiently
 )
 
-predictions, metrics = pl.scripts.evaluate_from_model(
-    pipelines=pipelines,
+# Step 2: Train pipelines
+for name, pipeline in pipelines.items():
+    pipeline.fit(train_acts, train_dataset.labels)
+
+# Step 3: Evaluate
+test_acts = pl.collect_activations(
+    model=model,
+    tokenizer=tokenizer,
     data=test_dataset,
-    model=model,
-    tokenizer=tokenizer,
-    layers=[16],  # required for convenience functions
+    layers=[16],
     mask=mask,
     batch_size=32,
-    metrics=[
-        pl.metrics.auroc,
-        functools.partial(pl.metrics.recall_at_fpr, fpr=0.01),
-    ],
 )
 
-pl.visualization.print_metrics(metrics)
+for name, pipeline in pipelines.items():
+    probs = pipeline.predict_proba(test_acts)
+    y_pred = probs[:, 1].cpu().numpy()
+    y_true = [label.value for label in test_dataset.labels]
+    print(f"{name}: AUROC={pl.metrics.auroc(y_true, y_pred):.3f}")
 ```
 
-### Low-Level Building Blocks (manual control)
+### Advanced Usage: Streaming and Custom Masks
 
 ```python
 import probelab as pl

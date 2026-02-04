@@ -10,7 +10,6 @@ Submodule access:
     probelab.masks          - assistant(), user(), contains()
     probelab.datasets       - CircuitBreakersDataset, REPEDataset, etc.
     probelab.metrics        - auroc, recall_at_fpr, etc.
-    probelab.scripts        - train_pipelines, evaluate_pipelines
 
 Explicit imports for advanced use:
     from probelab.types import Message, Dialogue, Role, HookPoint
@@ -21,7 +20,7 @@ Explicit imports for advanced use:
 """
 
 # Submodules (for pl.submodule.X access)
-from . import datasets, masks, metrics, preprocessing, probes, scripts
+from . import datasets, masks, metrics, preprocessing, probes
 
 # Primary API
 from .config import Context
@@ -46,5 +45,4 @@ __all__ = [
     "masks",
     "datasets",
     "metrics",
-    "scripts",
 ]

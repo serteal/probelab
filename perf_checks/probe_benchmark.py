@@ -79,7 +79,7 @@ def benchmark_activation_collection(
         return pl.collect_activations(
             model=model,
             tokenizer=tokenizer,
-            dataset=dataset,
+            data=dataset,
             layers=layers,
             mask=pl.masks.assistant(),  # Required parameter
             batch_size=batch_size,
@@ -101,7 +101,7 @@ def benchmark_activation_collection(
         activation_iter = pl.collect_activations(
             model=model,
             tokenizer=tokenizer,
-            dataset=dataset,
+            data=dataset,
             layers=layers,
             mask=pl.masks.assistant(),  # Required parameter
             batch_size=batch_size,
@@ -154,7 +154,7 @@ def benchmark_probe_training(
     pre_collected_pooled = pl.collect_activations(
         model=model,
         tokenizer=tokenizer,
-        dataset=dataset,
+        data=dataset,
         layers=layers,
         mask=pl.masks.assistant(),
         batch_size=batch_size,
@@ -166,7 +166,7 @@ def benchmark_probe_training(
     pre_collected_dense = pl.collect_activations(
         model=model,
         tokenizer=tokenizer,
-        dataset=dataset,
+        data=dataset,
         layers=layers,
         mask=pl.masks.assistant(),
         batch_size=batch_size,
@@ -181,7 +181,7 @@ def benchmark_probe_training(
             # No Pool needed - activations are already pooled
             ("probe", pl.probes.Logistic()),
         ])
-        pl.scripts.train_pipelines(pipeline, pre_collected_pooled, dataset.labels, verbose=False)
+        pipeline.fit(pre_collected_pooled, dataset.labels)
         return pipeline
 
     probe_only_pooled_result = measure_with_warmup(
@@ -199,7 +199,7 @@ def benchmark_probe_training(
             ("agg", Pool(dim="sequence", method="mean")),
             ("probe", pl.probes.Logistic()),
         ])
-        pl.scripts.train_pipelines(pipeline, pre_collected_dense, dataset.labels, verbose=False)
+        pipeline.fit(pre_collected_dense, dataset.labels)
         return pipeline
 
     probe_only_dense_result = measure_with_warmup(
@@ -219,7 +219,8 @@ def benchmark_probe_training(
             ])
             for i in range(10)
         }
-        pl.scripts.train_pipelines(pipelines, pre_collected_pooled, dataset.labels, verbose=False)
+        for name, pipeline in pipelines.items():
+            pipeline.fit(pre_collected_pooled, dataset.labels)
         return pipelines
 
     probe_10_only_result = measure_with_warmup(
@@ -234,6 +235,17 @@ def benchmark_probe_training(
     # Measure full pipeline (activation collection + training)
     def train_pipeline_full(probe_class, use_aggregation=True):
         def inner_train_pipeline_full():
+            # Collect activations
+            acts = pl.collect_activations(
+                model=model,
+                tokenizer=tokenizer,
+                data=dataset,
+                layers=layers,
+                mask=pl.masks.assistant(),
+                batch_size=batch_size,
+                verbose=False,
+            )
+
             if use_aggregation:
                 pipeline = Pipeline(
                     [
@@ -250,17 +262,8 @@ def benchmark_probe_training(
                         ("probe", probe_class()),
                     ]
                 )
-            return pl.scripts.train_from_model(
-                pipelines=pipeline,
-                model=model,
-                tokenizer=tokenizer,
-                dataset=dataset,
-                layers=layers,
-                mask=pl.masks.assistant(),
-                batch_size=batch_size,
-                streaming=True,  # Batch mode for direct comparison
-                verbose=False,
-            )
+            pipeline.fit(acts, dataset.labels)
+            return pipeline
 
         return inner_train_pipeline_full
 
@@ -310,6 +313,17 @@ def benchmark_probe_training(
     results["attention_full_pipeline"] = attention_full_pipeline_result
 
     def train_10_pipelines_full():
+        # Collect activations once
+        acts = pl.collect_activations(
+            model=model,
+            tokenizer=tokenizer,
+            data=dataset,
+            layers=layers,
+            mask=pl.masks.assistant(),
+            batch_size=batch_size,
+            verbose=False,
+        )
+
         pipelines = {
             f"logistic_{i}": Pipeline(
                 [
@@ -320,17 +334,9 @@ def benchmark_probe_training(
             )
             for i in range(10)
         }
-        return pl.scripts.train_from_model(
-            pipelines=pipelines,
-            model=model,
-            tokenizer=tokenizer,
-            dataset=dataset,
-            layers=layers,
-            mask=pl.masks.assistant(),
-            batch_size=batch_size,
-            streaming=False,  # Batch mode for direct comparison
-            verbose=False,
-        )
+        for name, pipeline in pipelines.items():
+            pipeline.fit(acts, dataset.labels)
+        return pipelines
 
     logistic_10_probes_full_pipeline_result = measure_with_warmup(
         train_10_pipelines_full,
@@ -345,6 +351,18 @@ def benchmark_probe_training(
     # Streaming mode benchmarks (using partial_fit - single pass)
     def train_pipeline_streaming(probe_class, use_aggregation=True):
         def inner_train_pipeline_streaming():
+            # Collect activations in streaming mode
+            acts_iter = pl.collect_activations(
+                model=model,
+                tokenizer=tokenizer,
+                data=dataset,
+                layers=layers,
+                mask=pl.masks.assistant(),
+                batch_size=batch_size,
+                streaming=True,
+                verbose=False,
+            )
+
             if use_aggregation:
                 pipeline = Pipeline(
                     [
@@ -361,17 +379,8 @@ def benchmark_probe_training(
                         ("probe", probe_class()),
                     ]
                 )
-            return pl.scripts.train_from_model(
-                pipelines=pipeline,
-                model=model,
-                tokenizer=tokenizer,
-                dataset=dataset,
-                layers=layers,
-                mask=pl.masks.assistant(),
-                batch_size=batch_size,
-                streaming=True,  # Streaming mode - single pass with partial_fit
-                verbose=False,
-            )
+            pipeline.fit_streaming(acts_iter, dataset.labels)
+            return pipeline
 
         return inner_train_pipeline_streaming
 
