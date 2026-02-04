@@ -32,7 +32,6 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
-from probelab.transforms import pre
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name := "meta-llama/Llama-3.1-8B-Instruct",
@@ -43,43 +42,46 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 train_ds, test_ds = pl.datasets.load("repe").split(0.8)
 
-train_acts, test_acts = (
-    pl.collect_activations(
-        model=model,
-        tokenizer=tokenizer,
-        data=data,
-        layers=[16],  # collect activations from layer 16
-        mask=pl.masks.assistant(),  # collect only assistant messages
-        batch_size=32,
-    )
-    for data in (train_ds, test_ds)
+# Collect activations
+train_acts = pl.collect_activations(
+    model=model,
+    tokenizer=tokenizer,
+    data=train_ds,
+    layers=[16],
+    mask=pl.masks.assistant(),
+    batch_size=32,
 )
 
-# Create a pipeline with preprocessing steps + probe
-pipeline = pl.Pipeline([
-    ("select", pre.SelectLayer(16)),
-    ("pool", pre.Pool(dim="sequence", method="mean")),
-    ("probe", pl.probes.Logistic(device="cuda")),
-])
+# Prepare activations and train probe
+prepared = train_acts.select(layer=16).pool("sequence", "mean")
+probe = pl.probes.Logistic(device="cuda").fit(prepared, train_ds.labels)
 
-pipeline.fit(train_acts, train_ds.labels)
-probs = pipeline.predict(test_acts)  # Returns [batch, 2] probabilities
+# Evaluate
+test_acts = pl.collect_activations(
+    model=model,
+    tokenizer=tokenizer,
+    data=test_ds,
+    layers=[16],
+    mask=pl.masks.assistant(),
+    batch_size=32,
+)
+test_prepared = test_acts.select(layer=16).pool("sequence", "mean")
+scores = probe.predict(test_prepared)
 
-y_pred = probs[:, 1].cpu().numpy()
+y_pred = scores.scores[:, 1].cpu().numpy()
 y_true = [label.value for label in test_ds.labels]
 print(f"AUROC: {pl.metrics.auroc(y_true, y_pred):.3f}")
 ```
 
 ## What does `probelab` allow?
 
-### Multi-Pipeline Training and Evaluation
+### Multi-Probe Training and Evaluation
 
 ```python
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
-from probelab.transforms import pre
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name := "meta-llama/Llama-3.1-8B-Instruct",
@@ -96,21 +98,7 @@ train_dataset, test_dataset = (
 # Compose a role-based mask and drop special tokens
 mask = pl.masks.assistant() & ~pl.masks.special_tokens()
 
-# Create pipelines with preprocessing steps + probe
-pipelines = {
-    "logistic": pl.Pipeline([
-        ("select", pre.SelectLayer(16)),
-        ("pool", pre.Pool(dim="sequence", method="mean")),
-        ("probe", pl.probes.Logistic(device="cuda")),
-    ]),
-    "mlp": pl.Pipeline([
-        ("select", pre.SelectLayer(16)),
-        ("pool", pre.Pool(dim="sequence", method="mean")),
-        ("probe", pl.probes.MLP(device="cuda")),
-    ]),
-}
-
-# Step 1: Collect activations
+# Collect activations once
 train_acts = pl.collect_activations(
     model=model,
     tokenizer=tokenizer,
@@ -120,11 +108,16 @@ train_acts = pl.collect_activations(
     batch_size=32,
 )
 
-# Step 2: Train pipelines
-for name, pipeline in pipelines.items():
-    pipeline.fit(train_acts, train_dataset.labels)
+# Prepare activations
+train_prepared = train_acts.select(layer=16).pool("sequence", "mean")
 
-# Step 3: Evaluate
+# Train multiple probes
+probes = {
+    "logistic": pl.probes.Logistic(device="cuda").fit(train_prepared, train_dataset.labels),
+    "mlp": pl.probes.MLP(device="cuda").fit(train_prepared, train_dataset.labels),
+}
+
+# Evaluate
 test_acts = pl.collect_activations(
     model=model,
     tokenizer=tokenizer,
@@ -133,35 +126,71 @@ test_acts = pl.collect_activations(
     mask=mask,
     batch_size=32,
 )
+test_prepared = test_acts.select(layer=16).pool("sequence", "mean")
 
-for name, pipeline in pipelines.items():
-    probs = pipeline.predict(test_acts)
-    y_pred = probs[:, 1].cpu().numpy()
+for name, probe in probes.items():
+    scores = probe.predict(test_prepared)
+    y_pred = scores.scores[:, 1].cpu().numpy()
     y_true = [label.value for label in test_dataset.labels]
     print(f"{name}: AUROC={pl.metrics.auroc(y_true, y_pred):.3f}")
 ```
 
-### Token-Level Training with Post-Probe Aggregation
+### Token-Level Training with Score Aggregation
 
-Train on individual tokens, then aggregate predictions at inference time using methods from the GDM paper:
+Train on individual tokens, then aggregate predictions at inference time:
 
 ```python
 import probelab as pl
-from probelab.transforms import pre, post
 
-# Token-level probe with EMA aggregation (GDM paper style)
-pipeline = pl.Pipeline([
-    ("select", pre.SelectLayer(16)),
-    ("probe", pl.probes.Logistic(device="cuda")),  # Token-level predictions
-    ("ema", post.EMAPool(alpha=0.5)),  # Aggregate with exponential moving average
-])
+# Collect activations (keep sequence dimension)
+acts = pl.collect_activations(
+    model=model,
+    tokenizer=tokenizer,
+    data=dataset,
+    layers=[16],
+    mask=pl.masks.assistant(),
+    batch_size=32,
+)
 
-# Or use rolling window aggregation
-pipeline = pl.Pipeline([
-    ("select", pre.SelectLayer(16)),
-    ("probe", pl.probes.Logistic(device="cuda")),
-    ("rolling", post.RollingPool(window_size=10)),
-])
+# Train on tokens (no sequence pooling)
+prepared = acts.select(layer=16)
+probe = pl.probes.Logistic(device="cuda").fit(prepared, labels)
+
+# Predict and aggregate scores
+scores = probe.predict(test_acts.select(layer=16))
+
+# Different aggregation methods
+mean_scores = scores.pool("sequence", "mean")  # Simple mean
+ema_scores = scores.ema(alpha=0.5)             # Exponential moving average
+rolling_scores = scores.rolling(window_size=10) # Rolling window mean
+```
+
+### Multi-Layer Analysis
+
+```python
+import probelab as pl
+
+# Collect from multiple layers
+acts = pl.collect_activations(
+    model=model,
+    tokenizer=tokenizer,
+    data=dataset,
+    layers=[8, 12, 16, 20, 24],
+    mask=pl.masks.assistant(),
+    batch_size=32,
+)
+
+# Train probe on each layer
+results = {}
+for layer in [8, 12, 16, 20, 24]:
+    prepared = acts.select(layer=layer).pool("sequence", "mean")
+    probe = pl.probes.Logistic().fit(prepared, labels)
+
+    test_prepared = test_acts.select(layer=layer).pool("sequence", "mean")
+    scores = probe.predict(test_prepared)
+    results[layer] = pl.metrics.auroc(test_labels, scores.scores[:, 1])
+
+print(results)  # {8: 0.72, 12: 0.81, 16: 0.89, 20: 0.85, 24: 0.78}
 ```
 
 ### Dataset Registry
