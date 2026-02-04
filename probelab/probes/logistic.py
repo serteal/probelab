@@ -8,7 +8,6 @@ import torch.nn.functional as F
 
 from ..processing.activations import Activations, Axis
 from ..processing.scores import Scores
-from ..profiling import ProbelabCounters, is_profiling, profile_section
 from .base import BaseProbe
 
 
@@ -156,10 +155,7 @@ class Logistic(BaseProbe):
         Raises:
             ValueError: If X has unexpected axes (e.g., LAYER axis)
         """
-        with profile_section("logistic_fit", batch_size=X.batch_size) as ctx:
-            self._fit_impl(X, y)
-            if is_profiling():
-                ProbelabCounters.probe_train_time_s += ctx.get("duration_s", 0)
+        self._fit_impl(X, y)
         return self
 
     def _fit_impl(self, X: Activations, y: list | torch.Tensor) -> None:
@@ -277,7 +273,7 @@ class Logistic(BaseProbe):
         self._network.eval()
         self._fitted = True
 
-    def predict_proba(self, X: Activations) -> Scores:
+    def predict(self, X: Activations) -> Scores:
         """Predict class probabilities.
 
         Returns Scores object matching input dimensionality:
@@ -288,19 +284,15 @@ class Logistic(BaseProbe):
             X: Activations to predict on
 
         Returns:
-            Scores object with predictions
+            Scores object with class probabilities [batch, 2] or [batch, seq, 2]
 
         Raises:
             ValueError: If probe not fitted or X has unexpected axes
         """
-        with profile_section("logistic_predict", batch_size=X.batch_size) as ctx:
-            result = self._predict_proba_impl(X)
-            if is_profiling():
-                ProbelabCounters.probe_predict_time_s += ctx.get("duration_s", 0)
-        return result
+        return self._predict_impl(X)
 
-    def _predict_proba_impl(self, X: Activations) -> Scores:
-        """Internal predict_proba implementation."""
+    def _predict_impl(self, X: Activations) -> Scores:
+        """Internal predict implementation."""
         if not self._fitted:
             raise RuntimeError("Probe must be fitted before prediction")
 

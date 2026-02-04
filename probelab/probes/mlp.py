@@ -267,7 +267,7 @@ class MLP(BaseProbe):
         self._fitted = True
         return self
 
-    def predict_proba(self, X: Activations) -> Scores:
+    def predict(self, X: Activations) -> Scores:
         """Predict class probabilities.
 
         Returns Scores object matching input dimensionality:
@@ -278,7 +278,7 @@ class MLP(BaseProbe):
             X: Activations to predict on
 
         Returns:
-            Scores object with predictions
+            Scores object with class probabilities [batch, 2] or [batch, seq, 2]
 
         Raises:
             ValueError: If probe not fitted or X has unexpected axes

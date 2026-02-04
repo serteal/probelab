@@ -1,11 +1,11 @@
 """Base class for all probes with unified interface."""
 
+import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 import torch
 
-from ..config import DEFAULT_DEVICE, VERBOSE
 from ..processing.activations import Activations
 from ..processing.scores import Scores
 
@@ -30,7 +30,7 @@ class BaseProbe(ABC):
     Example:
         >>> # Probes should be used within a Pipeline
         >>> from probelab import Pipeline
-        >>> from probelab.preprocessing import SelectLayer, Pool
+        >>> from probelab.transforms import SelectLayer, Pool
         >>> from probelab.probes import Logistic
         >>>
         >>> pipeline = Pipeline([
@@ -39,7 +39,7 @@ class BaseProbe(ABC):
         ...     ("probe", Logistic()),
         ... ])
         >>> pipeline.fit(activations, labels)
-        >>> predictions = pipeline.predict_proba(test_activations)
+        >>> predictions = pipeline.predict(test_activations)  # [batch, 2]
     """
 
     def __init__(
@@ -51,24 +51,27 @@ class BaseProbe(ABC):
         """Initialize base probe.
 
         Args:
-            device: Device for computation. If None, uses DEFAULT_DEVICE from config
-                   (default: "cuda" if available, else "cpu")
+            device: Device for computation. If None, auto-detects from PROBELAB_DEFAULT_DEVICE
+                   env var or uses "cuda" if available, else "cpu".
             random_state: Random seed for reproducibility
-            verbose: Whether to print progress information. If None, uses VERBOSE from config.
+            verbose: Whether to print progress information. If None, defaults to True
+                    unless PROBELAB_VERBOSE env var is set to "false".
         """
-        # Set device - use config default, then auto-detect
+        # Set device - use env var, then auto-detect
         if device is None:
-            config_device = DEFAULT_DEVICE.get()
+            default_device = os.environ.get("PROBELAB_DEFAULT_DEVICE", "cuda")
             # Validate device availability
-            if config_device.startswith("cuda") and not torch.cuda.is_available():
+            if default_device.startswith("cuda") and not torch.cuda.is_available():
                 self.device = "cpu"
             else:
-                self.device = config_device
+                self.device = default_device
         else:
             self.device = device
 
         self.random_state = random_state
-        self.verbose = verbose if verbose is not None else VERBOSE.get()
+        if verbose is None:
+            verbose = os.environ.get("PROBELAB_VERBOSE", "true").lower() != "false"
+        self.verbose = verbose
 
         # Track fitting state
         self._fitted = False
@@ -130,7 +133,7 @@ class BaseProbe(ABC):
         pass
 
     @abstractmethod
-    def predict_proba(
+    def predict(
         self,
         X: Activations,
     ) -> Scores:
@@ -147,7 +150,7 @@ class BaseProbe(ABC):
             X: Activations to predict on
 
         Returns:
-            Scores object with predictions
+            Scores object with class probabilities [batch, 2] or [batch, seq, 2]
 
         Raises:
             ValueError: If probe not fitted

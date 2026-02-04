@@ -7,7 +7,7 @@ import torch
 from .processing.activations import Axis
 
 if TYPE_CHECKING:
-    from .preprocessing.base import PreTransformer
+    from .transforms.base import ActivationTransform, ScoreTransform
     from .probes.base import BaseProbe
     from .processing.activations import Activations
     from .processing.scores import Scores
@@ -35,7 +35,7 @@ class Pipeline:
         ...     ("probe", Logistic()),
         ... ])
         >>> pipeline.fit(acts_train, labels_train)
-        >>> predictions = pipeline.predict_proba(acts_test)
+        >>> predictions = pipeline.predict(acts_test)  # Returns [batch, 2] probabilities
 
     Example with post-probe pooling (token-level training):
         >>> pipeline = Pipeline([
@@ -47,7 +47,7 @@ class Pipeline:
 
     def __init__(
         self,
-        steps: list[tuple[str, "PreTransformer | BaseProbe"]],
+        steps: list[tuple[str, "ActivationTransform | ScoreTransform | BaseProbe"]],
     ):
         """Initialize pipeline with steps.
 
@@ -66,7 +66,7 @@ class Pipeline:
 
     def _validate_and_split_steps(self):
         """Validate pipeline structure and split into pre/probe/post."""
-        from .preprocessing.base import PreTransformer
+        from .transforms.base import ActivationTransform, ScoreTransform
         from .probes.base import BaseProbe
 
         # Find the probe
@@ -85,19 +85,19 @@ class Pipeline:
 
         probe_idx = probe_indices[0]
 
-        # Validate pre-probe steps are PreTransformers
+        # Validate pre-probe steps are ActivationTransforms
         for i, (name, step) in enumerate(self.steps[:probe_idx]):
-            if not isinstance(step, PreTransformer):
+            if not isinstance(step, ActivationTransform):
                 raise ValueError(
-                    f"Step '{name}' (index {i}) must be a PreTransformer "
+                    f"Step '{name}' (index {i}) must be an ActivationTransform "
                     f"(before probe), got {type(step).__name__}"
                 )
 
-        # Post-probe steps should also be PreTransformers (Pool works on both)
+        # Post-probe steps should be ScoreTransforms
         for i, (name, step) in enumerate(self.steps[probe_idx + 1 :], start=probe_idx + 1):
-            if not isinstance(step, PreTransformer):
+            if not isinstance(step, ScoreTransform):
                 raise ValueError(
-                    f"Step '{name}' (index {i}) must be a transform "
+                    f"Step '{name}' (index {i}) must be a ScoreTransform "
                     f"(after probe), got {type(step).__name__}"
                 )
 
@@ -108,7 +108,7 @@ class Pipeline:
 
     def _has_layer_handling(self) -> bool:
         """Check if pipeline has explicit layer handling (SelectLayer, SelectLayers, or Pool on layer)."""
-        from .preprocessing.pre_transforms import Pool, SelectLayer, SelectLayers
+        from .transforms.pre import Pool, SelectLayer, SelectLayers
 
         for _, step in self._pre_steps:
             if isinstance(step, (SelectLayer, SelectLayers)):
@@ -187,7 +187,7 @@ class Pipeline:
 
         return self
 
-    def predict_proba(self, X: "Activations") -> torch.Tensor:
+    def predict(self, X: "Activations") -> torch.Tensor:
         """Predict class probabilities.
 
         Applies all pre-transforms, runs probe prediction, then applies
@@ -219,25 +219,13 @@ class Pipeline:
             X_transformed = transformer.transform(X_transformed)
 
         # Get predictions from probe (Activations → Scores)
-        scores: "Scores" = self._probe.predict_proba(X_transformed)
+        scores: "Scores" = self._probe.predict(X_transformed)
 
         # Apply post-transforms (Scores → Scores)
         for name, transformer in self._post_steps:
             scores = transformer.transform(scores)
 
         return scores.scores
-
-    def predict(self, X: "Activations") -> torch.Tensor:
-        """Predict class labels.
-
-        Args:
-            X: Activations to predict on
-
-        Returns:
-            Predicted class labels (0 or 1) [batch]
-        """
-        probs = self.predict_proba(X)
-        return (probs[:, 1] > 0.5).long()
 
     def score(self, X: "Activations", y: torch.Tensor | list) -> float:
         """Compute accuracy score.
@@ -249,7 +237,8 @@ class Pipeline:
         Returns:
             Accuracy as a float
         """
-        predictions = self.predict(X)
+        probs = self.predict(X)
+        predictions = probs.argmax(dim=1)
 
         # Convert labels to tensor if needed
         if isinstance(y, list):

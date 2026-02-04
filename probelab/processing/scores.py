@@ -165,8 +165,10 @@ class Scores:
         if dim != "sequence":
             raise ValueError(f"Only 'sequence' dimension pooling is supported, got {dim!r}")
 
+        # Note: Axis validation is caller's responsibility (use check_scores())
+        # Allow pooling when SEQ axis is missing - just return self
         if not self.has_axis(ScoreAxis.SEQ):
-            raise ValueError("Scores don't have SEQ axis to pool over")
+            return self  # Already pooled
 
         # Normalize method to enum
         if isinstance(method, str):

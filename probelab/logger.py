@@ -10,17 +10,11 @@ Usage:
 Opt-in file logging:
     from probelab.logger import setup_logger
     setup_logger(logfile="probelab.log")  # add file handler
-
-Configure via config:
-    import probelab as pl
-    with pl.Context(LOG_LEVEL="DEBUG"):
-        # Logger will use DEBUG level
 """
 
 import logging
+import os
 from pathlib import Path
-
-from .config import LOG_LEVEL
 
 _DEFAULT_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 _DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
@@ -59,12 +53,12 @@ def setup_logger(
 
     - By default (logfile=None) configures console-only logging and does NOT write files.
     - If `logfile` is provided, adds a file handler at `file_level`.
-    - If `level` is None, uses LOG_LEVEL from config (default: "INFO").
+    - If `level` is None, uses PROBELAB_LOG_LEVEL env var or "INFO" as default.
 
     Returns the configured "probelab" logger.
     """
     if level is None:
-        level = LOG_LEVEL.get()
+        level = os.environ.get("PROBELAB_LOG_LEVEL", "INFO")
 
     logger = logging.getLogger("probelab")
     logger.setLevel(level)

@@ -357,7 +357,7 @@ class Attention(BaseProbe):
         self._fitted = True
         return self
 
-    def predict_proba(self, X: Activations) -> Scores:
+    def predict(self, X: Activations) -> Scores:
         """
         Predict class probabilities using attention mechanism.
 
@@ -368,7 +368,7 @@ class Attention(BaseProbe):
             X: Activations to predict on (must have SEQ axis)
 
         Returns:
-            Scores object with predictions [batch, 2]
+            Scores object with class probabilities [batch, 2]
 
         Raises:
             ValueError: If probe not fitted or X doesn't have SEQ axis
