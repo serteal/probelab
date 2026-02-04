@@ -63,7 +63,7 @@ test_acts = pl.collect_activations(
 
 print("\nResults:")
 for name, pipeline in pipelines.items():
-    probs = pipeline.predict_proba(test_acts)
+    probs = pipeline.predict(test_acts)
     y_pred = probs[:, 1].cpu().numpy()
     y_true = [label.value for label in test_dataset.labels]
 

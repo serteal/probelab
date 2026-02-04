@@ -29,10 +29,13 @@ from probelab import Message, Dialogue, Label
 # Activation handling
 from probelab import HookedModel, Activations, collect_activations
 
-# Pipeline and preprocessing
+# Pipeline and transforms
 from probelab import Pipeline
-from probelab import preprocessing
-from probelab.preprocessing import SelectLayer, SelectLayers, Pool, Normalize
+from probelab.transforms import pre, post  # Type-safe transform modules
+# Pre-probe transforms (Activations → Activations)
+# pre.SelectLayer, pre.SelectLayers, pre.Pool, pre.Normalize
+# Post-probe transforms (Scores → Scores)
+# post.Pool, post.EMAPool, post.RollingPool
 
 # Probes (used within pipelines)
 from probelab.probes import BaseProbe, Logistic, MLP, Attention
@@ -160,9 +163,12 @@ probelab/
 │   ├── activations.py  # Activation extraction and containers
 │   ├── scores.py       # Score containers for predictions
 │   └── tokenization.py # Dialogue tokenization
-├── preprocessing/       # Preprocessing transformers
-│   ├── base.py         # PreTransformer base class
-│   └── pre_transforms.py # SelectLayer, SelectLayers, Pool, Normalize
+├── transforms/          # Transform modules (type-safe)
+│   ├── base.py         # ActivationTransform, ScoreTransform base classes
+│   ├── pre.py          # Pre-probe: SelectLayer, SelectLayers, Pool, Normalize
+│   └── post.py         # Post-probe: Pool, EMAPool, RollingPool
+├── utils/               # Internal utilities
+│   └── validation.py   # check_activations(), check_scores() (internal)
 ├── probes/              # Probe implementations
 │   ├── base.py         # BaseProbe abstract class
 │   ├── logistic.py     # Logistic regression probes
@@ -178,7 +184,8 @@ probelab/
 │   └── composite.py    # Composite masks (AndMask, OrMask, NotMask)
 ├── metrics.py           # Function-based metrics API
 ├── visualization.py     # Plotting and visualization
-└── logger.py           # Logging configuration
+├── logger.py           # Logging configuration
+└── types.py            # Core type definitions
 ```
 
 ### Core Components
@@ -242,18 +249,24 @@ probelab/
 
 6. **Pipeline (`pipeline.py`)**: Composition framework
 
-   - **Pipeline**: Compose preprocessing steps with probes
-   - Methods: `fit()`, `predict()`, `predict_proba()`, `partial_fit()`
-   - Enables clear separation of concerns
-   - Example: `Pipeline([SelectLayer(16), Pool(dim="sequence", method="mean"), Logistic()])`
+   - **Pipeline**: Compose pre-transforms, probe, and post-transforms
+   - Methods: `fit()`, `predict()` (returns probabilities [batch, 2]), `score()`
+   - Pre-transforms must be `ActivationTransform` (before probe)
+   - Post-transforms must be `ScoreTransform` (after probe)
+   - Example: `Pipeline([("select", pre.SelectLayer(16)), ("pool", pre.Pool(dim="sequence")), ("probe", Logistic())])`
 
-7. **Preprocessing (`preprocessing/`)**: Transformation steps
+7. **Transforms (`transforms/`)**: Type-safe transformation steps
 
-   - **SelectLayer**: Select a single layer from multi-layer activations (removes LAYER axis)
-   - **SelectLayers**: Select multiple layers (keeps LAYER axis)
-   - **Pool**: Unified pooling over sequence or layer dimension (mean, max, last_token)
-   - **Normalize**: Feature normalization with online learning support
-   - All transformers follow sklearn-like API (fit, transform, fit_transform)
+   - **`transforms.pre`** - Pre-probe transforms (Activations → Activations):
+     - `SelectLayer`: Select single layer (removes LAYER axis)
+     - `SelectLayers`: Select multiple layers (keeps LAYER axis)
+     - `Pool`: Pool over sequence or layer dimension
+     - `Normalize`: Feature normalization
+   - **`transforms.post`** - Post-probe transforms (Scores → Scores):
+     - `Pool`: Aggregate token scores to sequence level
+     - `EMAPool`: Exponential moving average aggregation
+     - `RollingPool`: Rolling window aggregation
+   - All follow sklearn-like API (fit, transform, fit_transform)
 
 8. **Metrics (`metrics.py`)**: Function-based metrics API
 
@@ -337,6 +350,7 @@ probelab/
 
    ```python
    import probelab as pl
+   from probelab.transforms import pre
 
    # Load data
    dataset = pl.datasets.CircuitBreakersDataset()
@@ -353,8 +367,8 @@ probelab/
 
    # Step 2: Create pipeline and train
    pipeline = pl.Pipeline([
-       ("select", pl.preprocessing.SelectLayer(12)),
-       ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
+       ("select", pre.SelectLayer(12)),
+       ("pool", pre.Pool(dim="sequence", method="mean")),
        ("probe", pl.probes.Logistic(device="cuda")),
    ])
 
@@ -364,6 +378,8 @@ probelab/
 2. **Multi-Layer Analysis**
 
    ```python
+   from probelab.transforms import pre
+
    # Collect activations from multiple layers
    activations = pl.collect_activations(
        model=model,
@@ -377,8 +393,8 @@ probelab/
    # Train pipelines on different layers
    pipelines = {
        f"layer_{i}": pl.Pipeline([
-           ("select", pl.preprocessing.SelectLayer(i)),
-           ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
+           ("select", pre.SelectLayer(i)),
+           ("pool", pre.Pool(dim="sequence", method="mean")),
            ("probe", pl.probes.Logistic(device="cuda")),
        ])
        for i in [8, 12, 16, 20]
@@ -391,6 +407,8 @@ probelab/
 
 3. **Streaming for Large Datasets**
    ```python
+   from probelab.transforms import pre
+
    # Collect activations in streaming mode
    activation_stream = pl.collect_activations(
        model=model,
@@ -404,8 +422,8 @@ probelab/
 
    # Create pipeline
    pipeline = pl.Pipeline([
-       ("select", pl.preprocessing.SelectLayer(12)),
-       ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
+       ("select", pre.SelectLayer(12)),
+       ("pool", pre.Pool(dim="sequence", method="mean")),
        ("probe", pl.probes.Logistic(device="cuda")),
    ])
 
@@ -425,8 +443,8 @@ probelab/
        batch_size=32
    )
 
-   # Get predictions
-   probs = pipeline.predict_proba(test_acts)
+   # Get predictions (predict() returns probabilities [batch, 2])
+   probs = pipeline.predict(test_acts)
    y_pred = probs[:, 1].cpu().numpy()
    y_true = [label.value for label in test_labels]
 
@@ -437,6 +455,8 @@ probelab/
 
 5. **Using Masks for Fine-Grained Control**
    ```python
+   from probelab.transforms import pre
+
    # Only detect on last assistant message
    mask = pl.masks.AndMask(
        pl.masks.assistant(),
@@ -454,8 +474,8 @@ probelab/
 
    # Create and train pipeline
    pipeline = pl.Pipeline([
-       ("select", pl.preprocessing.SelectLayer(16)),
-       ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
+       ("select", pre.SelectLayer(16)),
+       ("pool", pre.Pool(dim="sequence", method="mean")),
        ("probe", pl.probes.Logistic(device="cuda")),
    ])
    pipeline.fit(acts, dataset.labels)
@@ -463,6 +483,8 @@ probelab/
 
 6. **Token-Level Prediction with Score Aggregation**
    ```python
+   from probelab.transforms import pre, post
+
    # Collect activations
    acts = pl.collect_activations(
        model=model,
@@ -475,9 +497,9 @@ probelab/
 
    # Pipeline that trains on tokens, then aggregates scores
    pipeline = pl.Pipeline([
-       ("select", pl.preprocessing.SelectLayer(16)),
+       ("select", pre.SelectLayer(16)),
        ("probe", pl.probes.Logistic(device="cuda")),  # Trains on individual tokens
-       ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),  # Aggregates predictions
+       ("pool", post.Pool(method="mean")),  # Aggregates predictions (Scores → Scores)
    ])
    pipeline.fit(acts, dataset.labels)
    ```
@@ -534,17 +556,25 @@ probelab/
 **New Probe Types:**
 
 1. Create class inheriting from `BaseProbe` in `probes/`
-2. Implement required methods: `fit`, `predict`, `predict_proba`
+2. Implement required methods: `fit`, `predict` (returns Scores), `save`, `load`
 3. Probes no longer handle layer selection or aggregation (done in pipeline)
 4. Add comprehensive tests in `tests/probes/`
 5. Update documentation
 
-**New Preprocessing Transformers:**
+**New Pre-Probe Transforms (Activations → Activations):**
 
-1. Create class inheriting from `PreTransformer` in `preprocessing/pre_transforms.py`
-2. Implement required methods: `fit`, `transform`, `fit_transform`
-3. Handle activation shape transformations appropriately
-4. Add tests in `tests/preprocessing/`
+1. Create class inheriting from `ActivationTransform` in `transforms/pre.py`
+2. Implement required method: `transform(X: Activations) -> Activations`
+3. Use `check_activations()` from `probelab.utils.validation` for validation
+4. Add tests in `tests/transforms/test_pre.py`
+5. Document in this file
+
+**New Post-Probe Transforms (Scores → Scores):**
+
+1. Create class inheriting from `ScoreTransform` in `transforms/post.py`
+2. Implement required method: `transform(X: Scores) -> Scores`
+3. Use `check_scores()` from `probelab.utils.validation` for validation
+4. Add tests in `tests/transforms/test_post.py`
 5. Document in this file
 
 **New Model Support:**
@@ -632,6 +662,8 @@ probelab/
 
 ### Environment Variables
 
+All configuration is done via environment variables (no config module):
+
 ```bash
 # Logging level
 PROBELAB_LOG_LEVEL=INFO  # DEBUG, INFO, WARNING, ERROR
@@ -639,8 +671,11 @@ PROBELAB_LOG_LEVEL=INFO  # DEBUG, INFO, WARNING, ERROR
 # Cache directory
 PROBELAB_CACHE_DIR=/path/to/cache
 
-# Default device
-PROBELAB_DEVICE=cuda:0  # or cpu
+# Default device for probes
+PROBELAB_DEFAULT_DEVICE=cuda:0  # or cpu
+
+# Verbose output (progress bars, etc.)
+PROBELAB_VERBOSE=true  # or false
 
 # Disable progress bars
 PROBELAB_DISABLE_PROGRESS=1
@@ -658,23 +693,42 @@ Located in `pyproject.toml`:
 ### Recent Updates & Future Enhancements
 
 **Recently Added (Latest):**
-- **Fully explicit API** (Breaking changes):
-  - Removed `scripts/` module entirely - no more wrapper functions
-  - Users call `pipeline.fit()` and `pipeline.predict_proba()` directly
-  - Metrics computed manually with `pl.metrics.auroc()` etc.
-  - No hidden behavior or implicit pipeline modification
-- **API refinements for research clarity:**
-  - `tokenize_dialogues()` and `tokenize_dataset()` now require `mask` parameter (no hidden defaults)
-  - `Activations.select()` now uses explicit `layer=` (single, removes axis) and `layers=` (multiple, keeps axis) parameters
-  - Removed ambiguous `layers=int` overloading that automatically detected cardinality
+- **Type-safe transform modules** (Breaking changes):
+  - Transforms split into `transforms.pre` (Activations → Activations) and `transforms.post` (Scores → Scores)
+  - New base classes: `ActivationTransform` and `ScoreTransform` (replaces `PreTransformer`)
+  - Import pattern: `from probelab.transforms import pre, post`
+  - Pre-probe: `pre.SelectLayer`, `pre.SelectLayers`, `pre.Pool`, `pre.Normalize`
+  - Post-probe: `post.Pool`, `post.EMAPool`, `post.RollingPool`
+  - Pipeline validates pre-transforms are `ActivationTransform` and post-transforms are `ScoreTransform`
+- **Simplified probe API** (Breaking changes):
+  - `predict_proba()` removed from probes and Pipeline
+  - `predict()` now returns probabilities `[batch, 2]` (not class labels)
+  - Use `probs.argmax(dim=1)` for class labels
+- **Centralized validation** (Internal):
+  - `check_activations()` and `check_scores()` in `probelab.utils.validation`
+  - Validation moved from data classes to transforms (caller validates)
+  - Activations/Scores methods no longer raise on missing axes
+- **Removed config and profiling modules** (Breaking changes):
+  - Removed `config.py` - Context manager, get_config(), set_defaults() all removed
+  - Removed `profiling.py` - ProbelabCounters, profile_section() all removed
+  - Configuration now done via environment variables only (PROBELAB_*)
+  - Simpler, more explicit API with no hidden global state
 - **Pipeline-based API**:
   - `Pipeline`: Explicit composition of preprocessing steps and probes
-  - Preprocessing transformers: `SelectLayer`, `SelectLayers`, `Pool`, `Normalize`
   - Probes no longer have `layer`, `sequence_pooling`, or `score_aggregation` parameters
   - All preprocessing is now explicit in pipeline definition
   - Clear separation of concerns: layer selection, aggregation, classification
 
 **Removed (Breaking Changes):**
+- **config module** (entire module removed):
+  - `Context` context manager → Use environment variables (PROBELAB_*)
+  - `get_config()` → Check environment variables directly
+  - `set_defaults()` → Set environment variables
+  - `ConfigVar` → Removed (no replacement needed)
+- **profiling module** (entire module removed):
+  - `ProbelabCounters` → Use external profiling tools (PyTorch profiler, etc.)
+  - `profile_section()` → Use Python's built-in profiling or external tools
+  - `is_profiling()` → Removed (no replacement needed)
 - **scripts module**:
   - `train_pipelines()` → Use `pipeline.fit(activations, labels)`
   - `evaluate_pipelines()` → Use `pipeline.predict_proba(activations)` + manual metrics
@@ -694,11 +748,20 @@ Located in `pyproject.toml`:
 
 **API Migration Guide:**
 ```python
-# OLD API (removed)
-pl.scripts.train_pipelines(pipeline, activations, labels)
-pl.scripts.evaluate_pipelines(pipeline, activations, labels)
+# OLD imports (removed)
+from probelab.preprocessing import SelectLayer, Pool
 
-# NEW API (current) - direct pipeline methods
+# NEW imports (current)
+from probelab.transforms import pre, post
+
+# OLD API (removed)
+pipeline.predict_proba(test_acts)  # Removed method
+
+# NEW API (current)
+probs = pipeline.predict(test_acts)  # Returns [batch, 2] probabilities
+labels = probs.argmax(dim=1)  # Get class labels
+
+# Full example - direct pipeline methods
 # Step 1: Collect activations
 acts = pl.collect_activations(
     model=model,
@@ -709,20 +772,27 @@ acts = pl.collect_activations(
     batch_size=32
 )
 
-# Step 2: Create pipeline and train
+# Step 2: Create pipeline and train (use pre.* for pre-probe transforms)
 pipeline = pl.Pipeline([
-    ("select", pl.preprocessing.SelectLayer(16)),
-    ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
+    ("select", pre.SelectLayer(16)),
+    ("pool", pre.Pool(dim="sequence", method="mean")),
     ("probe", pl.probes.Logistic(device="cuda")),
 ])
 pipeline.fit(acts, dataset.labels)
 
-# Step 3: Evaluate
+# Step 3: Evaluate (predict() returns probabilities)
 test_acts = pl.collect_activations(...)
-probs = pipeline.predict_proba(test_acts)
+probs = pipeline.predict(test_acts)  # Returns [batch, 2]
 y_pred = probs[:, 1].cpu().numpy()
 y_true = [label.value for label in test_labels]
 print(f"AUROC: {pl.metrics.auroc(y_true, y_pred):.3f}")
+
+# Token-level training with post-probe aggregation (use post.* after probe)
+pipeline = pl.Pipeline([
+    ("select", pre.SelectLayer(16)),
+    ("probe", pl.probes.Logistic(device="cuda")),  # Token-level predictions
+    ("pool", post.Pool(method="mean")),  # Aggregate scores (Scores → Scores)
+])
 ```
 
 **Previous Updates:**

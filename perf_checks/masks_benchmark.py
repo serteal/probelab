@@ -17,7 +17,7 @@ from probelab.masks import (
     regex,
     user,
 )
-from probelab.preprocessing import Pool, SelectLayer
+from probelab.transforms import Pool, SelectLayer
 
 torch.set_float32_matmul_precision("high")
 pl.logger.setLevel(logging.WARNING)

@@ -10,7 +10,7 @@ from utils import TimingResult, measure_with_warmup, timer
 import probelab as pl
 from probelab import Pipeline
 from probelab.models import HookedModel
-from probelab.preprocessing import Pool, SelectLayer
+from probelab.transforms import Pool, SelectLayer
 from probelab.processing import tokenize_dataset
 
 torch.set_float32_matmul_precision("high")

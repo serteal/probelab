@@ -7,6 +7,7 @@ A library for training probes on LLM activations.
 - Efficient extraction of activations from any layer of transformer models
 - Train various probe architectures (logistic regression, MLPs, attention-based)
 - Work with dialogue/message-based data using fine-grained detection masks
+- 60+ built-in datasets across 12 categories with a registry API
 
 ## Installation
 
@@ -31,6 +32,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
+from probelab.transforms import pre
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name := "meta-llama/Llama-3.1-8B-Instruct",
@@ -39,9 +41,9 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-train_ds, test_ds = pl.datasets.REPEDataset().split(0.8)
+train_ds, test_ds = pl.datasets.load("repe").split(0.8)
 
-train_activations, test_activations = (
+train_acts, test_acts = (
     pl.collect_activations(
         model=model,
         tokenizer=tokenizer,
@@ -55,15 +57,17 @@ train_activations, test_activations = (
 
 # Create a pipeline with preprocessing steps + probe
 pipeline = pl.Pipeline([
-    ("select", pl.preprocessing.SelectLayer(16)),
-    ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
+    ("select", pre.SelectLayer(16)),
+    ("pool", pre.Pool(dim="sequence", method="mean")),
     ("probe", pl.probes.Logistic(device="cuda")),
 ])
 
-pipeline.fit(train_activations, train_ds.labels)
-predictions = pipeline.predict_proba(test_activations)
+pipeline.fit(train_acts, train_ds.labels)
+probs = pipeline.predict(test_acts)  # Returns [batch, 2] probabilities
 
-print(pl.metrics.auroc(test_ds.labels, predictions))
+y_pred = probs[:, 1].cpu().numpy()
+y_true = [label.value for label in test_ds.labels]
+print(f"AUROC: {pl.metrics.auroc(y_true, y_pred):.3f}")
 ```
 
 ## What does `probelab` allow?
@@ -75,6 +79,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
+from probelab.transforms import pre
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name := "meta-llama/Llama-3.1-8B-Instruct",
@@ -94,13 +99,13 @@ mask = pl.masks.assistant() & ~pl.masks.special_tokens()
 # Create pipelines with preprocessing steps + probe
 pipelines = {
     "logistic": pl.Pipeline([
-        ("select", pl.preprocessing.SelectLayer(16)),
-        ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
+        ("select", pre.SelectLayer(16)),
+        ("pool", pre.Pool(dim="sequence", method="mean")),
         ("probe", pl.probes.Logistic(device="cuda")),
     ]),
     "mlp": pl.Pipeline([
-        ("select", pl.preprocessing.SelectLayer(16)),
-        ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
+        ("select", pre.SelectLayer(16)),
+        ("pool", pre.Pool(dim="sequence", method="mean")),
         ("probe", pl.probes.MLP(device="cuda")),
     ]),
 }
@@ -130,70 +135,110 @@ test_acts = pl.collect_activations(
 )
 
 for name, pipeline in pipelines.items():
-    probs = pipeline.predict_proba(test_acts)
+    probs = pipeline.predict(test_acts)
     y_pred = probs[:, 1].cpu().numpy()
     y_true = [label.value for label in test_dataset.labels]
     print(f"{name}: AUROC={pl.metrics.auroc(y_true, y_pred):.3f}")
 ```
 
-### Advanced Usage: Streaming and Custom Masks
+### Token-Level Training with Post-Probe Aggregation
+
+Train on individual tokens, then aggregate predictions at inference time using methods from the GDM paper:
 
 ```python
 import probelab as pl
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from probelab.transforms import pre, post
 
-model = AutoModelForCausalLM.from_pretrained(
-    model_name := "meta-llama/Llama-3.1-8B-Instruct",
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-train_dataset, test_dataset = pl.datasets.DolusChatDataset()[:2048].split(0.8)
-
-# Mix role, position, and lexical masks
-mask = (pl.masks.assistant() & pl.masks.last_token()) | pl.masks.contains("lie")
-# Optional: sanity-check what the mask selects
-pl.visualize_mask(train_dataset.dialogues[0], mask, tokenizer, force_terminal=True)
-
-# Collect activations in streaming mode
-train_stream = pl.collect_activations(
-    model=model,
-    tokenizer=tokenizer,
-    data=train_dataset,
-    layers=[12],
-    mask=mask,
-    batch_size=16,
-    streaming=True, # stream activations so we can partial_fit on large corpora
-)
-
-# Create pipeline with preprocessing + probe
+# Token-level probe with EMA aggregation (GDM paper style)
 pipeline = pl.Pipeline([
-    ("select", pl.preprocessing.SelectLayer(12)),
-    ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
-    ("probe", pl.probes.MLP(hidden_dim=256, device="cuda")),
+    ("select", pre.SelectLayer(16)),
+    ("probe", pl.probes.Logistic(device="cuda")),  # Token-level predictions
+    ("ema", post.EMAPool(alpha=0.5)),  # Aggregate with exponential moving average
 ])
 
-# Streaming training with pipeline.partial_fit()
-labels = torch.tensor([label.value for label in train_dataset.labels])
-for batch in train_stream:
-    pipeline.partial_fit(batch, labels[batch.batch_indices])
+# Or use rolling window aggregation
+pipeline = pl.Pipeline([
+    ("select", pre.SelectLayer(16)),
+    ("probe", pl.probes.Logistic(device="cuda")),
+    ("rolling", post.RollingPool(window_size=10)),
+])
+```
 
-# Collect test activations in-memory and run bespoke metrics
-test_acts = pl.collect_activations(
-    model=model,
-    tokenizer=tokenizer,
-    data=test_dataset,
-    layers=[12],
-    mask=mask,
-    batch_size=32,
+### Dataset Registry
+
+Discover and load datasets easily:
+
+```python
+import probelab as pl
+
+# List all available datasets
+pl.datasets.list_datasets()
+# ['ai_audit', 'ai_liar', 'alpaca', 'benign_instructions', ...]
+
+# List datasets by category
+pl.datasets.list_datasets(category="deception")
+# ['ai_audit', 'ai_liar', 'dolus_chat', 'insider_trading', ...]
+
+# List all categories
+pl.datasets.list_categories()
+# ['agents', 'creative', 'cybersecurity', 'deception', 'harmfulness', ...]
+
+# Get dataset info
+pl.datasets.info("circuit_breakers")
+# {'name': 'circuit_breakers', 'category': 'harmfulness', 'description': ...}
+
+# Load by name
+dataset = pl.datasets.load("dolus_chat")
+
+# Or use class directly
+dataset = pl.datasets.DolusChatDataset()
+```
+
+### Composable Masks
+
+Fine-grained control over which tokens to detect:
+
+```python
+import probelab as pl
+
+# Only detect on assistant messages
+mask = pl.masks.assistant()
+
+# Detect on last assistant message only
+mask = pl.masks.assistant() & pl.masks.nth_message(-1)
+
+# Exclude special tokens
+mask = pl.masks.assistant() & ~pl.masks.special_tokens()
+
+# Detect on tokens containing specific text
+mask = pl.masks.contains("yes") | pl.masks.contains("no")
+
+# Complex combinations
+mask = (
+    pl.masks.assistant()
+    & pl.masks.nth_message(-1)
+    & ~pl.masks.special_tokens()
 )
+```
 
-scores = pipeline.predict_proba(test_acts)[:, 1].cpu().numpy()
-y_true = torch.tensor([label.value for label in test_dataset.labels])
-auroc, lo, hi = pl.metrics.auroc(y_true, scores)
-print(f"AUROC: {auroc:.3f} (95% CI {lo:.3f}-{hi:.3f})")
+### Metrics with Bootstrap Confidence Intervals
+
+```python
+import probelab as pl
+from probelab.metrics import with_bootstrap
+
+# Standard metrics
+auroc = pl.metrics.auroc(y_true, y_pred)
+recall = pl.metrics.recall_at_fpr(y_true, y_pred, fpr=0.05)
+
+# Get metric by name (useful for configs)
+metric_fn = pl.metrics.get_metric_by_name("recall@5")  # 5% FPR
+score = metric_fn(y_true, y_pred)
+
+# Add bootstrap confidence intervals to any metric
+auroc_with_ci = with_bootstrap(n_bootstrap=1000)(pl.metrics.auroc)
+score, ci_lower, ci_upper = auroc_with_ci(y_true, y_pred)
+print(f"AUROC: {score:.3f} (95% CI: {ci_lower:.3f}-{ci_upper:.3f})")
 ```
 
 ## Development
