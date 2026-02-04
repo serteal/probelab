@@ -17,54 +17,43 @@ test_dataset = pl.datasets.WildGuardMixDataset(split="test")
 
 print(f"Train dataset: {len(train_dataset)}; Test dataset: {len(test_dataset)}")
 
-pipelines = {
-    "logistic": pl.Pipeline(
-        [
-            ("select", pl.preprocessing.SelectLayer(40)),
-            ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
-            ("probe", pl.probes.Logistic(C=0.01)),
-        ]
-    ),
-    "mlp": pl.Pipeline(
-        [
-            ("select", pl.preprocessing.SelectLayer(40)),
-            ("pool", pl.preprocessing.Pool(dim="sequence", method="mean")),
-            ("probe", pl.probes.MLP()),
-        ]
-    ),
-}
-
 # Collect activations
 mask = pl.masks.user()
+layer = 40
 
 train_acts = pl.collect_activations(
     model=model,
     tokenizer=tokenizer,
     data=train_dataset,
-    layers=[40],
+    layers=[layer],
     batch_size=8,
     mask=mask,
 )
 
-# Train pipelines
-for name, pipeline in pipelines.items():
-    print(f"Training {name}...")
-    pipeline.fit(train_acts, train_dataset.labels)
+# Prepare activations
+train_prepared = train_acts.select(layer=layer).pool("sequence", "mean")
+
+# Train probes directly (no Pipeline)
+probes = {
+    "logistic": pl.probes.Logistic(C=0.01).fit(train_prepared, train_dataset.labels),
+    "mlp": pl.probes.MLP().fit(train_prepared, train_dataset.labels),
+}
 
 # Evaluate
 test_acts = pl.collect_activations(
     model=model,
     tokenizer=tokenizer,
     data=test_dataset,
-    layers=[40],
+    layers=[layer],
     mask=mask,
     batch_size=8,
 )
+test_prepared = test_acts.select(layer=layer).pool("sequence", "mean")
 
 print("\nResults:")
-for name, pipeline in pipelines.items():
-    probs = pipeline.predict(test_acts)
-    y_pred = probs[:, 1].cpu().numpy()
+for name, probe in probes.items():
+    scores = probe.predict(test_prepared)
+    y_pred = scores.scores[:, 1].cpu().numpy()
     y_true = [label.value for label in test_dataset.labels]
 
     f1 = pl.metrics.f1(y_true, y_pred)

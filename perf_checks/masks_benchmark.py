@@ -7,9 +7,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from utils import TimingResult, measure_with_warmup, timer
 
 import probelab as pl
-from probelab import Pipeline
-from probelab.masks import after, assistant, between, contains, nth_message, regex, user
-from probelab.transforms import pre
 
 torch.set_float32_matmul_precision("high")
 pl.logger.setLevel(logging.WARNING)
@@ -30,14 +27,16 @@ def benchmark_probe_training_with_masks(
     if max_samples:
         dataset = dataset[:max_samples]
 
+    layer = layers[0]
+
     # Test different mask configurations
     mask_configs = [
         ("default", None, "Default mask (assistant messages)"),
-        ("assistant_only", assistant(), "Explicit assistant mask"),
-        ("user_only", user(), "User messages only"),
-        # New position-based masks
-        ("between_tags", between("<", ">", inclusive=False), "Between angle brackets"),
-        ("after_question", after("?", inclusive=False), "After question mark"),
+        ("assistant_only", pl.masks.assistant(), "Explicit assistant mask"),
+        ("user_only", pl.masks.user(), "User messages only"),
+        # Position-based masks
+        ("between_tags", pl.masks.between("<", ">", inclusive=False), "Between angle brackets"),
+        ("after_question", pl.masks.after("?", inclusive=False), "After question mark"),
     ]
 
     for mask_name, mask, description in mask_configs:
@@ -52,16 +51,13 @@ def benchmark_probe_training_with_masks(
                 layers=layers,
                 mask=mask,
                 batch_size=batch_size,
-                streaming=True,
+                streaming=False,
             )
 
-            pipeline = Pipeline([
-                ("select", pre.SelectLayer(layers[0])),
-                ("agg", pre.Pool(dim="sequence", method="mean")),
-                ("probe", pl.probes.Logistic()),
-            ])
-            pipeline.fit_streaming(acts, dataset.labels)
-            return pipeline
+            # Direct API: select layer, pool, train probe
+            prepared = acts.select(layer=layer).pool("sequence", "mean")
+            probe = pl.probes.Logistic().fit(prepared, dataset.labels)
+            return probe
 
         mask_result = measure_with_warmup(
             train_probe_with_mask,
@@ -71,13 +67,13 @@ def benchmark_probe_training_with_masks(
         )
         results[f"mask_{mask_name}"] = mask_result
 
-    # Also test multiple probes with complex mask using new masks
+    # Also test multiple probes with complex mask
     def train_multiple_probes_complex_mask():
-        # Complex mask combining new and old masks
+        # Complex mask combining multiple conditions
         complex_mask = (
-            (nth_message(-1) & contains("not"))
-            | (user() & regex(r"\?$"))
-            | (assistant() & after("The", inclusive=False))
+            (pl.masks.nth_message(-1) & pl.masks.contains("not"))
+            | (pl.masks.user() & pl.masks.regex(r"\?$"))
+            | (pl.masks.assistant() & pl.masks.after("The", inclusive=False))
         )
 
         # Collect activations
@@ -88,29 +84,19 @@ def benchmark_probe_training_with_masks(
             layers=layers,
             mask=complex_mask,
             batch_size=batch_size,
-            streaming=True,
+            streaming=False,
         )
 
-        pipelines = {
-            "logistic": Pipeline([
-                ("select", pre.SelectLayer(layers[0])),
-                ("agg", pre.Pool(dim="sequence", method="mean")),
-                ("probe", pl.probes.Logistic()),
-            ]),
-            "mlp": Pipeline([
-                ("select", pre.SelectLayer(layers[0])),
-                ("agg", pre.Pool(dim="sequence", method="mean")),
-                ("probe", pl.probes.MLP()),
-            ]),
-            "attention": Pipeline([
-                ("select", pre.SelectLayer(layers[0])),
-                ("probe", pl.probes.Attention()),
-            ]),
-        }
+        # Train multiple probe types
+        prepared_pooled = acts.select(layer=layer).pool("sequence", "mean")
+        prepared_tokens = acts.select(layer=layer)
 
-        for name, pipeline in pipelines.items():
-            pipeline.fit_streaming(acts, dataset.labels)
-        return pipelines
+        probes = {
+            "logistic": pl.probes.Logistic().fit(prepared_pooled, dataset.labels),
+            "mlp": pl.probes.MLP().fit(prepared_pooled, dataset.labels),
+            "attention": pl.probes.Attention().fit(prepared_tokens, dataset.labels),
+        }
+        return probes
 
     multi_probe_result = measure_with_warmup(
         train_multiple_probes_complex_mask,
