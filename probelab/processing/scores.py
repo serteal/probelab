@@ -202,50 +202,27 @@ class Scores:
     def _pool_variable_length(self, method: AggregationMethod) -> torch.Tensor:
         """Pool with variable-length sequences using tokens_per_sample.
 
-        Uses vectorized operations for efficiency instead of Python loops.
+        Uses the shared masked_pool utility for consistency.
         """
+        from ..utils.pooling import masked_pool
+
         with torch.no_grad():
-            batch_size = self.scores.shape[0]
             seq_len = self.scores.shape[1]
-            n_classes = self.scores.shape[-1]
 
             # Create mask from tokens_per_sample: [batch, seq]
             seq_indices = torch.arange(seq_len, device=self.scores.device)
             tokens_per_sample = self.tokens_per_sample.to(self.scores.device)
             mask = seq_indices.unsqueeze(0) < tokens_per_sample.unsqueeze(1)
 
-            if method == AggregationMethod.MEAN:
-                # Masked mean: sum valid tokens / count
-                mask_expanded = mask.unsqueeze(-1).to(self.scores.dtype)  # [batch, seq, 1]
-                masked_scores = self.scores * mask_expanded
-                counts = tokens_per_sample.clamp(min=1).unsqueeze(-1).to(self.scores.dtype)  # [batch, 1]
-                pooled = masked_scores.sum(dim=1) / counts  # [batch, n_classes]
-
-            elif method == AggregationMethod.MAX:
-                # Masked max: fill invalid with -inf, take max
-                mask_expanded = mask.unsqueeze(-1)  # [batch, seq, 1]
-                masked_scores = self.scores.masked_fill(~mask_expanded, float("-inf"))
-                pooled = masked_scores.max(dim=1).values  # [batch, n_classes]
-                # Handle empty sequences (all -inf -> 0)
-                empty_mask = tokens_per_sample == 0
-                if empty_mask.any():
-                    pooled[empty_mask] = 0.0
-
-            elif method == AggregationMethod.LAST_TOKEN:
-                # Gather last valid token for each sample
-                last_indices = (tokens_per_sample - 1).clamp(min=0).long()  # [batch]
-                # Expand for gather: [batch, 1, n_classes]
-                gather_idx = last_indices.view(batch_size, 1, 1).expand(batch_size, 1, n_classes)
-                pooled = self.scores.gather(dim=1, index=gather_idx).squeeze(1)  # [batch, n_classes]
-                # Handle empty sequences
-                empty_mask = tokens_per_sample == 0
-                if empty_mask.any():
-                    pooled[empty_mask] = 0.0
-
-            else:
-                raise ValueError(f"Unknown pooling method: {method}")
-
-            return pooled
+            # scores shape: [batch, seq, n_classes]
+            # batch_dim=0, seq_dim=1
+            return masked_pool(
+                tensor=self.scores,
+                mask=mask,
+                method=method,
+                seq_dim=1,
+                batch_dim=0,
+            )
 
     def _pool_fixed_length(self, method: AggregationMethod, seq_idx: int) -> torch.Tensor:
         """Pool fixed-length sequences over the given axis."""

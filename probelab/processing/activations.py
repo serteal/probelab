@@ -29,6 +29,7 @@ from ..datasets import DialogueDataset
 from ..models import HookedModel
 from ..models.architectures import ArchitectureRegistry
 from ..types import AggregationMethod, Dialogue, HookPoint
+from ..utils.pooling import masked_pool
 from .tokenization import tokenize_dialogues
 
 if TYPE_CHECKING:
@@ -746,6 +747,291 @@ class Activations:
         )
 
     # ------------------------------------------------------------------
+    # Save / Load (HDF5)
+    # ------------------------------------------------------------------
+    def save(
+        self,
+        path: str,
+        compression: str | None = "gzip",
+        compression_opts: int = 4,
+    ) -> None:
+        """Save activations to HDF5 file with compression.
+
+        The file is chunked by layer to enable efficient partial loading
+        of specific layers without reading the entire file.
+
+        Args:
+            path: Output path (should end with .h5 or .hdf5)
+            compression: Compression algorithm ("gzip", "lzf", or None)
+            compression_opts: Compression level for gzip (1-9, default 4)
+
+        Storage layout:
+            /activations     - Main tensor, chunked by layer
+            /axes            - Axis enum values as integers
+            /layer_indices   - Which model layers are stored (if LAYER axis present)
+            /attention_mask  - [batch, seq] (if SEQ axis present)
+            /detection_mask  - [batch, seq] (if SEQ axis present)
+            /input_ids       - [batch, seq] (if SEQ axis present)
+            /batch_indices   - [batch] (if present)
+
+        Example:
+            >>> acts = pl.collect_activations(...)
+            >>> acts.save("activations.h5")
+            >>> acts.save("activations.h5", compression="gzip", compression_opts=9)
+        """
+        try:
+            import h5py
+        except ImportError:
+            raise ImportError(
+                "h5py is required for saving activations. "
+                "Install with: pip install probelab[storage]"
+            )
+
+        # Move to CPU for saving
+        acts_cpu = self.activations.cpu().numpy()
+
+        # Determine chunking - chunk by layer if LAYER axis present
+        if self.has_axis(Axis.LAYER):
+            # Chunk shape: (1, batch, seq, hidden) or (1, batch, hidden)
+            chunk_shape = (1,) + acts_cpu.shape[1:]
+        else:
+            # No layer axis - use auto chunking
+            chunk_shape = None
+
+        with h5py.File(path, "w") as f:
+            # Store main activations with compression and chunking
+            f.create_dataset(
+                "activations",
+                data=acts_cpu,
+                compression=compression,
+                compression_opts=compression_opts if compression == "gzip" else None,
+                chunks=chunk_shape,
+            )
+
+            # Store axes as integer values
+            f.create_dataset("axes", data=[ax.value for ax in self.axes])
+
+            # Store layer metadata
+            if self.layer_meta is not None:
+                f.create_dataset("layer_indices", data=list(self.layer_meta.indices))
+
+            # Store sequence metadata
+            if self.sequence_meta is not None:
+                f.create_dataset(
+                    "attention_mask",
+                    data=self.sequence_meta.attention_mask.cpu().numpy(),
+                    compression=compression,
+                    compression_opts=compression_opts if compression == "gzip" else None,
+                )
+                f.create_dataset(
+                    "detection_mask",
+                    data=self.sequence_meta.detection_mask.cpu().numpy(),
+                    compression=compression,
+                    compression_opts=compression_opts if compression == "gzip" else None,
+                )
+                f.create_dataset(
+                    "input_ids",
+                    data=self.sequence_meta.input_ids.cpu().numpy(),
+                    compression=compression,
+                    compression_opts=compression_opts if compression == "gzip" else None,
+                )
+
+            # Store batch indices
+            if self.batch_indices is not None:
+                f.create_dataset("batch_indices", data=self.batch_indices.cpu().numpy())
+
+            # Store metadata attributes
+            f.attrs["probelab_version"] = "0.1.0"
+            f.attrs["dtype"] = str(self.activations.dtype)
+
+    @classmethod
+    def load(
+        cls,
+        path: str,
+        layers: list[int] | None = None,
+        batch_slice: slice | None = None,
+        device: str = "cpu",
+    ) -> "Activations":
+        """Load activations from HDF5 file with optional partial loading.
+
+        Supports loading specific layers without reading the entire file,
+        which is efficient for large activation files.
+
+        Args:
+            path: Path to HDF5 file
+            layers: Specific layer indices to load (None = all layers).
+                   Only loads requested layers from disk.
+            batch_slice: Slice of batch dimension to load (None = all).
+                        Example: slice(0, 100) for first 100 samples.
+            device: Device to load tensors onto ("cpu" or "cuda")
+
+        Returns:
+            Activations object with requested data
+
+        Example:
+            >>> # Load all activations
+            >>> acts = Activations.load("activations.h5")
+            >>>
+            >>> # Load only layers 12 and 16
+            >>> acts = Activations.load("activations.h5", layers=[12, 16])
+            >>>
+            >>> # Load first 100 samples from layer 16
+            >>> acts = Activations.load(
+            ...     "activations.h5",
+            ...     layers=[16],
+            ...     batch_slice=slice(0, 100)
+            ... )
+        """
+        try:
+            import h5py
+        except ImportError:
+            raise ImportError(
+                "h5py is required for loading activations. "
+                "Install with: pip install probelab[storage]"
+            )
+
+        with h5py.File(path, "r") as f:
+            # Load axes
+            axes_values = f["axes"][:]
+            axes = tuple(Axis(v) for v in axes_values)
+
+            # Check if LAYER axis exists
+            has_layer_axis = Axis.LAYER in axes
+
+            # Load layer indices if present
+            stored_layer_indices: list[int] | None = None
+            if "layer_indices" in f:
+                stored_layer_indices = list(f["layer_indices"][:])
+
+            # Determine which layer tensor indices to load
+            if layers is not None and has_layer_axis:
+                if stored_layer_indices is None:
+                    raise ValueError(
+                        "Cannot select layers: no layer_indices stored in file"
+                    )
+                # Map requested layer indices to tensor indices
+                tensor_indices = []
+                for layer in layers:
+                    if layer not in stored_layer_indices:
+                        raise ValueError(
+                            f"Layer {layer} not found in file. "
+                            f"Available: {stored_layer_indices}"
+                        )
+                    tensor_indices.append(stored_layer_indices.index(layer))
+                new_layer_indices = layers
+            else:
+                tensor_indices = None
+                new_layer_indices = stored_layer_indices
+
+            # Build slicing for activations
+            # Shape is typically [layer, batch, seq, hidden] or [batch, seq, hidden]
+            if has_layer_axis:
+                layer_dim = axes.index(Axis.LAYER)
+                batch_dim = axes.index(Axis.BATCH)
+            else:
+                layer_dim = None
+                batch_dim = axes.index(Axis.BATCH)
+
+            # Load activations with partial reads
+            acts_dataset = f["activations"]
+
+            import numpy as np
+
+            if tensor_indices is not None and batch_slice is not None:
+                # Both layer and batch selection
+                # Need to load layer by layer due to HDF5 limitations
+                layer_acts = []
+                for tidx in tensor_indices:
+                    if layer_dim == 0:
+                        layer_data = acts_dataset[tidx, batch_slice]
+                    else:
+                        # Handle other axis orders if needed
+                        layer_data = acts_dataset[tidx, batch_slice]
+                    layer_acts.append(layer_data)
+                # Stack numpy arrays first to avoid slow tensor creation
+                activations = torch.from_numpy(np.stack(layer_acts)).to(
+                    device=device, dtype=torch.float32
+                )
+            elif tensor_indices is not None:
+                # Only layer selection
+                layer_acts = []
+                for tidx in tensor_indices:
+                    layer_acts.append(acts_dataset[tidx])
+                # Stack numpy arrays first to avoid slow tensor creation
+                activations = torch.from_numpy(np.stack(layer_acts)).to(
+                    device=device, dtype=torch.float32
+                )
+            elif batch_slice is not None:
+                # Only batch selection
+                if has_layer_axis and layer_dim == 0:
+                    activations = torch.tensor(
+                        acts_dataset[:, batch_slice], device=device
+                    ).float()
+                else:
+                    activations = torch.tensor(
+                        acts_dataset[batch_slice], device=device
+                    ).float()
+            else:
+                # Load everything
+                activations = torch.tensor(acts_dataset[:], device=device).float()
+
+            # Adjust axes if layers were selected (keeping LAYER axis)
+            new_axes = axes
+
+            # Load layer meta
+            layer_meta = None
+            if new_layer_indices is not None and has_layer_axis:
+                layer_meta = LayerMeta(indices=tuple(new_layer_indices))
+
+            # Load sequence meta if present
+            sequence_meta = None
+            if "attention_mask" in f:
+                if batch_slice is not None:
+                    attention_mask = torch.tensor(
+                        f["attention_mask"][batch_slice], device=device
+                    )
+                    detection_mask = torch.tensor(
+                        f["detection_mask"][batch_slice], device=device
+                    )
+                    input_ids = torch.tensor(
+                        f["input_ids"][batch_slice], device=device
+                    )
+                else:
+                    attention_mask = torch.tensor(
+                        f["attention_mask"][:], device=device
+                    )
+                    detection_mask = torch.tensor(
+                        f["detection_mask"][:], device=device
+                    )
+                    input_ids = torch.tensor(f["input_ids"][:], device=device)
+
+                sequence_meta = SequenceMeta(
+                    attention_mask=attention_mask.float(),
+                    detection_mask=detection_mask.float(),
+                    input_ids=input_ids.long(),
+                )
+
+            # Load batch indices if present
+            batch_indices = None
+            if "batch_indices" in f:
+                if batch_slice is not None:
+                    batch_indices = torch.tensor(
+                        f["batch_indices"][batch_slice], device=device
+                    )
+                else:
+                    batch_indices = torch.tensor(
+                        f["batch_indices"][:], device=device
+                    )
+
+        return cls(
+            activations=activations,
+            axes=new_axes,
+            layer_meta=layer_meta,
+            sequence_meta=sequence_meta,
+            batch_indices=batch_indices,
+        )
+
+    # ------------------------------------------------------------------
     # Axis transforms
     # ------------------------------------------------------------------
 
@@ -996,82 +1282,20 @@ class Activations:
         Uses torch.no_grad() since this is a pure aggregation operation
         that doesn't need gradient tracking.
         """
-        if isinstance(method, str):
-            try:
-                method = AggregationMethod(method)
-            except ValueError:
-                raise ValueError(
-                    f"Unknown sequence reduction method: {method}. "
-                    f"Supported: {[m.value for m in AggregationMethod]}"
-                )
-
         with torch.no_grad():
             seq_meta = self._require_sequence_meta()
-            detection = seq_meta.detection_mask
-            mask_bool = detection.bool()
-            mask_float = mask_bool.to(dtype=self.activations.dtype)
+            detection_mask = seq_meta.detection_mask
 
             batch_dim = self._axis_positions[Axis.BATCH]
             seq_dim = self._axis_positions[Axis.SEQ]
-            rank = self.activations.ndim
 
-            other_dims = [idx for idx in range(rank) if idx not in (batch_dim, seq_dim)]
-            permute = [batch_dim, seq_dim] + other_dims
-            acts = self.activations.permute(permute)
-
-            mask_view = mask_float.view(
-                mask_float.shape[0],
-                mask_float.shape[1],
-                *([1] * (acts.ndim - 2)),
+            return masked_pool(
+                tensor=self.activations,
+                mask=detection_mask,
+                method=method,
+                seq_dim=seq_dim,
+                batch_dim=batch_dim,
             )
-
-            if method == AggregationMethod.MEAN:
-                masked = acts * mask_view
-                counts = mask_view.sum(dim=1).clamp_min(1.0)
-                reduced = masked.sum(dim=1) / counts
-            elif method == AggregationMethod.MAX:
-                mask_bool_view = mask_bool.view(
-                    mask_bool.shape[0],
-                    mask_bool.shape[1],
-                    *([1] * (acts.ndim - 2)),
-                )
-                masked = acts.masked_fill(~mask_bool_view, float("-inf"))
-                reduced = masked.max(dim=1).values
-
-                # Handle empty sequences (no valid tokens)
-                no_valid = ~mask_bool.any(dim=1)
-                if no_valid.any():
-                    # Use direct indexing instead of clone + masked_fill_
-                    reduced[no_valid] = 0.0
-            else:
-                valid_counts = mask_bool.sum(dim=1)
-                no_valid = valid_counts == 0
-                last_indices = torch.clamp(valid_counts - 1, min=0).to(dtype=torch.long)
-
-                gather_index = last_indices.view(
-                    mask_bool.shape[0],
-                    1,
-                    *([1] * (acts.ndim - 2)),
-                ).expand(mask_bool.shape[0], 1, *acts.shape[2:])
-
-                reduced = torch.take_along_dim(acts, gather_index, dim=1).squeeze(1)
-                # Handle empty sequences
-                if no_valid.any():
-                    # Use direct indexing instead of clone + masked_fill_
-                    reduced[no_valid] = 0.0
-
-            remaining_axes = tuple(
-                axis for axis in self.axes if axis not in (Axis.SEQ,)
-            )
-            permuted_axes = (Axis.BATCH,) + tuple(
-                axis for axis in self.axes if axis not in (Axis.BATCH, Axis.SEQ)
-            )
-
-            permute_back = [permuted_axes.index(axis) for axis in remaining_axes]
-            if permute_back != list(range(len(remaining_axes))):
-                reduced = reduced.permute(permute_back)
-
-            return reduced
 
 
 def streaming_activations(
@@ -1336,47 +1560,17 @@ def batch_activations_pooled(
             # Get batch activations [n_layers, batch_size, seq_len, hidden]
             batch_acts = hooked_model.get_activations(batch_inputs_gpu)
 
-            # Pool inline - no Activations object creation
-            detection_mask = batch_inputs_gpu["detection_mask"]  # [batch, seq]
+            # Pool using shared utility
             # batch_acts shape: [n_layers, batch_size, seq_len, hidden]
-
-            if pooling_method == AggregationMethod.MEAN:
-                # Expand mask for broadcasting: [1, batch, seq, 1]
-                mask = detection_mask.unsqueeze(0).unsqueeze(-1).to(batch_acts.dtype)
-                masked = batch_acts * mask
-                counts = mask.sum(dim=2, keepdim=True).clamp(min=1.0)
-                pooled = masked.sum(dim=2) / counts.squeeze(
-                    2
-                )  # [n_layers, batch, hidden]
-
-            elif pooling_method == AggregationMethod.MAX:
-                # Expand mask for broadcasting: [1, batch, seq, 1]
-                mask_bool = detection_mask.unsqueeze(0).unsqueeze(-1).bool()
-                masked = batch_acts.masked_fill(~mask_bool, float("-inf"))
-                pooled = masked.max(dim=2).values  # [n_layers, batch, hidden]
-                # Handle all-masked sequences
-                no_valid = ~detection_mask.any(dim=1)  # [batch]
-                if no_valid.any():
-                    pooled[:, no_valid] = 0.0
-
-            else:  # LAST_TOKEN
-                # Find last valid token index for each sequence
-                valid_counts = detection_mask.sum(dim=1)  # [batch]
-                last_indices = (valid_counts - 1).clamp(min=0).long()  # [batch]
-                # Gather last tokens: need [n_layers, batch, hidden]
-                batch_size_actual = batch_acts.shape[1]
-                n_layers_actual = batch_acts.shape[0]
-                # Expand indices for gather: [n_layers, batch, 1, hidden]
-                gather_idx = last_indices.view(1, batch_size_actual, 1, 1).expand(
-                    n_layers_actual, batch_size_actual, 1, batch_acts.shape[-1]
-                )
-                pooled = batch_acts.gather(dim=2, index=gather_idx).squeeze(
-                    2
-                )  # [n_layers, batch, hidden]
-                # Handle empty sequences
-                no_valid = valid_counts == 0
-                if no_valid.any():
-                    pooled[:, no_valid] = 0.0
+            # batch_dim=1, seq_dim=2
+            detection_mask = batch_inputs_gpu["detection_mask"]  # [batch, seq]
+            pooled = masked_pool(
+                tensor=batch_acts,
+                mask=detection_mask,
+                method=pooling_method,
+                seq_dim=2,
+                batch_dim=1,
+            )  # [n_layers, batch, hidden]
 
             # Store pooled results (blocking transfer to avoid race conditions)
             pooled_storage[:, batch_indices] = pooled.to("cpu")
