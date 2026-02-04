@@ -1,5 +1,6 @@
 """GPU-accelerated L2-regularized logistic regression probe."""
 
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
@@ -12,7 +13,7 @@ from .base import BaseProbe
 
 
 class _LogisticNetwork(nn.Module):
-    """Simple logistic regression network (internal implementation)."""
+    """Simple logistic regression network."""
 
     def __init__(self, d_model: int):
         super().__init__()
@@ -24,45 +25,22 @@ class _LogisticNetwork(nn.Module):
         return self.linear(x).squeeze(-1)
 
 
-class _GPUStandardScaler:
+@dataclass(slots=True)
+class _GPUScaler:
     """Standard scaler for GPU tensors."""
 
-    def __init__(self, device: str = "cuda"):
-        self.device = device
-        self.mean_ = None
-        self.std_ = None
-        self._fitted = False
-
-    def fit(self, X: torch.Tensor) -> "_GPUStandardScaler":
-        """Fit the scaler on data."""
-        if X.device != torch.device(self.device):
-            X = X.to(self.device)
-        self.mean_ = X.mean(dim=0)
-        self.std_ = X.std(dim=0).clamp(min=1e-8)
-        self._fitted = True
-        return self
-
-    def transform(self, X: torch.Tensor) -> torch.Tensor:
-        """Transform the data."""
-        if not self._fitted:
-            raise RuntimeError("Scaler must be fitted before transform")
-        if X.device != torch.device(self.device):
-            X = X.to(self.device)
-        mean = self.mean_.to(X.dtype)
-        std = self.std_.to(X.dtype)
-        return (X - mean) / std
+    device: str = "cuda"
+    mean_: torch.Tensor | None = field(default=None, repr=False)
+    std_: torch.Tensor | None = field(default=None, repr=False)
 
     def fit_transform(self, X: torch.Tensor) -> torch.Tensor:
-        """Fit and transform in one step (single pass optimization)."""
-        if X.device != torch.device(self.device):
-            X = X.to(self.device)
-        self.mean_ = X.mean(dim=0)
-        self.std_ = X.std(dim=0).clamp(min=1e-8)
-        self._fitted = True
-        # Transform in-place using computed stats (no second iteration)
-        mean = self.mean_.to(X.dtype)
-        std = self.std_.to(X.dtype)
-        return (X - mean) / std
+        X = X.to(self.device)
+        self.mean_, self.std_ = X.mean(0), X.std(0).clamp(min=1e-8)
+        return (X - self.mean_) / self.std_
+
+    def transform(self, X: torch.Tensor) -> torch.Tensor:
+        X = X.to(self.device)
+        return (X - self.mean_.to(X.dtype)) / self.std_.to(X.dtype)
 
 
 class Logistic(BaseProbe):
@@ -128,15 +106,9 @@ class Logistic(BaseProbe):
         # Model components (initialized during fit)
         self._network = None
         self._optimizer = None
-        self._scaler = _GPUStandardScaler(device=self.device)
+        self._scaler = _GPUScaler(device=self.device)
         self._d_model = None
         self._trained_on_tokens = False
-
-        # Set random seed
-        if random_state is not None:
-            torch.manual_seed(random_state)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed(random_state)
 
     def fit(self, X: Activations, y: list | torch.Tensor) -> "Logistic":
         """Fit the probe on activations.
@@ -404,7 +376,6 @@ class Logistic(BaseProbe):
         # Restore scaler
         probe._scaler.mean_ = state["scaler_mean"].to(probe.device)
         probe._scaler.std_ = state["scaler_std"].to(probe.device)
-        probe._scaler._fitted = True
 
         # Restore training state
         probe._trained_on_tokens = state.get("trained_on_tokens", False)
