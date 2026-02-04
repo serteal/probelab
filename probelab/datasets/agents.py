@@ -1,194 +1,112 @@
-"""
-Agent and function calling datasets.
-
-These datasets provide tool use, function calling, and agentic conversations,
-useful for training probes to detect agentic behavior in model outputs.
-"""
+"""Agent and function calling datasets."""
 
 import json
+from typing import Any
 
-from ..types import Dialogue, Message
-from .hf_dataset import DatasetSpec, HFDataset
-from .registry import register
+from datasets import load_dataset
 
-
-def _build_xlam_function_call(item: dict) -> Dialogue:
-    """Builder for xLAM function calling format with JSON tools/answers."""
-    query = item.get("query", "")
-    tools = item.get("tools", "")
-    answers = item.get("answers", "")
-
-    if not query:
-        return []
-
-    # Parse tools to create system message
-    try:
-        tools_obj = json.loads(tools) if isinstance(tools, str) else tools
-        tools_str = json.dumps(tools_obj, indent=2)
-    except (json.JSONDecodeError, TypeError):
-        tools_str = str(tools)
-
-    # Parse answers to create assistant response
-    try:
-        answers_obj = json.loads(answers) if isinstance(answers, str) else answers
-        answers_str = json.dumps(answers_obj, indent=2)
-    except (json.JSONDecodeError, TypeError):
-        answers_str = str(answers)
-
-    return [
-        Message(
-            role="system",
-            content=f"You have access to the following tools:\n{tools_str}",
-        ),
-        Message(role="user", content=query),
-        Message(role="assistant", content=f"Function calls:\n{answers_str}"),
-    ]
+from ..types import Label, Message
+from .base import Dataset
+from .builders import build_from_messages
 
 
-def _build_glaive_conversation(item: dict) -> Dialogue:
-    """Builder for Glaive's SYSTEM:/USER:/ASSISTANT: format."""
-    text = item.get("sample", "")
-    if not text:
-        return []
+def xlam_function_calling() -> Dataset:
+    """xLAM Function Calling 60K from Salesforce."""
+    data = load_dataset("Salesforce/xlam-function-calling-60k")["train"]
 
-    dialogue: Dialogue = []
-    lines = text.split("\n")
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"tools": [], "answers": []}
 
-    current_role = None
-    current_content: list[str] = []
+    for item in data:
+        query = item.get("query", "")
+        if not query:
+            continue
 
-    role_map = {
-        "SYSTEM:": "system",
-        "USER:": "user",
-        "ASSISTANT:": "assistant",
-        "FUNCTION RESPONSE:": "user",  # Treat function response as user input
-    }
+        try:
+            tools = json.dumps(json.loads(item.get("tools", "")) if isinstance(item.get("tools"), str) else item.get("tools", ""), indent=2)
+        except (json.JSONDecodeError, TypeError):
+            tools = str(item.get("tools", ""))
 
-    for line in lines:
-        # Check if this line starts a new role
-        found_role = None
-        line_content = ""
-        for prefix, role in role_map.items():
-            if line.strip().startswith(prefix):
-                found_role = role
-                line_content = line.strip()[len(prefix) :].strip()
-                break
+        try:
+            answers = json.dumps(json.loads(item.get("answers", "")) if isinstance(item.get("answers"), str) else item.get("answers", ""), indent=2)
+        except (json.JSONDecodeError, TypeError):
+            answers = str(item.get("answers", ""))
 
-        if found_role:
-            # Save previous message if exists
-            if current_role and current_content:
-                content = "\n".join(current_content).strip()
-                if content:
-                    dialogue.append(Message(role=current_role, content=content))
+        dialogues.append([
+            Message("system", f"You have access to the following tools:\n{tools}"),
+            Message("user", query),
+            Message("assistant", f"Function calls:\n{answers}"),
+        ])
+        labels.append(Label.NEGATIVE)
+        metadata["tools"].append(item.get("tools"))
+        metadata["answers"].append(item.get("answers"))
 
-            current_role = found_role
-            current_content = [line_content] if line_content else []
-        else:
-            # Continue current message
-            if current_role:
+    return Dataset(dialogues, labels, "xlam_function_calling", metadata).shuffle()
+
+
+def glaive_function_calling() -> Dataset:
+    """Glaive Function Calling 52K."""
+    data = load_dataset("glaiveai/glaive-function-calling")["train"]
+
+    dialogues, labels = [], []
+    role_map = {"SYSTEM:": "system", "USER:": "user", "ASSISTANT:": "assistant", "FUNCTION RESPONSE:": "user"}
+
+    for item in data:
+        text = item.get("sample", "")
+        if not text:
+            continue
+
+        dialogue, current_role, current_content = [], None, []
+
+        for line in text.split("\n"):
+            found_role, line_content = None, ""
+            for prefix, role in role_map.items():
+                if line.strip().startswith(prefix):
+                    found_role, line_content = role, line.strip()[len(prefix):].strip()
+                    break
+
+            if found_role:
+                if current_role and (content := "\n".join(current_content).strip()):
+                    dialogue.append(Message(current_role, content))
+                current_role, current_content = found_role, [line_content] if line_content else []
+            elif current_role:
                 current_content.append(line)
 
-    # Don't forget the last message
-    if current_role and current_content:
-        content = "\n".join(current_content).strip()
-        if content:
-            dialogue.append(Message(role=current_role, content=content))
+        if current_role and (content := "\n".join(current_content).strip()):
+            dialogue.append(Message(current_role, content))
 
-    return dialogue
+        if dialogue:
+            dialogues.append(dialogue)
+            labels.append(Label.NEGATIVE)
 
-
-@register("agents", "XLAM function calling")
-class XLAMFunctionCallingDataset(HFDataset):
-    """
-    xLAM Function Calling 60K dataset from Salesforce.
-
-    Contains 60K function calling examples with queries, available tools,
-    and structured answers showing which functions to call.
-
-    Source: https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k
-
-    Fields:
-        - query: User's request
-        - tools: Available functions with parameters
-        - answers: Function calls with arguments
-
-    Metadata fields:
-        - tools: Raw tools JSON
-        - answers: Raw answers JSON
-    """
-
-    base_name = "xlam_function_calling"
-    spec = DatasetSpec(
-        hf_path="Salesforce/xlam-function-calling-60k",
-        shape="custom",
-        builder_fn=_build_xlam_function_call,
-        metadata_fields={
-            "tools": ("tools",),
-            "answers": ("answers",),
-        },
-    )
+    return Dataset(dialogues, labels, "glaive_function_calling").shuffle()
 
 
-@register("agents", "Glaive function calling")
-class GlaiveFunctionCallingDataset(HFDataset):
-    """
-    Glaive Function Calling dataset.
+def hermes_function_calling() -> Dataset:
+    """Hermes Function Calling V1 from NousResearch."""
+    data = load_dataset("NousResearch/hermes-function-calling-v1")["train"]
 
-    Contains 52K conversational function calling examples with system prompts
-    defining available functions.
+    dialogues, labels = [], []
 
-    Source: https://huggingface.co/datasets/glaiveai/glaive-function-calling
-    """
+    for item in data:
+        dialogue = build_from_messages(item.get("conversations", []))
+        if dialogue:
+            dialogues.append(dialogue)
+            labels.append(Label.NEGATIVE)
 
-    base_name = "glaive_function_calling"
-    spec = DatasetSpec(
-        hf_path="glaiveai/glaive-function-calling",
-        shape="custom",
-        builder_fn=_build_glaive_conversation,
-    )
+    return Dataset(dialogues, labels, "hermes_function_calling").shuffle()
 
 
-@register("agents", "Hermes function calling")
-class HermesFunctionCallingDataset(HFDataset):
-    """
-    Hermes Function Calling V1 dataset from NousResearch.
+def function_calling_sharegpt() -> Dataset:
+    """Function Calling ShareGPT 86K."""
+    data = load_dataset("hypervariance/function-calling-sharegpt")["train"]
 
-    Structured output dataset with function-calling conversations,
-    JSON-mode, and agentic examples.
+    dialogues, labels = [], []
 
-    Source: https://huggingface.co/datasets/NousResearch/hermes-function-calling-v1
-    """
+    for item in data:
+        dialogue = build_from_messages(item.get("conversations", []), role_field="from", content_field="value")
+        if dialogue:
+            dialogues.append(dialogue)
+            labels.append(Label.NEGATIVE)
 
-    base_name = "hermes_function_calling"
-    spec = DatasetSpec(
-        hf_path="NousResearch/hermes-function-calling-v1",
-        shape="messages",
-        messages_field="conversations",
-        role_field="role",
-        content_field="content",
-        role_fallback="from",
-        content_fallback="value",
-    )
-
-
-@register("agents", "Function calling ShareGPT")
-class FunctionCallingShareGPTDataset(HFDataset):
-    """
-    Function Calling ShareGPT dataset.
-
-    Contains 86K chat examples that include function calling with
-    0-2 function definitions per conversation.
-
-    Source: https://huggingface.co/datasets/hypervariance/function-calling-sharegpt
-    """
-
-    base_name = "function_calling_sharegpt"
-    spec = DatasetSpec(
-        hf_path="hypervariance/function-calling-sharegpt",
-        shape="messages",
-        messages_field="conversations",
-        role_field="from",
-        content_field="value",
-        role_fallback="role",
-        content_fallback="content",
-    )
+    return Dataset(dialogues, labels, "function_calling_sharegpt").shuffle()

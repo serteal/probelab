@@ -1,138 +1,95 @@
-"""
-Medical and healthcare conversation datasets.
+"""Medical and healthcare conversation datasets."""
 
-These datasets provide doctor-patient conversations and medical dialogues,
-useful for training probes to detect medical domain content.
-"""
+from typing import Any
 
-from ..types import Dialogue, Message
-from .hf_dataset import DatasetSpec, HFDataset
-from .registry import register
+from datasets import load_dataset
+
+from ..types import Label, Message
+from .base import Dataset
 
 
-def _build_meddialog(item: dict) -> Dialogue:
-    """Builder for MedDialog format - text contains full conversation."""
-    text = item.get("text", "")
-    if text:
-        return [
-            Message(role="user", content="Medical consultation:"),
-            Message(role="assistant", content=text),
-        ]
-    return []
+def meddialog() -> Dataset:
+    """MedDialog 260K+ doctor-patient conversations."""
+    data = load_dataset("bigbio/meddialog", "meddialog_en_bigbio_text")["train"]
+
+    dialogues, labels = [], []
+
+    for item in data:
+        if text := item.get("text", ""):
+            dialogues.append([Message("user", "Medical consultation:"), Message("assistant", text)])
+            labels.append(Label.NEGATIVE)
+
+    return Dataset(dialogues, labels, "meddialog").shuffle()
 
 
-def _build_clinical_notes(item: dict) -> Dialogue:
-    """Builder for clinical notes - handles both string and list formats."""
-    conversation = item.get("conversation", item.get("dialogue", ""))
+def medical_soap() -> Dataset:
+    """Medical Dialogue to SOAP Summary 10K."""
+    data = load_dataset("omi-health/medical-dialogue-to-soap-summary")["train"]
 
-    if not conversation:
-        return []
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"soap_summary": []}
 
-    if isinstance(conversation, str):
-        return [Message(role="assistant", content=conversation)]
+    for item in data:
+        dialogue_text = item.get("dialogue", "")
+        if not dialogue_text:
+            continue
 
-    if isinstance(conversation, list):
-        dialogue: Dialogue = []
-        for msg in conversation:
-            if isinstance(msg, dict):
-                role = msg.get("role", "assistant")
-                content = msg.get("content", "")
-                if content:
-                    dialogue.append(Message(role=role, content=content))
-            elif isinstance(msg, str):
-                dialogue.append(Message(role="assistant", content=msg))
-        return dialogue
+        dialogues.append([Message("user", dialogue_text)])
+        labels.append(Label.NEGATIVE)
+        metadata["soap_summary"].append(item.get("soap"))
 
-    return []
+    return Dataset(dialogues, labels, "medical_soap", metadata).shuffle()
 
 
-@register("medical", "Medical dialogues")
-class MedDialogDataset(HFDataset):
-    """
-    MedDialog: Doctor-patient conversations in English.
+def clinical_notes() -> Dataset:
+    """Augmented Clinical Notes with synthetic conversations."""
+    data = load_dataset("AGBonnet/augmented-clinical-notes")["train"]
 
-    Contains 260K+ dialogues between doctors and patients covering
-    various medical topics and conditions.
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"patient_summary": []}
 
-    Source: https://huggingface.co/datasets/bigbio/meddialog
+    for item in data:
+        conversation = item.get("conversation", item.get("dialogue", ""))
+        if not conversation:
+            continue
 
-    Note: Dataset structure may vary - check loading script for details.
-    """
+        if isinstance(conversation, str):
+            dialogue = [Message("assistant", conversation)]
+        elif isinstance(conversation, list):
+            dialogue = []
+            for msg in conversation:
+                if isinstance(msg, dict) and (content := msg.get("content", "")):
+                    dialogue.append(Message(msg.get("role", "assistant"), content))
+                elif isinstance(msg, str):
+                    dialogue.append(Message("assistant", msg))
+        else:
+            continue
 
-    base_name = "meddialog"
-    spec = DatasetSpec(
-        hf_path="bigbio/meddialog",
-        hf_config="meddialog_en_bigbio_text",
-        shape="custom",
-        builder_fn=_build_meddialog,
-    )
+        if dialogue:
+            dialogues.append(dialogue)
+            labels.append(Label.NEGATIVE)
+            metadata["patient_summary"].append(item.get("patient_summary") or item.get("summary"))
 
-
-@register("medical", "Medical SOAP notes")
-class MedicalDialogueSOAPDataset(HFDataset):
-    """
-    Medical Dialogue to SOAP Summary dataset.
-
-    Contains 10K synthetic doctor-patient dialogues with SOAP summaries.
-
-    Source: https://huggingface.co/datasets/omi-health/medical-dialogue-to-soap-summary
-
-    Metadata fields:
-        - soap_summary: The SOAP summary of the dialogue
-    """
-
-    base_name = "medical_soap"
-    spec = DatasetSpec(
-        hf_path="omi-health/medical-dialogue-to-soap-summary",
-        shape="fields",
-        user_fields=("dialogue",),
-        assistant_fields=(),
-        metadata_fields={
-            "soap_summary": ("soap",),
-        },
-    )
+    return Dataset(dialogues, labels, "clinical_notes", metadata).shuffle()
 
 
-@register("medical", "Clinical notes")
-class ClinicalNotesDataset(HFDataset):
-    """
-    Augmented Clinical Notes with synthetic doctor-patient conversations.
+def know_medical() -> Dataset:
+    """Know Medical Dialogue V2 - medical Q&A."""
+    data = load_dataset("knowrohit07/know_medical_dialogue_v2")["train"]
 
-    Based on PMC-Patients with 167K patient summaries and NoteChat
-    synthetic conversations.
+    dialogues, labels = [], []
 
-    Source: https://huggingface.co/datasets/AGBonnet/augmented-clinical-notes
+    for item in data:
+        user = item.get("Patient") or item.get("patient") or item.get("input") or ""
+        assistant = item.get("Doctor") or item.get("doctor") or item.get("output") or ""
+        if not user:
+            continue
 
-    Metadata fields:
-        - patient_summary: Summary of the patient case
-    """
+        dialogue = [Message("user", user)]
+        if assistant:
+            dialogue.append(Message("assistant", assistant))
 
-    base_name = "clinical_notes"
-    spec = DatasetSpec(
-        hf_path="AGBonnet/augmented-clinical-notes",
-        shape="custom",
-        builder_fn=_build_clinical_notes,
-        metadata_fields={
-            "patient_summary": ("patient_summary", "summary"),
-        },
-    )
+        dialogues.append(dialogue)
+        labels.append(Label.NEGATIVE)
 
-
-@register("medical", "Knowledge-based medical dialogues")
-class KnowMedicalDialogueDataset(HFDataset):
-    """
-    Know Medical Dialogue V2: Medical Q&A conversations.
-
-    Collection of conversational exchanges between patients and doctors
-    on various medical topics.
-
-    Source: https://huggingface.co/datasets/knowrohit07/know_medical_dialogue_v2
-    """
-
-    base_name = "know_medical"
-    spec = DatasetSpec(
-        hf_path="knowrohit07/know_medical_dialogue_v2",
-        shape="fields",
-        user_fields=("Patient", "patient", "input"),
-        assistant_fields=("Doctor", "doctor", "output"),
-    )
+    return Dataset(dialogues, labels, "know_medical").shuffle()
