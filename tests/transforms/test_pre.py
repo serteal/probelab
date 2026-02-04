@@ -1,11 +1,10 @@
-"""Tests for preprocessing transformers."""
+"""Tests for pre-probe transforms (Activations → Activations)."""
 
 import pytest
 import torch
 
-from probelab.preprocessing import Normalize, Pool, SelectLayer, SelectLayers
 from probelab.processing.activations import Activations, Axis
-from probelab.processing.scores import Scores
+from probelab.transforms import pre
 
 
 def create_activations(
@@ -34,12 +33,12 @@ def create_activations(
 
 
 class TestSelectLayer:
-    """Test SelectLayer transformer."""
+    """Test pre.SelectLayer transformer."""
 
     def test_transform_selects_correct_layer(self):
         """Test that transform selects the correct layer."""
         acts = create_activations(n_layers=3, layer_indices=[0, 5, 10])
-        transform = SelectLayer(layer=5)
+        transform = pre.SelectLayer(layer=5)
 
         result = transform.transform(acts)
 
@@ -51,7 +50,7 @@ class TestSelectLayer:
         acts = create_activations(n_layers=3, layer_indices=[0, 5, 10])
         assert acts.has_axis(Axis.LAYER)
 
-        transform = SelectLayer(layer=5)
+        transform = pre.SelectLayer(layer=5)
         result = transform.transform(acts)
 
         assert not result.has_axis(Axis.LAYER)
@@ -65,7 +64,7 @@ class TestSelectLayer:
             n_layers=2, batch_size=5, seq_len=10, d_model=32, layer_indices=[0, 1]
         )
 
-        transform = SelectLayer(layer=0)
+        transform = pre.SelectLayer(layer=0)
         result = transform.transform(acts)
 
         assert result.batch_size == 5
@@ -78,32 +77,32 @@ class TestSelectLayer:
         # Remove layer axis by selecting
         single_layer = acts.select(layer=0)
 
-        transform = SelectLayer(layer=0)
-        with pytest.raises(ValueError, match="don't have LAYER axis"):
+        transform = pre.SelectLayer(layer=0)
+        with pytest.raises(ValueError, match="LAYER axis"):
             transform.transform(single_layer)
 
     def test_raises_on_invalid_layer_index(self):
         """Test error for unavailable layer."""
         acts = create_activations(n_layers=2, layer_indices=[0, 5])
 
-        transform = SelectLayer(layer=10)  # Not in layer_indices
+        transform = pre.SelectLayer(layer=10)  # Not in layer_indices
         with pytest.raises(ValueError, match="not available"):
             transform.transform(acts)
 
     def test_repr(self):
         """Test string representation."""
-        transform = SelectLayer(layer=16)
+        transform = pre.SelectLayer(layer=16)
         assert "SelectLayer" in repr(transform)
         assert "16" in repr(transform)
 
 
 class TestSelectLayers:
-    """Test SelectLayers transformer."""
+    """Test pre.SelectLayers transformer."""
 
     def test_transform_selects_multiple_layers(self):
         """Test selecting multiple layers."""
         acts = create_activations(n_layers=4, layer_indices=[0, 5, 10, 15])
-        transform = SelectLayers(layers=[5, 15])
+        transform = pre.SelectLayers(layers=[5, 15])
 
         result = transform.transform(acts)
 
@@ -114,7 +113,7 @@ class TestSelectLayers:
         """Test that LAYER axis is preserved."""
         acts = create_activations(n_layers=4, layer_indices=[0, 5, 10, 15])
 
-        transform = SelectLayers(layers=[5, 10])
+        transform = pre.SelectLayers(layers=[5, 10])
         result = transform.transform(acts)
 
         assert result.has_axis(Axis.LAYER)
@@ -123,7 +122,7 @@ class TestSelectLayers:
     def test_layer_order_preserved(self):
         """Test that layer order matches request."""
         acts = create_activations(n_layers=4, layer_indices=[0, 5, 10, 15])
-        transform = SelectLayers(layers=[15, 5])  # Reverse order
+        transform = pre.SelectLayers(layers=[15, 5])  # Reverse order
 
         result = transform.transform(acts)
 
@@ -132,19 +131,19 @@ class TestSelectLayers:
 
     def test_repr(self):
         """Test string representation."""
-        transform = SelectLayers(layers=[8, 16, 24])
+        transform = pre.SelectLayers(layers=[8, 16, 24])
         assert "SelectLayers" in repr(transform)
         assert "[8, 16, 24]" in repr(transform)
 
 
 class TestPool:
-    """Test Pool transformer."""
+    """Test pre.Pool transformer (activation pooling)."""
 
     def test_pool_sequence_mean(self):
         """Test mean pooling over sequence dimension."""
         torch.manual_seed(42)
         acts = create_activations(n_layers=1, batch_size=5, seq_len=10)
-        transform = Pool(dim="sequence", method="mean")
+        transform = pre.Pool(dim="sequence", method="mean")
 
         result = transform.transform(acts)
 
@@ -154,7 +153,7 @@ class TestPool:
     def test_pool_sequence_max(self):
         """Test max pooling over sequence dimension."""
         acts = create_activations(n_layers=1, batch_size=5, seq_len=10)
-        transform = Pool(dim="sequence", method="max")
+        transform = pre.Pool(dim="sequence", method="max")
 
         result = transform.transform(acts)
 
@@ -163,7 +162,7 @@ class TestPool:
     def test_pool_sequence_last_token(self):
         """Test last_token pooling."""
         acts = create_activations(n_layers=1, batch_size=5, seq_len=10)
-        transform = Pool(dim="sequence", method="last_token")
+        transform = pre.Pool(dim="sequence", method="last_token")
 
         result = transform.transform(acts)
 
@@ -172,7 +171,7 @@ class TestPool:
     def test_pool_layer_mean(self):
         """Test mean pooling over layer dimension."""
         acts = create_activations(n_layers=4, layer_indices=[0, 5, 10, 15])
-        transform = Pool(dim="layer", method="mean")
+        transform = pre.Pool(dim="layer", method="mean")
 
         result = transform.transform(acts)
 
@@ -181,7 +180,7 @@ class TestPool:
     def test_pool_layer_max(self):
         """Test max pooling over layer dimension."""
         acts = create_activations(n_layers=4, layer_indices=[0, 5, 10, 15])
-        transform = Pool(dim="layer", method="max")
+        transform = pre.Pool(dim="layer", method="max")
 
         result = transform.transform(acts)
 
@@ -192,48 +191,36 @@ class TestPool:
         acts = create_activations(n_layers=2, batch_size=5, seq_len=10)
 
         # Pool sequence
-        transform = Pool(dim="sequence", method="mean")
+        transform = pre.Pool(dim="sequence", method="mean")
         result = transform.transform(acts)
         assert not result.has_axis(Axis.SEQ)
         assert result.has_axis(Axis.LAYER)
 
         # Pool layer
-        transform2 = Pool(dim="layer", method="mean")
+        transform2 = pre.Pool(dim="layer", method="mean")
         result2 = transform2.transform(result)
         assert not result2.has_axis(Axis.LAYER)
-
-    def test_pool_on_scores(self):
-        """Test Pool works on Scores objects."""
-        scores = Scores.from_token_scores(
-            scores=torch.randn(5, 10, 2),
-            tokens_per_sample=torch.tensor([10, 8, 6, 4, 2]),
-        )
-        transform = Pool(dim="sequence", method="mean")
-
-        result = transform.transform(scores)
-
-        assert result.scores.shape == (5, 2)
 
     def test_pool_invalid_dim_raises(self):
         """Test error for invalid dimension."""
         with pytest.raises(ValueError, match="dim must be one of"):
-            Pool(dim="invalid", method="mean")
+            pre.Pool(dim="invalid", method="mean")
 
     def test_pool_invalid_method_raises(self):
         """Test error for invalid method."""
         with pytest.raises(ValueError, match="method must be one of"):
-            Pool(dim="sequence", method="invalid")
+            pre.Pool(dim="sequence", method="invalid")
 
     def test_pool_last_token_on_layer_raises(self):
         """Test error for last_token on layer dimension."""
         with pytest.raises(ValueError, match="last_token method not supported"):
-            Pool(dim="layer", method="last_token")
+            pre.Pool(dim="layer", method="last_token")
 
     def test_pool_idempotent_when_axis_missing(self):
         """Test that pool is idempotent when axis already missing."""
         acts = create_activations(n_layers=1, batch_size=5, seq_len=10)
         # First pool removes SEQ axis
-        transform = Pool(dim="sequence", method="mean")
+        transform = pre.Pool(dim="sequence", method="mean")
         pooled = transform.transform(acts)
 
         # Second pool should return same thing (no SEQ axis to pool)
@@ -242,19 +229,19 @@ class TestPool:
 
     def test_repr(self):
         """Test string representation."""
-        transform = Pool(dim="sequence", method="mean")
+        transform = pre.Pool(dim="sequence", method="mean")
         assert "Pool" in repr(transform)
         assert "sequence" in repr(transform)
         assert "mean" in repr(transform)
 
 
 class TestNormalize:
-    """Test Normalize transformer."""
+    """Test pre.Normalize transformer."""
 
     def test_fit_computes_statistics(self):
         """Test that fit computes mean and std."""
         acts = create_activations(n_layers=1, batch_size=20, seq_len=10)
-        transform = Normalize()
+        transform = pre.Normalize()
 
         transform.fit(acts)
 
@@ -268,7 +255,7 @@ class TestNormalize:
         # Create data with known mean and std
         acts = create_activations(n_layers=1, batch_size=100, seq_len=10, d_model=16)
 
-        transform = Normalize()
+        transform = pre.Normalize()
         transform.fit(acts)
         result = transform.transform(acts)
 
@@ -285,14 +272,14 @@ class TestNormalize:
     def test_transform_before_fit_raises(self):
         """Test error when transform called before fit."""
         acts = create_activations(n_layers=1)
-        transform = Normalize()
+        transform = pre.Normalize()
 
         with pytest.raises(ValueError, match="must be fitted"):
             transform.transform(acts)
 
     def test_freeze_preserves_statistics(self):
         """Test that freeze preserves statistics on transform."""
-        transform = Normalize()
+        transform = pre.Normalize()
 
         # Initial fit
         acts = create_activations(n_layers=1, batch_size=10)
@@ -309,7 +296,7 @@ class TestNormalize:
 
     def test_unfreeze_unfrozen_state(self):
         """Test that unfreeze correctly changes state."""
-        transform = Normalize()
+        transform = pre.Normalize()
 
         acts = create_activations(n_layers=1, batch_size=10)
         transform.fit(acts)
@@ -322,7 +309,7 @@ class TestNormalize:
     def test_normalization_preserves_shape(self):
         """Test that normalization preserves activation shape."""
         acts = create_activations(n_layers=2, batch_size=5, seq_len=10, d_model=16)
-        transform = Normalize()
+        transform = pre.Normalize()
 
         transform.fit(acts)
         result = transform.transform(acts)
@@ -333,7 +320,7 @@ class TestNormalize:
 
     def test_repr(self):
         """Test string representation."""
-        transform = Normalize()
+        transform = pre.Normalize()
         assert "Normalize" in repr(transform)
         assert "not fitted" in repr(transform)
 
@@ -353,10 +340,10 @@ class TestFitTransform:
         torch.manual_seed(42)
         acts = create_activations(n_layers=1, batch_size=20)
 
-        transform1 = Normalize()
+        transform1 = pre.Normalize()
         result1 = transform1.fit_transform(acts)
 
-        transform2 = Normalize()
+        transform2 = pre.Normalize()
         transform2.fit(acts)
         result2 = transform2.transform(acts)
 
@@ -365,7 +352,7 @@ class TestFitTransform:
     def test_select_layer_fit_transform(self):
         """Test fit_transform for stateless transforms."""
         acts = create_activations(n_layers=2, layer_indices=[0, 5])
-        transform = SelectLayer(layer=5)
+        transform = pre.SelectLayer(layer=5)
 
         # fit_transform should work even though SelectLayer is stateless
         result = transform.fit_transform(acts)

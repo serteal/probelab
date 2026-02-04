@@ -1,10 +1,10 @@
-"""Tests for RollingPool preprocessing transform."""
+"""Tests for RollingPool post-probe transform."""
 
 import pytest
 import torch
 
-from probelab.preprocessing import RollingPool
 from probelab.processing.scores import ScoreAxis, Scores
+from probelab.transforms import post
 
 
 def create_token_scores(
@@ -33,21 +33,21 @@ class TestRollingPool:
 
     def test_initialization(self):
         """Test RollingPool initialization."""
-        pool = RollingPool(window_size=10)
+        pool = post.RollingPool(window_size=10)
         assert pool.window_size == 10
 
     def test_invalid_window_size_raises(self):
         """Test that invalid window size raises errors."""
         with pytest.raises(ValueError, match="window_size must be >= 1"):
-            RollingPool(window_size=0)
+            post.RollingPool(window_size=0)
 
         with pytest.raises(ValueError, match="window_size must be >= 1"):
-            RollingPool(window_size=-1)
+            post.RollingPool(window_size=-1)
 
     def test_transform_reduces_sequence_dimension(self):
         """Test that transform removes sequence dimension."""
         scores = create_token_scores(batch_size=5, seq_len=10)
-        pool = RollingPool(window_size=3)
+        pool = post.RollingPool(window_size=3)
 
         result = pool.transform(scores)
 
@@ -60,7 +60,7 @@ class TestRollingPool:
         """Test that batch size is preserved."""
         for batch_size in [1, 5, 10]:
             scores = create_token_scores(batch_size=batch_size, seq_len=10)
-            pool = RollingPool(window_size=3)
+            pool = post.RollingPool(window_size=3)
 
             result = pool.transform(scores)
             assert result.batch_size == batch_size
@@ -70,7 +70,7 @@ class TestRollingPool:
         scores = create_token_scores(
             batch_size=3, seq_len=10, tokens_per_sample=[10, 5, 2]
         )
-        pool = RollingPool(window_size=3)
+        pool = post.RollingPool(window_size=3)
 
         result = pool.transform(scores)
 
@@ -82,7 +82,7 @@ class TestRollingPool:
     def test_transform_returns_valid_probabilities(self):
         """Test that output probabilities are valid."""
         scores = create_token_scores(batch_size=5, seq_len=10)
-        pool = RollingPool(window_size=3)
+        pool = post.RollingPool(window_size=3)
 
         result = pool.transform(scores)
 
@@ -96,8 +96,8 @@ class TestRollingPool:
         """Test behavior with different window sizes."""
         scores = create_token_scores(batch_size=5, seq_len=20)
 
-        pool_small = RollingPool(window_size=3)
-        pool_large = RollingPool(window_size=10)
+        pool_small = post.RollingPool(window_size=3)
+        pool_large = post.RollingPool(window_size=10)
 
         result_small = pool_small.transform(scores)
         result_large = pool_large.transform(scores)
@@ -122,7 +122,7 @@ class TestRollingPool:
             tokens_per_sample=torch.tensor([seq_len] * batch_size),
         )
 
-        pool = RollingPool(window_size=seq_len)
+        pool = post.RollingPool(window_size=seq_len)
         result = pool.transform(scores)
 
         # With window = full sequence, max of rolling means = mean
@@ -133,7 +133,7 @@ class TestRollingPool:
     def test_idempotent_on_sequence_scores(self):
         """Test that RollingPool is idempotent when applied to sequence-level scores."""
         token_scores = create_token_scores(batch_size=5, seq_len=10)
-        pool = RollingPool(window_size=3)
+        pool = post.RollingPool(window_size=3)
 
         # First transform
         seq_scores = pool.transform(token_scores)
@@ -145,14 +145,14 @@ class TestRollingPool:
 
     def test_raises_on_non_scores(self):
         """Test that RollingPool raises error for non-Scores input."""
-        pool = RollingPool(window_size=3)
+        pool = post.RollingPool(window_size=3)
 
-        with pytest.raises(TypeError, match="only works on Scores"):
+        with pytest.raises(TypeError, match="Expected Scores"):
             pool.transform(torch.randn(5, 10, 2))
 
     def test_repr(self):
         """Test string representation."""
-        pool = RollingPool(window_size=15)
+        pool = post.RollingPool(window_size=15)
         assert "RollingPool" in repr(pool)
         assert "15" in repr(pool)
 
@@ -171,7 +171,7 @@ class TestRollingPool:
             tokens_per_sample=torch.tensor([seq_len]),
         )
 
-        pool = RollingPool(window_size=3)
+        pool = post.RollingPool(window_size=3)
         result = pool.transform(scores)
 
         # Window of 3 around the spike:
@@ -193,7 +193,7 @@ class TestRollingPool:
             tokens_per_sample=torch.tensor([seq_len]),
         )
 
-        pool = RollingPool(window_size=3)
+        pool = post.RollingPool(window_size=3)
         result = pool.transform(scores)
 
         # Rolling means with window=3:
@@ -217,7 +217,7 @@ class TestRollingPool:
             tokens_per_sample=torch.tensor([10, 0, 5]),  # Middle sample is empty
         )
 
-        pool = RollingPool(window_size=3)
+        pool = post.RollingPool(window_size=3)
         result = pool.transform(scores)
 
         # Should produce valid output
@@ -237,7 +237,7 @@ class TestRollingPool:
             tokens_per_sample=torch.tensor([10, 3, 2]),
         )
 
-        pool = RollingPool(window_size=5)
+        pool = post.RollingPool(window_size=5)
         result = pool.transform(scores)
 
         # Should produce valid output for all sequences

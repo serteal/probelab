@@ -1,10 +1,10 @@
-"""Tests for EMAPool preprocessing transform."""
+"""Tests for EMAPool post-probe transform."""
 
 import pytest
 import torch
 
-from probelab.preprocessing import EMAPool
 from probelab.processing.scores import ScoreAxis, Scores
+from probelab.transforms import post
 
 
 def create_token_scores(
@@ -33,24 +33,24 @@ class TestEMAPool:
 
     def test_initialization(self):
         """Test EMAPool initialization."""
-        pool = EMAPool(alpha=0.5)
+        pool = post.EMAPool(alpha=0.5)
         assert pool.alpha == 0.5
 
     def test_invalid_alpha_raises(self):
         """Test that invalid alpha values raise errors."""
         with pytest.raises(ValueError, match="alpha must be in"):
-            EMAPool(alpha=0.0)
+            post.EMAPool(alpha=0.0)
 
         with pytest.raises(ValueError, match="alpha must be in"):
-            EMAPool(alpha=1.5)
+            post.EMAPool(alpha=1.5)
 
         with pytest.raises(ValueError, match="alpha must be in"):
-            EMAPool(alpha=-0.1)
+            post.EMAPool(alpha=-0.1)
 
     def test_transform_reduces_sequence_dimension(self):
         """Test that transform removes sequence dimension."""
         scores = create_token_scores(batch_size=5, seq_len=10)
-        pool = EMAPool(alpha=0.5)
+        pool = post.EMAPool(alpha=0.5)
 
         result = pool.transform(scores)
 
@@ -63,7 +63,7 @@ class TestEMAPool:
         """Test that batch size is preserved."""
         for batch_size in [1, 5, 10]:
             scores = create_token_scores(batch_size=batch_size, seq_len=10)
-            pool = EMAPool(alpha=0.5)
+            pool = post.EMAPool(alpha=0.5)
 
             result = pool.transform(scores)
             assert result.batch_size == batch_size
@@ -73,7 +73,7 @@ class TestEMAPool:
         scores = create_token_scores(
             batch_size=3, seq_len=10, tokens_per_sample=[10, 5, 2]
         )
-        pool = EMAPool(alpha=0.5)
+        pool = post.EMAPool(alpha=0.5)
 
         result = pool.transform(scores)
 
@@ -85,7 +85,7 @@ class TestEMAPool:
     def test_transform_returns_valid_probabilities(self):
         """Test that output probabilities are valid."""
         scores = create_token_scores(batch_size=5, seq_len=10)
-        pool = EMAPool(alpha=0.5)
+        pool = post.EMAPool(alpha=0.5)
 
         result = pool.transform(scores)
 
@@ -99,8 +99,8 @@ class TestEMAPool:
         """Test behavior with different alpha values."""
         scores = create_token_scores(batch_size=5, seq_len=10)
 
-        pool_low = EMAPool(alpha=0.1)
-        pool_high = EMAPool(alpha=0.9)
+        pool_low = post.EMAPool(alpha=0.1)
+        pool_high = post.EMAPool(alpha=0.9)
 
         result_low = pool_low.transform(scores)
         result_high = pool_high.transform(scores)
@@ -113,7 +113,7 @@ class TestEMAPool:
     def test_idempotent_on_sequence_scores(self):
         """Test that EMAPool is idempotent when applied to sequence-level scores."""
         token_scores = create_token_scores(batch_size=5, seq_len=10)
-        pool = EMAPool(alpha=0.5)
+        pool = post.EMAPool(alpha=0.5)
 
         # First transform
         seq_scores = pool.transform(token_scores)
@@ -125,14 +125,14 @@ class TestEMAPool:
 
     def test_raises_on_non_scores(self):
         """Test that EMAPool raises error for non-Scores input."""
-        pool = EMAPool(alpha=0.5)
+        pool = post.EMAPool(alpha=0.5)
 
-        with pytest.raises(TypeError, match="only works on Scores"):
+        with pytest.raises(TypeError, match="Expected Scores"):
             pool.transform(torch.randn(5, 10, 2))
 
     def test_repr(self):
         """Test string representation."""
-        pool = EMAPool(alpha=0.7)
+        pool = post.EMAPool(alpha=0.7)
         assert "EMAPool" in repr(pool)
         assert "0.7" in repr(pool)
 
@@ -151,7 +151,7 @@ class TestEMAPool:
             tokens_per_sample=torch.tensor([seq_len]),
         )
 
-        pool = EMAPool(alpha=0.5)
+        pool = post.EMAPool(alpha=0.5)
         result = pool.transform(scores)
 
         # EMA with alpha=0.5, starting from 0 (paper formula):
@@ -175,7 +175,7 @@ class TestEMAPool:
             tokens_per_sample=torch.tensor([seq_len]),
         )
 
-        pool = EMAPool(alpha=0.5)
+        pool = post.EMAPool(alpha=0.5)
         result = pool.transform(scores)
 
         # EMA with alpha=0.5, starting from 0:
@@ -200,7 +200,7 @@ class TestEMAPool:
             tokens_per_sample=torch.tensor([10, 0, 5]),  # Middle sample is empty
         )
 
-        pool = EMAPool(alpha=0.5)
+        pool = post.EMAPool(alpha=0.5)
         result = pool.transform(scores)
 
         # Should produce valid output
