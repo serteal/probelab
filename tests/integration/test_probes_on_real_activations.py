@@ -105,7 +105,7 @@ def test_logistic_sequence_mean_llama3():
         )),
     ])
     pipeline.fit(acts, labels)
-    probs = pipeline.predict_proba(acts)
+    probs = pipeline.predict(acts)
 
     assert probs.shape == (2, 2)
     assert torch.allclose(probs.sum(dim=1), torch.ones(2, device=probs.device), atol=1e-5)
@@ -131,7 +131,7 @@ def test_logistic_sequence_mean_gemma2():
         )),
     ])
     pipeline.fit(acts, labels)
-    probs = pipeline.predict_proba(acts)
+    probs = pipeline.predict(acts)
 
     assert probs.shape == (2, 2)
     assert torch.allclose(probs.sum(dim=1), torch.ones(2, device=probs.device), atol=1e-5)

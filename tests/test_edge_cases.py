@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from probelab import Pipeline
-from probelab.preprocessing import SelectLayer, Pool
+from probelab.transforms import SelectLayer, Pool
 from probelab.probes import MLP, Attention, Logistic
 from probelab.processing.activations import Activations
 from probelab.types import AggregationMethod, Label
@@ -229,7 +229,7 @@ class TestProbeEdgeCases:
         # Should still train, but might have poor performance
         assert pipeline.get_probe()._fitted
 
-        predictions = pipeline.predict_proba(activations)
+        predictions = pipeline.predict(activations)
         assert predictions.shape == (100, 2)
 
     def test_probe_layer_mismatch(self):
@@ -280,7 +280,7 @@ class TestProbeEdgeCases:
         # Should still train, but predictions might be uniform
         assert pipeline.get_probe()._fitted
 
-        predictions = pipeline.predict_proba(activations)
+        predictions = pipeline.predict(activations)
         assert predictions.shape == (10, 2)
         # With zero features, should predict roughly uniform
         assert torch.all(predictions >= 0) and torch.all(predictions <= 1)
@@ -454,7 +454,7 @@ class TestBoundaryConditions:
 
         # Each should work independently
         for pipeline in pipelines:
-            preds = pipeline.predict_proba(activations)
+            preds = pipeline.predict(activations)
             assert preds.shape == (10, 2)
 
     def test_save_load_with_edge_cases(self):

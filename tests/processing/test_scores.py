@@ -229,14 +229,15 @@ class TestScoresPool:
         with pytest.raises(ValueError, match="Only 'sequence' dimension"):
             obj.pool(dim="layer", method="mean")
 
-    def test_pool_without_seq_axis_raises(self):
-        """Test error when trying to pool already-pooled scores."""
+    def test_pool_without_seq_axis_returns_self(self):
+        """Test that pooling already-pooled scores returns self (idempotent)."""
         scores = torch.randn(5, 2)
 
         obj = Scores.from_sequence_scores(scores)
 
-        with pytest.raises(ValueError, match="don't have SEQ axis"):
-            obj.pool(dim="sequence", method="mean")
+        # Should return self unchanged instead of raising
+        result = obj.pool(dim="sequence", method="mean")
+        assert torch.equal(result.scores, obj.scores)
 
     def test_pool_fixed_length(self):
         """Test pooling fixed-length sequences (no tokens_per_sample)."""

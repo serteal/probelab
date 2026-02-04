@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from probelab import Pipeline
-from probelab.preprocessing import SelectLayer, Pool
+from probelab.transforms import pre, post
 from probelab.probes.logistic import Logistic
 from probelab.processing.activations import (
     ActivationIterator,
@@ -117,8 +117,8 @@ class TestLogistic:
     def test_initialization(self):
         """Test probe initialization."""
         pipeline = Pipeline([
-            ("select", SelectLayer(5)),
-            ("agg", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(5)),
+            ("agg", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic(
                 C=10.0,  # C is inverse of l2_penalty (C=10 ≈ l2_penalty=0.1)
                 device="cpu",
@@ -139,8 +139,8 @@ class TestLogistic:
         activations, labels = create_separable_data(n_samples=20)
 
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("agg", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("agg", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic(device="cpu")),
         ])
 
@@ -156,9 +156,9 @@ class TestLogistic:
         activations, labels = create_separable_data(n_samples=10, seq_len=5)
 
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
+            ("select", pre.SelectLayer(0)),
             ("probe", Logistic(device="cpu")),
-            ("agg_scores", Pool(dim="sequence", method="mean")),
+            ("agg_scores", post.Pool(method="mean")),
         ])
 
         pipeline.fit(activations, labels)
@@ -166,19 +166,19 @@ class TestLogistic:
         assert pipeline["probe"]._fitted is True
         assert pipeline["probe"]._network is not None
 
-    def test_predict_proba(self):
+    def test_predict(self):
         """Test probability prediction."""
         activations, labels = create_separable_data(n_samples=20)
 
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("agg", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("agg", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic(device="cpu", random_state=42)),
         ])
         pipeline.fit(activations, labels)
 
         # Predict on same data
-        probs = pipeline.predict_proba(activations)
+        probs = pipeline.predict(activations)
 
         assert probs.shape == (20, 2)
         assert torch.all(probs >= 0) and torch.all(probs <= 1)
@@ -195,13 +195,13 @@ class TestLogistic:
         """Test that prediction fails before fitting."""
         activations = create_test_activations()
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("agg", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("agg", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic(device="cpu")),
         ])
 
         with pytest.raises(ValueError, match="Pipeline must be fitted"):
-            pipeline.predict_proba(activations)
+            pipeline.predict(activations)
 
     def test_different_aggregations(self):
         """Test different aggregation methods."""
@@ -209,13 +209,13 @@ class TestLogistic:
 
         for method in [AggregationMethod.MEAN, AggregationMethod.MAX, AggregationMethod.LAST_TOKEN]:
             pipeline = Pipeline([
-                ("select", SelectLayer(0)),
-                ("pool", Pool(dim="sequence", method=method)),
+                ("select", pre.SelectLayer(0)),
+                ("pool", pre.Pool(dim="sequence", method=method)),
                 ("probe", Logistic(device="cpu", random_state=42)),
             ])
 
             pipeline.fit(activations, labels)
-            probs = pipeline.predict_proba(activations)
+            probs = pipeline.predict(activations)
 
             assert probs.shape == (20, 2)
             assert torch.all(probs >= 0) and torch.all(probs <= 1)
@@ -226,14 +226,14 @@ class TestLogistic:
 
         # Train pipeline
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("agg", Pool(dim="sequence", method="max")),
+            ("select", pre.SelectLayer(0)),
+            ("agg", pre.Pool(dim="sequence", method="max")),
             ("probe", Logistic(C=2.0, device="cpu", random_state=42)),
         ])
         pipeline.fit(activations, labels)
 
         # Get predictions before saving
-        probs_before = pipeline.predict_proba(activations)
+        probs_before = pipeline.predict(activations)
 
         # Save and load probe
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -248,13 +248,13 @@ class TestLogistic:
 
             # Create new pipeline with loaded probe
             loaded_pipeline = Pipeline([
-                ("select", SelectLayer(0)),
-                ("agg", Pool(dim="sequence", method="max")),
+                ("select", pre.SelectLayer(0)),
+                ("agg", pre.Pool(dim="sequence", method="max")),
                 ("probe", loaded_probe),
             ])
 
             # Check predictions are the same
-            probs_after = loaded_pipeline.predict_proba(activations)
+            probs_after = loaded_pipeline.predict(activations)
             probs_before = probs_before.to(probs_after.device)
             assert torch.allclose(probs_before, probs_after, atol=1e-6)
 
@@ -273,8 +273,8 @@ class TestLogistic:
 
         # Train on CPU
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("agg", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("agg", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic(device="cpu")),
         ])
         pipeline.fit(activations, labels)
@@ -296,8 +296,8 @@ class TestLogistic:
 
         # Test with wrong layer - should error during transform
         pipeline = Pipeline([
-            ("select", SelectLayer(5)),
-            ("agg", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(5)),
+            ("agg", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic(device="cpu")),
         ])
         with pytest.raises(ValueError, match="Layer 5 is not available"):

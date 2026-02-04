@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from probelab import Pipeline
-from probelab.preprocessing import SelectLayer
+from probelab.transforms import pre
 from probelab.probes.multimax import MultiMax
 from probelab.processing.activations import Activations
 from probelab.types import Label
@@ -66,7 +66,7 @@ class TestMultiMax:
     def test_initialization(self):
         """Test probe initialization."""
         pipeline = Pipeline([
-            ("select", SelectLayer(5)),
+            ("select", pre.SelectLayer(5)),
             ("probe", MultiMax(
                 n_heads=8,
                 mlp_hidden_dim=64,
@@ -94,7 +94,7 @@ class TestMultiMax:
         activations, labels = create_separable_data(n_samples=20)
 
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
+            ("select", pre.SelectLayer(0)),
             ("probe", MultiMax(
                 n_heads=4,
                 mlp_hidden_dim=32,
@@ -111,12 +111,12 @@ class TestMultiMax:
         assert pipeline["probe"]._network is not None
         assert pipeline["probe"]._d_model == 8
 
-    def test_predict_proba(self):
+    def test_predict(self):
         """Test probability prediction."""
         activations, labels = create_separable_data(n_samples=20)
 
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
+            ("select", pre.SelectLayer(0)),
             ("probe", MultiMax(
                 n_heads=8,
                 mlp_hidden_dim=64,
@@ -128,7 +128,7 @@ class TestMultiMax:
         ])
         pipeline.fit(activations, labels)
 
-        probs = pipeline.predict_proba(activations)
+        probs = pipeline.predict(activations)
 
         assert probs.shape == (20, 2)
         assert torch.all(probs >= 0) and torch.all(probs <= 1)
@@ -143,19 +143,19 @@ class TestMultiMax:
         """Test that prediction fails before fitting."""
         activations = create_test_activations()
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
+            ("select", pre.SelectLayer(0)),
             ("probe", MultiMax(device="cpu")),
         ])
 
         with pytest.raises(ValueError, match="Pipeline must be fitted"):
-            pipeline.predict_proba(activations)
+            pipeline.predict(activations)
 
     def test_save_and_load(self):
         """Test saving and loading probe."""
         activations, labels = create_separable_data(n_samples=20)
 
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
+            ("select", pre.SelectLayer(0)),
             ("probe", MultiMax(
                 n_heads=4,
                 mlp_hidden_dim=32,
@@ -167,7 +167,7 @@ class TestMultiMax:
         ])
         pipeline.fit(activations, labels)
 
-        probs_before = pipeline.predict_proba(activations)
+        probs_before = pipeline.predict(activations)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             save_path = Path(tmpdir) / "probe.pt"
@@ -181,11 +181,11 @@ class TestMultiMax:
 
             # Create new pipeline with loaded probe
             loaded_pipeline = Pipeline([
-                ("select", SelectLayer(0)),
+                ("select", pre.SelectLayer(0)),
                 ("probe", loaded_probe),
             ])
 
-            probs_after = loaded_pipeline.predict_proba(activations)
+            probs_after = loaded_pipeline.predict(activations)
             assert torch.allclose(probs_before, probs_after, atol=1e-6)
 
     def test_no_aggregation_needed(self):
@@ -194,7 +194,7 @@ class TestMultiMax:
 
         # MultiMax probe works without any aggregation transformers
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
+            ("select", pre.SelectLayer(0)),
             ("probe", MultiMax(
                 n_heads=4,
                 mlp_hidden_dim=32,
@@ -206,7 +206,7 @@ class TestMultiMax:
 
         # Should work normally
         pipeline.fit(activations, labels)
-        probs = pipeline.predict_proba(activations)
+        probs = pipeline.predict(activations)
         assert probs.shape == (20, 2)
 
     def test_different_n_heads(self):
@@ -215,7 +215,7 @@ class TestMultiMax:
 
         for n_heads in [2, 5, 10]:
             pipeline = Pipeline([
-                ("select", SelectLayer(0)),
+                ("select", pre.SelectLayer(0)),
                 ("probe", MultiMax(
                     n_heads=n_heads,
                     n_epochs=30,
@@ -225,7 +225,7 @@ class TestMultiMax:
             ])
 
             pipeline.fit(activations, labels)
-            probs = pipeline.predict_proba(activations)
+            probs = pipeline.predict(activations)
 
             assert probs.shape == (20, 2)
             assert torch.all(probs >= 0) and torch.all(probs <= 1)

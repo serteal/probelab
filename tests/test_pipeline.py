@@ -4,8 +4,8 @@ import pytest
 import torch
 
 from probelab import Pipeline
-from probelab.preprocessing import Pool, SelectLayer
-from probelab.preprocessing.base import PreTransformer
+from probelab.transforms import pre, post
+from probelab.transforms.base import ActivationTransform, ScoreTransform
 from probelab.probes import Logistic, MLP
 from probelab.probes.base import BaseProbe
 from probelab.processing.activations import Activations, Axis
@@ -47,8 +47,8 @@ class TestPipelineInit:
     def test_init_with_named_steps(self):
         """Test creating pipeline with named steps."""
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -61,15 +61,15 @@ class TestPipelineInit:
         """Test that pipeline requires exactly one probe."""
         with pytest.raises(ValueError, match="must contain exactly one BaseProbe"):
             Pipeline([
-                ("select", SelectLayer(0)),
-                ("pool", Pool(dim="sequence", method="mean")),
+                ("select", pre.SelectLayer(0)),
+                ("pool", pre.Pool(dim="sequence", method="mean")),
             ])
 
     def test_init_rejects_multiple_probes(self):
         """Test that pipeline rejects multiple probes."""
         with pytest.raises(ValueError, match="must contain exactly one BaseProbe"):
             Pipeline([
-                ("select", SelectLayer(0)),
+                ("select", pre.SelectLayer(0)),
                 ("probe1", Logistic()),
                 ("probe2", MLP()),
             ])
@@ -80,24 +80,24 @@ class TestPipelineInit:
             Pipeline([])
 
     def test_init_validates_pre_probe_steps(self):
-        """Test that pre-probe steps must be PreTransformers."""
+        """Test that pre-probe steps must be ActivationTransforms."""
 
         class NotATransformer:
             pass
 
-        with pytest.raises(ValueError, match="must be a PreTransformer"):
+        with pytest.raises(ValueError, match="must be an ActivationTransform"):
             Pipeline([
                 ("bad", NotATransformer()),
                 ("probe", Logistic()),
             ])
 
     def test_init_validates_post_probe_steps(self):
-        """Test that post-probe steps must be transforms."""
+        """Test that post-probe steps must be ScoreTransforms."""
 
         class NotATransformer:
             pass
 
-        with pytest.raises(ValueError, match="must be a transform"):
+        with pytest.raises(ValueError, match="must be a ScoreTransform"):
             Pipeline([
                 ("probe", Logistic()),
                 ("bad", NotATransformer()),
@@ -110,8 +110,8 @@ class TestPipelineFit:
     def test_fit_basic(self):
         """Test basic pipeline fitting."""
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -126,8 +126,8 @@ class TestPipelineFit:
     def test_fit_transforms_through_steps(self):
         """Test that fit transforms activations through all steps."""
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -145,8 +145,8 @@ class TestPipelineFit:
     def test_fit_with_label_list(self):
         """Test fitting with list of labels."""
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -158,14 +158,14 @@ class TestPipelineFit:
 
 
 class TestPipelinePredict:
-    """Test Pipeline.predict() and predict_proba()."""
+    """Test Pipeline.predict() and predict()."""
 
     @pytest.fixture
     def fitted_pipeline(self):
         """Create a fitted pipeline."""
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -175,39 +175,39 @@ class TestPipelinePredict:
 
         return pipeline
 
-    def test_predict_proba_returns_probabilities(self, fitted_pipeline):
-        """Test that predict_proba returns valid probabilities."""
+    def test_predict_returns_probabilities(self, fitted_pipeline):
+        """Test that predict returns valid probabilities."""
         acts = create_activations(n_layers=2, batch_size=5, layer_indices=[0, 1])
 
-        probs = fitted_pipeline.predict_proba(acts)
+        probs = fitted_pipeline.predict(acts)
 
         assert probs.shape == (5, 2)
         assert torch.all(probs >= 0) and torch.all(probs <= 1)
         # Move expected tensor to same device as probs
         assert torch.allclose(probs.sum(dim=1), torch.ones(5, device=probs.device), atol=1e-6)
 
-    def test_predict_returns_classes(self, fitted_pipeline):
-        """Test that predict returns class labels."""
+    def test_predict_returns_probabilities(self, fitted_pipeline):
+        """Test that predict returns class probabilities."""
         acts = create_activations(n_layers=2, batch_size=5, layer_indices=[0, 1])
 
-        preds = fitted_pipeline.predict(acts)
+        probs = fitted_pipeline.predict(acts)
 
-        assert preds.shape == (5,)
-        assert preds.dtype == torch.long
-        assert torch.all((preds == 0) | (preds == 1))
+        assert probs.shape == (5, 2)  # [batch, 2] for binary classification
+        assert torch.all(probs >= 0) and torch.all(probs <= 1)
+        assert torch.allclose(probs.sum(dim=1), torch.ones(5, device=probs.device), atol=1e-6)
 
     def test_predict_before_fit_raises(self):
         """Test that predict before fit raises error."""
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
         acts = create_activations(n_layers=2, batch_size=5, layer_indices=[0, 1])
 
         with pytest.raises(ValueError, match="must be fitted"):
-            pipeline.predict_proba(acts)
+            pipeline.predict(acts)
 
 
 class TestPipelineScore:
@@ -218,8 +218,8 @@ class TestPipelineScore:
         torch.manual_seed(42)
 
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -239,8 +239,8 @@ class TestPipelineItemAccess:
 
     def test_getitem_by_name(self):
         """Test accessing steps by name."""
-        select_layer = SelectLayer(0)
-        pool = Pool(dim="sequence", method="mean")
+        select_layer = pre.SelectLayer(0)
+        pool = pre.Pool(dim="sequence", method="mean")
         probe = Logistic()
 
         pipeline = Pipeline([
@@ -255,8 +255,8 @@ class TestPipelineItemAccess:
 
     def test_getitem_by_index(self):
         """Test accessing steps by index."""
-        select_layer = SelectLayer(0)
-        pool = Pool(dim="sequence", method="mean")
+        select_layer = pre.SelectLayer(0)
+        pool = pre.Pool(dim="sequence", method="mean")
         probe = Logistic()
 
         pipeline = Pipeline([
@@ -272,7 +272,7 @@ class TestPipelineItemAccess:
     def test_getitem_invalid_name_raises(self):
         """Test that invalid name raises KeyError."""
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
+            ("select", pre.SelectLayer(0)),
             ("probe", Logistic()),
         ])
 
@@ -283,8 +283,8 @@ class TestPipelineItemAccess:
         """Test get_probe returns the probe step."""
         probe = Logistic()
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", probe),
         ])
 
@@ -297,9 +297,9 @@ class TestPipelineWithPostTransforms:
     def test_post_probe_pool(self):
         """Test pipeline with pool after probe (token-level training)."""
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
+            ("select", pre.SelectLayer(0)),
             ("probe", Logistic()),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("pool", post.Pool(method="mean")),
         ])
 
         acts = create_activations(n_layers=2, batch_size=10, layer_indices=[0, 1])
@@ -309,7 +309,7 @@ class TestPipelineWithPostTransforms:
 
         # Predict should return sequence-level predictions
         test_acts = create_activations(n_layers=2, batch_size=5, layer_indices=[0, 1])
-        probs = pipeline.predict_proba(test_acts)
+        probs = pipeline.predict(test_acts)
 
         assert probs.shape == (5, 2)
 
@@ -320,8 +320,8 @@ class TestPipelineRepr:
     def test_repr(self):
         """Test repr shows all steps."""
         pipeline = Pipeline([
-            ("select", SelectLayer(16)),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(16)),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -342,8 +342,8 @@ class TestPipelineWithMLP:
         torch.manual_seed(42)
 
         pipeline = Pipeline([
-            ("select", SelectLayer(0)),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(0)),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", MLP(hidden_dim=8)),
         ])
 
@@ -357,7 +357,7 @@ class TestPipelineWithMLP:
         test_acts = create_activations(
             n_layers=2, batch_size=5, d_model=16, layer_indices=[0, 1]
         )
-        probs = pipeline.predict_proba(test_acts)
+        probs = pipeline.predict(test_acts)
 
         assert probs.shape == (5, 2)
         assert torch.all(probs >= 0) and torch.all(probs <= 1)
@@ -370,7 +370,7 @@ class TestPipelineAutoSelectLayer:
         """Test that single-layer activations work without SelectLayer."""
         # Pipeline WITHOUT SelectLayer
         pipeline = Pipeline([
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -384,7 +384,7 @@ class TestPipelineAutoSelectLayer:
 
         # Predict should also work
         test_acts = create_activations(n_layers=1, batch_size=5, layer_indices=[16])
-        probs = pipeline.predict_proba(test_acts)
+        probs = pipeline.predict(test_acts)
         assert probs.shape == (5, 2)
 
     def test_single_layer_auto_select_with_token_level(self):
@@ -392,7 +392,7 @@ class TestPipelineAutoSelectLayer:
         # Pipeline WITHOUT SelectLayer, with post-probe pool
         pipeline = Pipeline([
             ("probe", Logistic()),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("pool", post.Pool(method="mean")),
         ])
 
         # Single-layer activations
@@ -403,14 +403,14 @@ class TestPipelineAutoSelectLayer:
         assert pipeline._probe._fitted
 
         test_acts = create_activations(n_layers=1, batch_size=5, layer_indices=[8])
-        probs = pipeline.predict_proba(test_acts)
+        probs = pipeline.predict(test_acts)
         assert probs.shape == (5, 2)
 
     def test_multi_layer_without_handling_raises(self):
         """Test that multi-layer activations without layer handling raises error."""
-        # Pipeline WITHOUT SelectLayer or Pool(dim="layer")
+        # Pipeline WITHOUT SelectLayer or pre.Pool(dim="layer")
         pipeline = Pipeline([
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -425,8 +425,8 @@ class TestPipelineAutoSelectLayer:
         """Test that multi-layer activations work with explicit SelectLayer."""
         # Pipeline WITH SelectLayer
         pipeline = Pipeline([
-            ("select", SelectLayer(16)),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(16)),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -438,11 +438,11 @@ class TestPipelineAutoSelectLayer:
         assert pipeline._probe._fitted
 
     def test_multi_layer_with_pool_layer_works(self):
-        """Test that multi-layer activations work with Pool(dim='layer')."""
-        # Pipeline WITH Pool(dim="layer")
+        """Test that multi-layer activations work with pre.Pool(dim='layer')."""
+        # Pipeline WITH pre.Pool(dim="layer")
         pipeline = Pipeline([
-            ("pool_layer", Pool(dim="layer", method="mean")),
-            ("pool_seq", Pool(dim="sequence", method="mean")),
+            ("pool_layer", pre.Pool(dim="layer", method="mean")),
+            ("pool_seq", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -457,8 +457,8 @@ class TestPipelineAutoSelectLayer:
         """Test that explicit SelectLayer works even with single-layer activations."""
         # Pipeline WITH explicit SelectLayer
         pipeline = Pipeline([
-            ("select", SelectLayer(16)),
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("select", pre.SelectLayer(16)),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -477,7 +477,7 @@ class TestPipelineAutoSelectLayer:
 
         # Pipeline WITHOUT SelectLayer
         pipeline = Pipeline([
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 
@@ -488,7 +488,7 @@ class TestPipelineAutoSelectLayer:
     def test_error_message_includes_options(self):
         """Test that error message for multi-layer includes helpful options."""
         pipeline = Pipeline([
-            ("pool", Pool(dim="sequence", method="mean")),
+            ("pool", pre.Pool(dim="sequence", method="mean")),
             ("probe", Logistic()),
         ])
 

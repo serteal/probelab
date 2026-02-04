@@ -16,8 +16,8 @@ class ConcreteProbe(BaseProbe):
         self._fitted = True
         return self
 
-    def predict_proba(self, X):
-        """Mock predict_proba implementation."""
+    def predict(self, X):
+        """Mock predict implementation."""
         if not self._fitted:
             raise RuntimeError("Probe not fitted")
         # Return dummy probabilities
@@ -146,4 +146,4 @@ class TestBaseProbe:
         )
 
         with pytest.raises(RuntimeError, match="Probe not fitted"):
-            probe.predict_proba(activations)
+            probe.predict(activations)
