@@ -2,11 +2,13 @@
 
 Each architecture is a frozen dataclass containing callables for accessing
 model internals. The get_arch() function auto-detects the architecture.
+
+Note: Tokenizer-related config (prefix patterns, fold_system, token_padding)
+is in processing/chat_templates.py - this module only handles model structure.
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -24,9 +26,6 @@ class Arch:
     get_layernorm: Callable[[Any, int], "nn.Module"]
     set_layers: Callable[[Any, list], None]
     num_layers: Callable[[Any], int]
-    token_padding: tuple[int, int]  # (left, right)
-    prefix_pattern: re.Pattern[str]
-    fold_system: bool
 
     # Compatibility methods (call the stored callables)
     def get_layer_module(self, model: "PreTrainedModel", layer_idx: int) -> "nn.Module":
@@ -37,15 +36,6 @@ class Arch:
 
     def get_num_layers(self, model: "PreTrainedModel") -> int:
         return self.num_layers(model)
-
-    def get_token_padding(self) -> tuple[int, int]:
-        return self.token_padding
-
-    def get_prefix_pattern(self) -> re.Pattern[str]:
-        return self.prefix_pattern
-
-    def should_fold_system_messages(self) -> bool:
-        return self.fold_system
 
 
 # =============================================================================
@@ -72,20 +62,6 @@ def _num_layers_gemma(model: Any) -> int:
 # Architecture definitions
 # =============================================================================
 
-# LLaMA-style chat template pattern
-_LLAMA_PREFIX = re.compile(
-    r"((<\|pad\|>)*(<\|begin_of_text\|>))?"
-    r"(<\|start_header_id\|>(system|user|assistant)<\|end_header_id\|>\n\n"
-    r"(Cutting Knowledge Date: December 2023\nToday Date: \d\d \w\w\w 202[45]\n\n)?)?"
-    r"(<\|eot_id\|><\|start_header_id\|>(system|user|assistant)<\|end_header_id\|>\n\n)?(\n\n)?"
-)
-
-# Gemma-style chat template pattern
-_GEMMA_PREFIX = re.compile(
-    r"(<pad>)*(<bos>)?<start_of_turn>(user|model)\n|"
-    r"(<end_of_turn>\n)?<start_of_turn>(user|model)\n|(\n\n)?"
-)
-
 ARCHITECTURES: dict[str, Arch] = {
     "llama": Arch(
         get_layers=lambda m: list(m.model.layers),
@@ -93,9 +69,6 @@ ARCHITECTURES: dict[str, Arch] = {
         get_layernorm=lambda m, i: m.model.layers[i].input_layernorm,
         set_layers=lambda m, layers: setattr(m.model, "layers", type(m.model.layers)(layers)),
         num_layers=_num_layers_from_config,
-        token_padding=(4, 1),
-        prefix_pattern=_LLAMA_PREFIX,
-        fold_system=False,
     ),
     "gemma": Arch(
         get_layers=lambda m: list(m.language_model.model.layers),
@@ -103,9 +76,6 @@ ARCHITECTURES: dict[str, Arch] = {
         get_layernorm=lambda m, i: m.language_model.model.layers[i].input_layernorm,
         set_layers=lambda m, layers: setattr(m.language_model.model, "layers", type(m.language_model.model.layers)(layers)),
         num_layers=_num_layers_gemma,
-        token_padding=(3, 2),
-        prefix_pattern=_GEMMA_PREFIX,
-        fold_system=True,
     ),
     "gemma3": Arch(
         get_layers=lambda m: list(m.language_model.layers),
@@ -113,9 +83,6 @@ ARCHITECTURES: dict[str, Arch] = {
         get_layernorm=lambda m, i: m.language_model.layers[i].input_layernorm,
         set_layers=lambda m, layers: setattr(m.language_model, "layers", type(m.language_model.layers)(layers)),
         num_layers=lambda m: m.language_model.config.num_hidden_layers,
-        token_padding=(3, 2),
-        prefix_pattern=_GEMMA_PREFIX,
-        fold_system=True,
     ),
 }
 
@@ -152,16 +119,3 @@ def get_arch_by_name(name: str) -> Arch:
     if name not in ARCHITECTURES:
         raise ValueError(f"Unknown architecture: {name}. Supported: {list(ARCHITECTURES.keys())}")
     return ARCHITECTURES[name]
-
-
-def detect_arch_from_tokenizer(tokenizer_name: str) -> str:
-    """Detect architecture name from tokenizer name/path."""
-    name_lower = tokenizer_name.lower()
-    if "llama" in name_lower:
-        return "llama"
-    if "gemma" in name_lower:
-        return "gemma"
-    raise ValueError(
-        f"Cannot detect architecture from tokenizer: {tokenizer_name}\n"
-        f"Supported: {list(ARCHITECTURES.keys())}"
-    )

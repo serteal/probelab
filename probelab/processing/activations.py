@@ -1,5 +1,5 @@
 """
-Simplified activation collection using generators for cleaner API.
+Activation collection with explicit tokenization.
 
 This module provides tools for extracting activations from language models using hooks,
 with support for different model architectures and efficient memory management.
@@ -7,108 +7,20 @@ with support for different model architectures and efficient memory management.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Generator,
-    Iterable,
-    Iterator,
-    Literal,
-    Sequence,
-    overload,
-)
+from typing import TYPE_CHECKING, Generator, Iterable
 
 import torch
-from tqdm.auto import tqdm
 
-from ..datasets import Dataset
 from ..models import HookedModel
-from ..models.architectures import get_arch
-from ..types import AggregationMethod, Dialogue, HookPoint
+from ..types import AggregationMethod
 from ..utils.pooling import masked_pool
-from .tokenization import tokenize_dialogues
 
 if TYPE_CHECKING:
     from transformers import PreTrainedModel
-    from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-    from ..masks import Mask
-
-# Type alias for collection strategy
-CollectionStrategy = Literal["mean", "max", "last_token"]
-
-
-def _ensure_on_device(
-    batch_inputs: dict[str, torch.Tensor],
-    device: torch.device,
-) -> dict[str, torch.Tensor]:
-    """Move batch inputs to device if not already there."""
-    if batch_inputs["input_ids"].device == device:
-        return batch_inputs
-    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch_inputs.items()}
-
-
-def get_batches(
-    inputs: dict[str, torch.Tensor],
-    batch_size: int,
-    tokenizer: "PreTrainedTokenizerBase",
-) -> Iterator[tuple[dict[str, torch.Tensor], list[int]]]:
-    """Yield length-aware batches while preserving original indices."""
-    seq_lengths = inputs["attention_mask"].sum(dim=1)
-    sorted_indices = torch.sort(seq_lengths, descending=True)[1]
-
-    num_samples = sorted_indices.numel()
-    for start in range(0, num_samples, batch_size):
-        end = min(start + batch_size, num_samples)
-        batch_indices_tensor = sorted_indices[start:end]
-        batch_indices = batch_indices_tensor.tolist()
-
-        batch_lengths = seq_lengths.index_select(0, batch_indices_tensor)
-        batch_length = int(batch_lengths.max().item())
-
-        if tokenizer.padding_side == "right":
-            batch_inputs = {
-                key: tensor.index_select(0, batch_indices_tensor)[..., :batch_length]
-                for key, tensor in inputs.items()
-            }
-        elif tokenizer.padding_side == "left":
-            batch_inputs = {
-                key: tensor.index_select(0, batch_indices_tensor)[..., -batch_length:]
-                for key, tensor in inputs.items()
-            }
-        else:
-            raise ValueError(f"Unknown padding side: {tokenizer.padding_side}")
-
-        yield batch_inputs, batch_indices
-
-
-def get_n_layers(model: "PreTrainedModel") -> int:
-    """Get number of layers in the model using the architecture registry."""
-    architecture = get_arch(model)
-    return architecture.get_num_layers(model)
-
-
-def get_hidden_dim(model: "PreTrainedModel") -> int:
-    """Get hidden dimension of the model."""
-    config = model.config
-    if hasattr(config, "hidden_size"):
-        return config.hidden_size  # type: ignore
-    elif hasattr(config, "text_config") and hasattr(config.text_config, "hidden_size"):
-        return config.text_config.hidden_size  # type: ignore
-    else:
-        raise ValueError(f"Cannot determine hidden dimension for {model.name_or_path}")
-
-
-def _resolve_verbose(verbose: bool | None) -> bool:
-    """Resolve verbose parameter using environment variable defaults."""
-    if verbose is None:
-        verbose = os.environ.get("PROBELAB_VERBOSE", "true").lower() != "false"
-    if os.environ.get("PROBELAB_DISABLE_PROGRESS", "").lower() in ("1", "true", "yes"):
-        verbose = False
-    return verbose
+    from .tokenization import Tokens
 
 
 class Axis(Enum):
@@ -714,121 +626,47 @@ class Activations:
 
 
 # ---------------------------------------------------------------------------
-# Core batch iteration (single source of truth)
+# Internal helpers
 # ---------------------------------------------------------------------------
 
 
-def _iter_batches(
-    model: "PreTrainedModel",
-    tokenizer: "PreTrainedTokenizerBase",
-    tokenized_inputs: dict[str, torch.Tensor],
-    layers: list[int],
-    batch_size: int,
-    hook_point: HookPoint,
-    detach_activations: bool,
-) -> Generator[tuple[torch.Tensor, list[int], dict[str, Any]], None, None]:
-    """Core generator yielding (activations, indices, meta) per batch."""
-    with HookedModel(model, layers, detach_activations=detach_activations, hook_point=hook_point) as hooked:
-        for batch_inputs, batch_indices in get_batches(tokenized_inputs, batch_size, tokenizer):
-            batch_inputs = _ensure_on_device(batch_inputs, model.device)
-            acts = hooked.get_activations(batch_inputs).cpu()
-            yield acts, batch_indices, {
-                "attention_mask": batch_inputs["attention_mask"].cpu(),
-                "detection_mask": batch_inputs["detection_mask"].cpu(),
-                "input_ids": batch_inputs["input_ids"].cpu(),
-                "seq_len": batch_inputs["input_ids"].shape[1],
-            }
+def _batches(
+    tokens: "Tokens", batch_size: int
+) -> Generator[tuple[dict[str, torch.Tensor], list[int]], None, None]:
+    """Yield (batch_dict, indices) sorted by length for efficiency."""
+    from .tokenization import Tokens
+
+    seq_lens = tokens.attention_mask.sum(1)
+    order = seq_lens.argsort(descending=True)
+    for i in range(0, len(order), batch_size):
+        idx = order[i : i + batch_size]
+        max_len = int(seq_lens[idx].max())
+        if tokens.padding_side == "right":
+            sl = slice(None, max_len)
+        else:
+            sl = slice(-max_len, None)
+        yield {
+            "input_ids": tokens.input_ids[idx][..., sl],
+            "attention_mask": tokens.attention_mask[idx][..., sl],
+            "detection_mask": tokens.detection_mask[idx][..., sl],
+        }, idx.tolist()
 
 
-def _materialize(
-    gen: Generator[tuple[torch.Tensor, list[int], dict[str, Any]], None, None],
-    n_samples: int,
-    max_seq_len: int,
-    hidden_dim: int,
-    n_layers: int,
-    dtype: torch.dtype,
-    tokenizer: "PreTrainedTokenizerBase",
-    pool: AggregationMethod | None = None,
-) -> torch.Tensor:
-    """Materialize generator into single tensor, optionally pooling."""
-    if pool:
-        out = torch.zeros(n_layers, n_samples, hidden_dim, dtype=dtype)
-        for acts, indices, meta in gen:
-            pooled = masked_pool(acts, meta["detection_mask"], pool, seq_dim=2, batch_dim=1)
-            out[:, indices] = pooled
-    else:
-        out = torch.zeros(n_layers, n_samples, max_seq_len, hidden_dim, dtype=dtype)
-        for acts, indices, meta in gen:
-            sl = meta["seq_len"]
-            if tokenizer.padding_side == "right":
-                out[:, indices, :sl] = acts
-            else:
-                out[:, indices, -sl:] = acts
-    return out
+def _extract(model: "PreTrainedModel", batch: dict, layers: list[int]) -> torch.Tensor:
+    """Extract activations [layers, batch, seq, hidden] from one batch."""
+    batch_gpu = {k: v.to(model.device) for k, v in batch.items() if k != "detection_mask"}
+    with HookedModel(model, layers, detach_activations=True) as h:
+        return h.get_activations(batch_gpu).cpu()
 
 
-# ---------------------------------------------------------------------------
-# Streaming iterator
-# ---------------------------------------------------------------------------
-
-
-class ActivationIterator:
-    """Regenerable iterator for streaming activations."""
-
-    __slots__ = (
-        "_model", "_tokenizer", "_tokenized_inputs", "_layers",
-        "_batch_size", "_verbose", "_num_batches", "_hook_point", "_detach",
-    )
-
-    def __init__(
-        self,
-        model: "PreTrainedModel",
-        tokenizer: "PreTrainedTokenizerBase",
-        tokenized_inputs: dict[str, torch.Tensor],
-        layers: list[int],
-        batch_size: int,
-        verbose: bool | None,
-        num_batches: int,
-        hook_point: HookPoint = HookPoint.POST_BLOCK,
-        detach_activations: bool = True,
-    ):
-        self._model = model
-        self._tokenizer = tokenizer
-        self._tokenized_inputs = tokenized_inputs
-        self._layers = layers
-        self._batch_size = batch_size
-        self._verbose = _resolve_verbose(verbose)
-        self._num_batches = num_batches
-        self._hook_point = hook_point
-        self._detach = detach_activations
-
-    @property
-    def layers(self) -> list[int]:
-        return self._layers
-
-    def __len__(self) -> int:
-        return self._num_batches
-
-    def __iter__(self) -> Iterator[Activations]:
-        gen = _iter_batches(
-            self._model, self._tokenizer, self._tokenized_inputs,
-            self._layers, self._batch_size, self._hook_point, self._detach,
-        )
-        if self._verbose:
-            gen = tqdm(gen, desc="Collecting activations", total=self._num_batches)
-
-        for acts, indices, meta in gen:
-            yield Activations(
-                activations=acts,
-                axes=_DEFAULT_AXES,
-                layer_meta=LayerMeta(tuple(self._layers)),
-                sequence_meta=SequenceMeta(
-                    attention_mask=meta["attention_mask"],
-                    detection_mask=meta["detection_mask"],
-                    input_ids=meta["input_ids"],
-                ),
-                batch_indices=torch.as_tensor(indices, dtype=torch.long),
-            )
+def _hidden_dim(model: "PreTrainedModel") -> int:
+    """Get hidden dimension from model config."""
+    cfg = model.config
+    if hasattr(cfg, "hidden_size"):
+        return cfg.hidden_size
+    if hasattr(cfg, "text_config") and hasattr(cfg.text_config, "hidden_size"):
+        return cfg.text_config.hidden_size
+    raise ValueError(f"Cannot determine hidden dimension for {type(model)}")
 
 
 # ---------------------------------------------------------------------------
@@ -836,125 +674,87 @@ class ActivationIterator:
 # ---------------------------------------------------------------------------
 
 
-@overload
-def collect_activations(
+def stream_activations(
     model: "PreTrainedModel",
-    tokenizer: "PreTrainedTokenizerBase",
-    dataset: Dataset,
-    *,
-    layers: int | list[int],
-    mask: "Mask",
+    tokens: "Tokens",
+    layers: list[int] | int,
     batch_size: int = 32,
-    streaming: Literal[False] = False,
-    collection_strategy: CollectionStrategy | None = None,
-    hook_point: HookPoint = HookPoint.POST_BLOCK,
-    add_generation_prompt: bool = False,
-    detach_activations: bool = True,
-    verbose: bool | None = None,
-) -> Activations: ...
-
-
-@overload
-def collect_activations(
-    model: "PreTrainedModel",
-    tokenizer: "PreTrainedTokenizerBase",
-    dataset: Dataset,
-    *,
-    layers: int | list[int],
-    mask: "Mask",
-    batch_size: int = 32,
-    streaming: Literal[True],
-    collection_strategy: CollectionStrategy | None = None,
-    hook_point: HookPoint = HookPoint.POST_BLOCK,
-    add_generation_prompt: bool = False,
-    detach_activations: bool = True,
-    verbose: bool | None = None,
-) -> ActivationIterator: ...
-
-
-def collect_activations(
-    model: "PreTrainedModel",
-    tokenizer: "PreTrainedTokenizerBase",
-    dataset: Dataset,
-    *,
-    layers: int | list[int],
-    mask: "Mask",
-    batch_size: int = 32,
-    streaming: bool = False,
-    collection_strategy: CollectionStrategy | None = None,
-    hook_point: HookPoint = HookPoint.POST_BLOCK,
-    add_generation_prompt: bool = False,
-    detach_activations: bool = True,
-    verbose: bool | None = None,
-) -> Activations | ActivationIterator:
-    """Collect activations from a dataset.
+) -> Generator[tuple[torch.Tensor, list[int], int], None, None]:
+    """Yield (activations, indices, seq_len) per batch.
 
     Args:
-        model: Model providing hidden states.
-        tokenizer: Tokenizer aligned with model.
-        dataset: Dataset containing dialogues and labels.
-        layers: Layer index or indices to record.
-        mask: Mask function determining which tokens to detect.
-        batch_size: Sequences per batch. Default: 32.
-        streaming: Yield batches lazily if True. Default: False.
-        collection_strategy: Pooling during collection ("mean", "max", "last_token").
-        hook_point: Where to extract activations ("post_block" or "pre_layernorm").
-        add_generation_prompt: Append generation tokens before tokenization.
-        detach_activations: Detach from computation graph. Default: True.
-        verbose: Show progress. If None, uses PROBELAB_VERBOSE env var.
+        model: Model to extract activations from.
+        tokens: Tokenized inputs from tokenize_dialogues().
+        layers: Layer index or list of indices.
+        batch_size: Batch size for extraction.
+
+    Yields:
+        (acts, indices, seq_len) where:
+        - acts: [n_layers, batch, seq, hidden] tensor
+        - indices: original sample indices for this batch
+        - seq_len: sequence length for this batch
+    """
+    layers = [layers] if isinstance(layers, int) else list(layers)
+    for batch, idx in _batches(tokens, batch_size):
+        yield _extract(model, batch, layers), idx, batch["input_ids"].shape[1]
+
+
+def collect_activations(
+    model: "PreTrainedModel",
+    tokens: "Tokens",
+    layers: list[int] | int,
+    batch_size: int = 32,
+    pool: str | None = None,
+) -> Activations:
+    """Collect all activations into single Activations object.
+
+    Args:
+        model: Model to extract activations from.
+        tokens: Tokenized inputs from tokenize_dialogues().
+        layers: Layer index or list of indices.
+        batch_size: Batch size for extraction.
+        pool: Optional pooling over sequence ("mean", "max", "last_token").
 
     Returns:
-        Activations object (or ActivationIterator if streaming=True).
+        Activations with shape [layers, batch, seq, hidden] or
+        [layers, batch, hidden] if pooled.
     """
-    layers = [layers] if isinstance(layers, int) else layers
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    tokenized = tokenize_dialogues(
-        tokenizer=tokenizer,
-        dialogues=dataset.dialogues,
-        mask=mask,
-        device="cpu",
-        add_generation_prompt=add_generation_prompt,
-        return_tensors="pt",
-        padding=True,
-    )
-
-    n_samples, max_seq = tokenized["input_ids"].shape
-    num_batches = (n_samples + batch_size - 1) // batch_size
-
-    if streaming:
-        return ActivationIterator(
-            model, tokenizer, tokenized, layers, batch_size,
-            verbose, num_batches, hook_point, detach_activations,
-        )
-
-    # Materialize activations
-    pool = AggregationMethod(collection_strategy) if collection_strategy else None
-    gen = _iter_batches(model, tokenizer, tokenized, layers, batch_size, hook_point, detach_activations)
-
-    if _resolve_verbose(verbose):
-        desc = f"Collecting ({pool.value} pooled)" if pool else "Collecting activations"
-        gen = tqdm(gen, desc=desc, total=num_batches)
-
-    data = _materialize(gen, n_samples, max_seq, get_hidden_dim(model), len(layers), model.dtype, tokenizer, pool)
+    layers = [layers] if isinstance(layers, int) else list(layers)
+    n, max_seq, d = len(tokens), tokens.seq_len, _hidden_dim(model)
 
     if pool:
+        method = AggregationMethod(pool)
+        out = torch.zeros(len(layers), n, d, dtype=model.dtype)
+        for acts, idx, sl in stream_activations(model, tokens, layers, batch_size):
+            if tokens.padding_side == "right":
+                mask = tokens.detection_mask[idx, :sl]
+            else:
+                mask = tokens.detection_mask[idx, -sl:]
+            out[:, idx] = masked_pool(acts, mask, method, seq_dim=2, batch_dim=1)
+
         return Activations(
-            activations=data,
+            activations=out,
             axes=(Axis.LAYER, Axis.BATCH, Axis.HIDDEN),
             layer_meta=LayerMeta(tuple(layers)),
             sequence_meta=None,
-            batch_indices=torch.arange(n_samples, dtype=torch.long),
+            batch_indices=torch.arange(n, dtype=torch.long),
         )
+
+    out = torch.zeros(len(layers), n, max_seq, d, dtype=model.dtype)
+    for acts, idx, sl in stream_activations(model, tokens, layers, batch_size):
+        if tokens.padding_side == "right":
+            out[:, idx, :sl] = acts
+        else:
+            out[:, idx, -sl:] = acts
+
     return Activations(
-        activations=data,
+        activations=out,
         axes=_DEFAULT_AXES,
         layer_meta=LayerMeta(tuple(layers)),
         sequence_meta=SequenceMeta(
-            attention_mask=tokenized["attention_mask"],
-            detection_mask=tokenized["detection_mask"],
-            input_ids=tokenized["input_ids"],
+            attention_mask=tokens.attention_mask,
+            detection_mask=tokens.detection_mask,
+            input_ids=tokens.input_ids,
         ),
-        batch_indices=torch.arange(n_samples, dtype=torch.long),
+        batch_indices=torch.arange(n, dtype=torch.long),
     )
