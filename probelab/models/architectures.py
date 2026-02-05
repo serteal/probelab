@@ -165,24 +165,3 @@ def detect_arch_from_tokenizer(tokenizer_name: str) -> str:
         f"Cannot detect architecture from tokenizer: {tokenizer_name}\n"
         f"Supported: {list(ARCHITECTURES.keys())}"
     )
-
-
-# =============================================================================
-# Backwards compatibility shim (to be removed)
-# =============================================================================
-
-
-class ArchitectureRegistry:
-    """Backwards compatibility wrapper. Use get_arch() directly."""
-
-    @classmethod
-    def get_architecture(cls, model: "PreTrainedModel") -> Arch:
-        return get_arch(model)
-
-    @classmethod
-    def get_architecture_by_name(cls, name: str) -> Arch:
-        return get_arch_by_name(name)
-
-    @classmethod
-    def detect_from_tokenizer_name(cls, tokenizer_name: str) -> str:
-        return detect_arch_from_tokenizer(tokenizer_name)

@@ -14,7 +14,7 @@ import torch
 from ..datasets import Dataset
 from ..logger import logger
 from ..masks import Mask, TokenMetadata
-from ..models.architectures import ArchitectureRegistry
+from ..models.architectures import detect_arch_from_tokenizer, get_arch_by_name
 from ..types import Dialogue, Message
 
 if TYPE_CHECKING:
@@ -85,7 +85,7 @@ def build_token_metadata(
 
     model_family = get_model_family(tokenizer)
     prefix_pattern = _get_prefix_pattern(model_family)
-    arch = ArchitectureRegistry.get_architecture_by_name(model_family)
+    arch = get_arch_by_name(model_family)
     pad_left, pad_right = arch.get_token_padding()
 
     for batch_idx, dialogue in enumerate(dialogues):
@@ -379,4 +379,4 @@ def get_model_family(tokenizer: "PreTrainedTokenizerBase") -> str:
     Returns:
         Model family string ("llama", "gemma", etc.)
     """
-    return ArchitectureRegistry.detect_from_tokenizer_name(tokenizer.name_or_path)
+    return detect_arch_from_tokenizer(tokenizer.name_or_path)
