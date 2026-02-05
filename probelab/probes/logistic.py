@@ -32,7 +32,7 @@ class Logistic(BaseProbe):
     - If X has no SEQ axis: Trains on sequences, returns sequence-level scores
     """
 
-    def __init__(self, C: float = 1.0, max_iter: int = 100, device: str = "cuda"):
+    def __init__(self, C: float = 1.0, max_iter: int = 100, device: str | None = None):
         super().__init__(device=device)
         self.C = C
         self.max_iter = max_iter
@@ -49,6 +49,10 @@ class Logistic(BaseProbe):
                 f"Logistic expects no LAYER axis. "
                 f"Add SelectLayer({X.layer_indices[0]}) to pipeline."
             )
+
+        # Auto-detect device from input if not specified
+        if self.device is None:
+            self.device = str(X.activations.device)
 
         y_tensor = self._to_labels(y).to(self.device)
 
@@ -143,7 +147,7 @@ class Logistic(BaseProbe):
         }, path)
 
     @classmethod
-    def load(cls, path: Path | str, device: str = "cuda") -> "Logistic":
+    def load(cls, path: Path | str, device: str = "cpu") -> "Logistic":
         state = torch.load(Path(path), map_location="cpu")
         probe = cls(C=state["C"], max_iter=state["max_iter"], device=device)
         probe._d_model = state["d_model"]

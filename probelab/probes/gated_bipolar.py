@@ -83,7 +83,7 @@ class GatedBipolar(BaseProbe):
         weight_decay: float = 1e-3,
         n_epochs: int = 20,
         patience: int = 5,
-        device: str = "cuda",
+        device: str | None = None,
     ):
         super().__init__(device=device)
         self.mlp_hidden_dim = mlp_hidden_dim
@@ -123,6 +123,10 @@ class GatedBipolar(BaseProbe):
             )
         if not X.has_axis(Axis.SEQ):
             raise ValueError("GatedBipolar probe requires SEQ axis")
+
+        # Auto-detect device from input if not specified
+        if self.device is None:
+            self.device = str(X.activations.device)
 
         y_tensor = self._to_labels(y)
         sequences = X.activations.detach()
@@ -221,7 +225,7 @@ class GatedBipolar(BaseProbe):
         }, path)
 
     @classmethod
-    def load(cls, path: Path | str, device: str = "cuda") -> "GatedBipolar":
+    def load(cls, path: Path | str, device: str = "cpu") -> "GatedBipolar":
         state = torch.load(Path(path), map_location="cpu")
         probe = cls(
             mlp_hidden_dim=state["mlp_hidden_dim"],

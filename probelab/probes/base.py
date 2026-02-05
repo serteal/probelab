@@ -16,10 +16,13 @@ class BaseProbe(ABC):
     They adapt based on input dimensionality:
     - If activations have SEQ axis: Train/predict on tokens
     - If no SEQ axis: Train/predict on sequences
+
+    Args:
+        device: Device to use. If None, auto-detects from input in fit().
     """
 
-    def __init__(self, device: str = "cuda"):
-        self.device = device if torch.cuda.is_available() or device == "cpu" else "cpu"
+    def __init__(self, device: str | None = None):
+        self.device = device  # None = auto-detect from input
         self._fitted = False
 
     @abstractmethod
@@ -39,7 +42,7 @@ class BaseProbe(ABC):
 
     @classmethod
     @abstractmethod
-    def load(cls, path: Path | str, device: str = "cuda") -> "BaseProbe":
+    def load(cls, path: Path | str, device: str = "cpu") -> "BaseProbe":
         """Load probe from disk."""
         pass
 

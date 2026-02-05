@@ -55,7 +55,7 @@ class MLP(BaseProbe):
         weight_decay: float = 0.01,
         n_epochs: int = 100,
         batch_size: int = 32,
-        device: str = "cuda",
+        device: str | None = None,
     ):
         super().__init__(device=device)
         self.hidden_dim = hidden_dim
@@ -89,6 +89,10 @@ class MLP(BaseProbe):
             raise ValueError(
                 f"MLP expects no LAYER axis. Add SelectLayer({X.layer_indices[0]}) to pipeline."
             )
+
+        # Auto-detect device from input if not specified
+        if self.device is None:
+            self.device = str(X.activations.device)
 
         y_tensor = self._to_labels(y)
 
@@ -180,7 +184,7 @@ class MLP(BaseProbe):
         }, path)
 
     @classmethod
-    def load(cls, path: Path | str, device: str = "cuda") -> "MLP":
+    def load(cls, path: Path | str, device: str = "cpu") -> "MLP":
         state = torch.load(Path(path), map_location="cpu")
         probe = cls(
             hidden_dim=state["hidden_dim"],
