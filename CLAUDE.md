@@ -42,9 +42,6 @@ from probelab.metrics import auroc, recall_at_fpr
 
 # Masks for selective token processing
 from probelab import masks
-
-# Utilities
-from probelab import Normalize  # For feature normalization
 ```
 
 ## Commands
@@ -126,7 +123,6 @@ probelab/
 │   ├── role.py         # assistant, user, system
 │   └── composite.py    # AndMask, OrMask, NotMask
 ├── utils/               # Utilities
-│   ├── normalize.py    # Normalize class for feature normalization
 │   ├── pooling.py      # masked_pool utility
 │   └── validation.py   # check_activations, check_scores
 ├── metrics.py           # auroc, recall_at_fpr, etc.
@@ -276,18 +272,6 @@ mask = pl.masks.AndMask(
 )
 
 acts = pl.collect_activations(..., mask=mask)
-```
-
-**5. Feature Normalization**
-```python
-from probelab import Normalize
-
-# Fit normalizer on training data
-norm = Normalize().fit(train_acts)
-
-# Apply to train and test
-train_norm = norm(train_acts)
-test_norm = norm(test_acts)
 ```
 
 ### Adding New Probes

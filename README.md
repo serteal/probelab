@@ -2,13 +2,6 @@
 
 A library for training probes on LLM activations.
 
-## Features
-
-- Efficient extraction of activations from any layer of transformer models
-- Train various probe architectures (logistic regression, MLPs, attention-based)
-- Work with dialogue/message-based data using fine-grained detection masks
-- 60+ built-in datasets across 12 categories with a registry API
-
 ## Installation
 
 ```bash

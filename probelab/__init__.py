@@ -7,7 +7,6 @@ from . import datasets, masks, metrics, probes, processing
 from .logger import logger
 from .processing import Activations, Scores
 from .types import Label
-from .utils import Normalize
 
 __version__ = "0.1.0"
 
@@ -16,7 +15,6 @@ __all__ = [
     "Activations",
     "Scores",
     "Label",
-    "Normalize",
     "logger",
     # Submodule access
     "processing",
