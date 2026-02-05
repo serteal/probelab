@@ -174,7 +174,8 @@ def masked_pool(
         rolling_masked = rolling_means.masked_fill(~valid_windows, float("-inf"))
         pooled = rolling_masked.max(dim=seq_dim).values
 
-        no_valid = ~valid_windows.any(dim=seq_dim)
+        # Handle empty sequences using original mask (not expanded valid_windows)
+        no_valid = ~mask_bool.any(dim=1)
         if no_valid.any():
             indexer = [slice(None)] * pooled.ndim
             indexer[batch_dim] = no_valid

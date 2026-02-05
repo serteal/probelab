@@ -325,5 +325,48 @@ class TestProbeEdgeCases(unittest.TestCase):
     p = Logistic(device="cpu").fit(prepared, labels)
     self.assertTrue(p._fitted)
 
+class TestProbeDeviceHandling(unittest.TestCase):
+  """Test device handling edge cases for probes."""
+
+  def test_logistic_token_level_device_consistency(self):
+    """Test that token-level training handles device correctly."""
+    # Create activations (on CPU)
+    acts, labels = _separable_acts(n_samples=10, seq=5)
+    prepared = acts.select(layer=0)  # Keep SEQ axis for token-level
+
+    # Train on CPU - should work without device mismatch
+    p = Logistic(device="cpu").fit(prepared, labels)
+    self.assertTrue(p._fitted)
+    self.assertTrue(p._trained_on_tokens)
+
+    # Verify prediction works
+    scores = p.predict(prepared)
+    self.assertEqual(scores.shape[0], 10)
+
+  def test_mlp_token_level_device_consistency(self):
+    """Test that MLP token-level training handles device correctly."""
+    acts, labels = _separable_acts(n_samples=10, seq=5)
+    prepared = acts.select(layer=0)
+
+    p = MLP(hidden_dim=16, n_epochs=5, device="cpu").fit(prepared, labels)
+    self.assertTrue(p._fitted)
+    self.assertTrue(p._trained_on_tokens)
+
+    scores = p.predict(prepared)
+    self.assertEqual(scores.shape[0], 10)
+
+  def test_logistic_repeat_interleave_same_device(self):
+    """Verify repeat_interleave uses consistent device for labels and tokens_per_sample."""
+    # This test specifically checks the fix for device mismatch in repeat_interleave
+    acts, labels = _separable_acts(n_samples=6, seq=4)
+    prepared = acts.select(layer=0)
+
+    p = Logistic(device="cpu")
+    p.fit(prepared, labels)
+
+    # If device handling is wrong, this would fail during fit
+    self.assertTrue(p._fitted)
+    self.assertEqual(p._tokens_per_sample.sum().item(), 6 * 4)  # All tokens detected
+
 if __name__ == '__main__':
   unittest.main()

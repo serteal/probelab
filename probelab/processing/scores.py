@@ -114,6 +114,13 @@ class Scores:
             )
         elif scores.ndim == 2:
             # Flattened [n_tokens, 2] format - reshape to [batch, max_seq, 2]
+            expected_tokens = int(tokens_per_sample.sum().item())
+            if scores.shape[0] != expected_tokens:
+                raise ValueError(
+                    f"Token count mismatch: scores has {scores.shape[0]} tokens, "
+                    f"but tokens_per_sample sums to {expected_tokens}"
+                )
+
             batch_size = len(tokens_per_sample)
             max_seq = int(tokens_per_sample.max().item())
             n_classes = scores.shape[-1]
@@ -267,6 +274,14 @@ class Scores:
         """Device of the score tensor."""
         return self.scores.device
 
+    def _build_sequence_mask(self, seq_len: int) -> torch.Tensor:
+        """Build mask from tokens_per_sample for sequence operations."""
+        batch_size = self.scores.shape[0]
+        if self.tokens_per_sample is not None:
+            seq_idx = torch.arange(seq_len, device=self.scores.device)
+            return seq_idx.unsqueeze(0) < self.tokens_per_sample.to(self.scores.device).unsqueeze(1)
+        return torch.ones(batch_size, seq_len, device=self.scores.device, dtype=torch.bool)
+
     def ema(self, alpha: float = 0.5) -> "Scores":
         """EMA pooling over sequence: EMA_j = alpha * score_j + (1-alpha) * EMA_{j-1}, then max.
 
@@ -282,16 +297,7 @@ class Scores:
         from ..utils.pooling import masked_pool
 
         scores = self.scores[:, :, 1]  # Positive class [batch, seq]
-        batch_size, seq_len = scores.shape
-
-        # Build mask
-        if self.tokens_per_sample is not None:
-            seq_idx = torch.arange(seq_len, device=scores.device)
-            mask = seq_idx.unsqueeze(0) < self.tokens_per_sample.to(scores.device).unsqueeze(1)
-        else:
-            mask = torch.ones(batch_size, seq_len, device=scores.device, dtype=torch.bool)
-
-        # Use masked_pool with EMA method
+        mask = self._build_sequence_mask(scores.shape[1])
         max_scores = masked_pool(scores, mask, "ema", seq_dim=1, batch_dim=0, alpha=alpha)
 
         probs = torch.stack([1 - max_scores, max_scores], dim=-1)
@@ -312,16 +318,7 @@ class Scores:
         from ..utils.pooling import masked_pool
 
         scores = self.scores[:, :, 1]  # Positive class [batch, seq]
-        batch_size, seq_len = scores.shape
-
-        # Build mask
-        if self.tokens_per_sample is not None:
-            seq_idx = torch.arange(seq_len, device=scores.device)
-            mask = seq_idx.unsqueeze(0) < self.tokens_per_sample.to(scores.device).unsqueeze(1)
-        else:
-            mask = torch.ones(batch_size, seq_len, device=scores.device, dtype=torch.bool)
-
-        # Use masked_pool with rolling method
+        mask = self._build_sequence_mask(scores.shape[1])
         max_scores = masked_pool(scores, mask, "rolling", seq_dim=1, batch_dim=0, window_size=window_size)
 
         probs = torch.stack([1 - max_scores, max_scores], dim=-1)

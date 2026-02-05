@@ -227,5 +227,59 @@ class TestScoresEdgeCases(unittest.TestCase):
     # Samples with 0 tokens should get 0 probability
     self.assertTrue(torch.allclose(p.scores[1], torch.tensor([0.5, 0.5]), atol=0.5))
 
+  def test_from_token_scores_mismatch_raises(self):
+    # 10 tokens but tokens_per_sample sums to 8 - should raise
+    t = torch.rand(10, 2)
+    tps = torch.tensor([3, 2, 2, 1])  # sum = 8, but tensor has 10
+    with self.assertRaises(ValueError) as ctx:
+      Scores.from_token_scores(t, tps)
+    self.assertIn("Token count mismatch", str(ctx.exception))
+
+  def test_from_token_scores_valid_sum(self):
+    # 10 tokens and tokens_per_sample sums to 10 - should work
+    t = torch.rand(10, 2)
+    tps = torch.tensor([3, 2, 4, 1])  # sum = 10
+    s = Scores.from_token_scores(t, tps)
+    self.assertEqual(s.shape, (4, 4, 2))
+
+class TestBuildSequenceMask(unittest.TestCase):
+  """Tests for _build_sequence_mask helper."""
+
+  def test_with_tokens_per_sample(self):
+    t = torch.rand(4, 8, 2)
+    tps = torch.tensor([3, 5, 2, 8])
+    s = Scores.from_token_scores(t, tps)
+    mask = s._build_sequence_mask(8)
+    # Check shape
+    self.assertEqual(mask.shape, (4, 8))
+    # Check values: sample 0 has 3 tokens, so first 3 should be True
+    self.assertTrue(mask[0, :3].all())
+    self.assertFalse(mask[0, 3:].any())
+    # Sample 3 has 8 tokens, all should be True
+    self.assertTrue(mask[3].all())
+
+  def test_without_tokens_per_sample(self):
+    t = torch.rand(4, 8, 2)
+    s = Scores(t, axes=(ScoreAxis.BATCH, ScoreAxis.SEQ, ScoreAxis.CLASS))
+    mask = s._build_sequence_mask(8)
+    # Without tokens_per_sample, all should be True
+    self.assertTrue(mask.all())
+    self.assertEqual(mask.shape, (4, 8))
+
+  def test_mask_used_in_ema(self):
+    # Verify the mask is correctly applied in ema pooling
+    t = torch.ones(2, 4, 2)
+    tps = torch.tensor([2, 4])
+    s = Scores.from_token_scores(t, tps)
+    result = s.ema(alpha=0.5)
+    self.assertEqual(result.shape, (2, 2))
+
+  def test_mask_used_in_rolling(self):
+    t = torch.ones(2, 4, 2)
+    tps = torch.tensor([2, 4])
+    s = Scores.from_token_scores(t, tps)
+    result = s.rolling(window_size=2)
+    self.assertEqual(result.shape, (2, 2))
+
 if __name__ == '__main__':
   unittest.main()

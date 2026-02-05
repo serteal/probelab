@@ -55,7 +55,7 @@ class Logistic(BaseProbe):
         # Get features based on shape
         if X.has_axis(Axis.SEQ):
             features, self._tokens_per_sample = X.extract_tokens()
-            labels = torch.repeat_interleave(y_tensor, self._tokens_per_sample.to(self.device))
+            labels = torch.repeat_interleave(y_tensor, self._tokens_per_sample.to(y_tensor.device))
             self._trained_on_tokens = True
         else:
             features = X.activations
