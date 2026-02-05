@@ -70,9 +70,12 @@ uv run pytest tests/
 # Run tests with verbose output
 uv run pytest tests/ -v
 
-# Run specific test modules
-uv run pytest tests/processing/ -v  # All processing tests
-uv run pytest tests/probes/ -v      # All probe tests
+# Run specific test files
+uv run pytest tests/test_activations.py -v
+uv run pytest tests/test_probes.py -v
+uv run pytest tests/test_scores.py -v
+uv run pytest tests/test_masks.py -v
+uv run pytest tests/test_metrics.py -v
 
 # Run with coverage
 uv run pytest tests/ --cov=probelab --cov-report=html --cov-report=term
@@ -291,7 +294,7 @@ test_norm = norm(test_acts)
 
 1. Create class inheriting from `BaseProbe` in `probes/`
 2. Implement: `fit(X: Activations, y) -> self`, `predict(X: Activations) -> Scores`, `save()`, `load()`
-3. Add tests in `tests/probes/`
+3. Add tests in `tests/test_probes.py`
 
 ### Best Practices
 
