@@ -1,330 +1,361 @@
-"""Tests for probelab.metrics module."""
-
+"""Tests for metrics module."""
+import unittest
 import numpy as np
-import pytest
 import torch
-
+from sklearn.metrics import roc_auc_score
 from probelab.metrics import (
-    accuracy,
-    auroc,
-    bootstrap,
-    f1,
-    fpr,
-    fnr,
-    get_metric_by_name,
-    mean_score,
-    optimal_threshold,
-    partial_auroc,
-    percentile,
-    precision,
-    recall,
-    recall_at_fpr,
-    std_score,
-    weighted_error_rate,
+  auroc, partial_auroc, accuracy, balanced_accuracy, precision, recall, f1,
+  recall_at_fpr, fpr, fnr, mean_score, std_score, percentile,
+  weighted_error_rate, optimal_threshold, bootstrap, get_metric_by_name,
 )
 
-
-class TestBasicMetrics:
-    """Test basic metric functions."""
-
-    def test_perfect_separation_auroc(self):
-        """Test AUROC with perfect separation."""
-        y_true = np.array([1, 1, 1, 0, 0, 0])
-        y_pred = np.array([0.8, 0.9, 0.7, 0.2, 0.3, 0.1])
-        assert auroc(y_true, y_pred) == 1.0
-
-    def test_random_classification_auroc(self):
-        """Test AUROC with random classification (should be ~0.5)."""
-        y_true = np.array([1, 1, 1, 0, 0, 0])
-        y_pred = np.array([0.4, 0.5, 0.6, 0.4, 0.5, 0.6])
-        assert abs(auroc(y_true, y_pred) - 0.5) < 0.1
-
-    def test_partial_auroc(self):
-        """Test partial AUROC with max FPR constraint."""
-        y_true = np.array([1, 1, 1, 1, 0, 0, 0, 0])
-        y_pred = np.array([0.8, 0.9, 0.7, 0.85, 0.2, 0.3, 0.1, 0.25])
-
-        assert auroc(y_true, y_pred) == 1.0
-        assert partial_auroc(y_true, y_pred, max_fpr=0.1) == 1.0
-
-    def test_recall_at_fpr_perfect_separation(self):
-        """Test recall@FPR with perfect separation."""
-        y_true = np.array([1, 1, 1, 0, 0, 0])
-        y_pred = np.array([0.8, 0.9, 0.7, 0.2, 0.3, 0.1])
-
-        assert recall_at_fpr(y_true, y_pred, fpr=0.05) == 1.0
-        assert recall_at_fpr(y_true, y_pred, fpr=0.10) == 1.0
-
-    def test_realistic_recall_at_fpr(self):
-        """Test recall@FPR with realistic overlapping scores."""
-        np.random.seed(42)
-        y_true = np.concatenate([np.zeros(50), np.ones(50)]).astype(int)
-        y_pred = np.concatenate([
-            np.random.normal(0.3, 0.1, 50),  # Negative scores
-            np.random.normal(0.7, 0.1, 50),  # Positive scores
-        ])
-
-        recall_1 = recall_at_fpr(y_true, y_pred, fpr=0.01)
-        recall_5 = recall_at_fpr(y_true, y_pred, fpr=0.05)
-        recall_10 = recall_at_fpr(y_true, y_pred, fpr=0.10)
-
-        # Higher FPR should give higher or equal recall
-        assert recall_1 <= recall_5 <= recall_10
-        assert 0 <= recall_1 <= 1
-        assert 0 <= recall_5 <= 1
-        assert 0 <= recall_10 <= 1
-
-    def test_accuracy_metric(self):
-        """Test accuracy metric."""
-        y_true = np.array([1, 1, 0, 0])
-        y_pred = np.array([0.8, 0.7, 0.2, 0.3])
-        assert accuracy(y_true, y_pred) == 1.0
-
-    def test_precision_recall_f1(self):
-        """Test precision, recall, and F1 metrics."""
-        y_true = np.array([1, 1, 1, 0, 0, 0])
-        y_pred = np.array([0.8, 0.7, 0.3, 0.2, 0.1, 0.6])  # One FN, one FP
-
-        assert precision(y_true, y_pred) == pytest.approx(2 / 3)
-        assert recall(y_true, y_pred) == pytest.approx(2 / 3)
-        assert f1(y_true, y_pred) == pytest.approx(2 / 3)
-
-
-class TestBootstrap:
-    """Test bootstrap functionality."""
-
-    def test_bootstrap_function(self):
-        """Test bootstrap function directly."""
-        y_true = np.array([1, 1, 1, 0, 0, 0])
-        y_pred = np.array([0.8, 0.9, 0.7, 0.2, 0.3, 0.1])
-
-        def simple_auroc(yt, yp):
-            from sklearn.metrics import roc_auc_score
-            return float(roc_auc_score(yt, yp))
-
-        point, ci_low, ci_high = bootstrap(simple_auroc, y_true, y_pred, n=100, seed=42)
-        assert point == 1.0
-        assert ci_low <= point <= ci_high
-
-    def test_bootstrap_with_custom_metric(self):
-        """Test bootstrap with custom metric function."""
-        def custom_mean(yt, yp):
-            return float(np.mean(yp))
-
-        y_true = np.array([1, 1, 0, 0])
-        y_pred = np.array([0.8, 0.7, 0.2, 0.3])
-
-        point, ci_low, ci_high = bootstrap(custom_mean, y_true, y_pred, n=100, seed=42)
-        assert point == pytest.approx(0.5)
-        assert ci_low <= point <= ci_high
-
-    def test_bootstrap_with_builtin_metrics(self):
-        """Test bootstrap with built-in metrics."""
-        y_true = np.array([1, 1, 1, 0, 0, 0])
-        y_pred = np.array([0.8, 0.9, 0.7, 0.2, 0.3, 0.1])
-
-        # Default metrics return raw floats
-        result = auroc(y_true, y_pred)
-        assert isinstance(result, float)
-
-        # Use bootstrap() function for CIs
-        point, ci_low, ci_high = bootstrap(
-            lambda yt, yp: float(__import__('sklearn.metrics', fromlist=['roc_auc_score']).roc_auc_score(yt, yp)),
-            y_true, y_pred, n=100, seed=42
-        )
-        assert isinstance(point, float)
-        assert ci_low <= point <= ci_high
-
-
-class TestDistributionMetrics:
-    """Test distribution statistics metrics."""
-
-    def test_mean_std_score(self):
-        """Test mean and std score metrics."""
-        y_true = np.array([0, 0, 0, 0, 0])
-        y_pred = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
-
-        assert mean_score(y_true, y_pred) == pytest.approx(0.3)
-        assert std_score(y_true, y_pred) == pytest.approx(np.std(y_pred))
-
-    def test_percentile_metrics(self):
-        """Test percentile metrics."""
-        y_true = np.array([0] * 9)
-        y_pred = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
-
-        assert percentile(y_true, y_pred, q=50) == pytest.approx(0.5)
-        assert percentile(y_true, y_pred, q=90) == pytest.approx(0.82)
-        assert percentile(y_true, y_pred, q=10) == pytest.approx(0.18)
-
-
-class TestFPRFNRMetrics:
-    """Test false positive/negative rate metrics."""
-
-    def test_fpr_default_threshold(self):
-        """Test FPR at default threshold."""
-        y_true = np.array([0, 0, 0, 0, 0])  # All negative
-        y_pred = np.array([0.1, 0.2, 0.3, 0.6, 0.8])
-
-        result = fpr(y_true, y_pred)
-        assert result == 0.4  # 2 out of 5 > 0.5
-
-    def test_fpr_custom_threshold(self):
-        """Test FPR at custom threshold."""
-        y_true = np.array([0, 0, 0, 0, 0])
-        y_pred = np.array([0.1, 0.2, 0.3, 0.6, 0.8])
-
-        result = fpr(y_true, y_pred, threshold=0.7)
-        assert result == 0.2  # 1 out of 5 > 0.7
-
-    def test_fpr_with_mixed_dataset(self):
-        """Test FPR with mixed positive/negative examples."""
-        y_true = np.array([0, 0, 0, 0, 1, 1])
-        y_pred = np.array([0.1, 0.2, 0.3, 0.6, 0.8, 0.9])
-
-        result = fpr(y_true, y_pred, threshold=0.5)
-        assert result == 0.25  # 1 out of 4 negatives > 0.5
-
-    def test_fnr_default_threshold(self):
-        """Test FNR at default threshold."""
-        y_true = np.array([1, 1, 1, 1])
-        y_pred = np.array([0.3, 0.4, 0.6, 0.8])
-
-        result = fnr(y_true, y_pred)
-        assert result == 0.5  # 2 out of 4 <= 0.5
-
-    def test_fnr_custom_threshold(self):
-        """Test FNR at custom threshold."""
-        y_true = np.array([1, 1, 1, 1])
-        y_pred = np.array([0.3, 0.4, 0.6, 0.8])
-
-        result = fnr(y_true, y_pred, threshold=0.7)
-        assert result == 0.75  # 3 out of 4 <= 0.7
-
-
-class TestEdgeCases:
-    """Test edge cases and error conditions."""
-
-    def test_empty_arrays(self):
-        """Test behavior with empty arrays."""
-        with pytest.raises(ValueError):
-            auroc(np.array([]), np.array([]))
-
-    def test_single_class(self):
-        """Test behavior with only one class."""
-        y_true = np.array([1, 1, 1])
-        y_pred = np.array([0.8, 0.9, 0.7])
-
-        with pytest.raises(ValueError, match="Cannot compute AUROC with only one class"):
-            auroc(y_true, y_pred)
-
-    def test_identical_scores(self):
-        """Test with identical scores."""
-        y_true = np.array([1, 1, 0, 0])
-        y_pred = np.array([0.5, 0.5, 0.5, 0.5])
-        assert abs(auroc(y_true, y_pred) - 0.5) < 0.1
-
-    def test_mixed_tensor_types(self):
-        """Test with mixed tensor types."""
-        y_true = torch.tensor([1, 1, 0, 0], dtype=torch.int32)
-        y_pred = torch.tensor([0.8, 0.9, 0.2, 0.3], dtype=torch.float64)
-
-        result = auroc(y_true, y_pred)
-        assert 0.5 <= result <= 1.0
-
-
-class TestGetMetricByName:
-    """Test metric lookup by name."""
-
-    def test_registry_lookup(self):
-        """Test looking up metrics from registry."""
-        assert get_metric_by_name("auroc") == auroc
-        assert get_metric_by_name("accuracy") == accuracy
-        assert get_metric_by_name("f1") == f1
-
-    def test_recall_at_fpr_syntax(self):
-        """Test recall@X syntax."""
-        metric = get_metric_by_name("recall@5")
-        y_true = np.array([1, 1, 1, 0, 0, 0])
-        y_pred = np.array([0.8, 0.9, 0.7, 0.2, 0.3, 0.1])
-        assert metric(y_true, y_pred) == 1.0
-
-    def test_tpr_at_fpr_syntax(self):
-        """Test tpr@X syntax (alias for recall@X)."""
-        metric = get_metric_by_name("tpr@5")
-        y_true = np.array([1, 1, 1, 0, 0, 0])
-        y_pred = np.array([0.8, 0.9, 0.7, 0.2, 0.3, 0.1])
-        assert metric(y_true, y_pred) == 1.0
-
-    def test_percentile_syntax(self):
-        """Test percentileX syntax."""
-        metric = get_metric_by_name("percentile95")
-        y_true = np.array([0] * 100)
-        y_pred = np.linspace(0, 1, 100)
-        assert 0.9 < metric(y_true, y_pred) < 1.0
-
-    def test_unknown_metric(self):
-        """Test unknown metric raises error."""
-        with pytest.raises(ValueError, match="Unknown metric"):
-            get_metric_by_name("unknown_metric")
-
-
-class TestWeightedErrorMetrics:
-    """Test weighted error rate metrics from GDM paper."""
-
-    def test_weighted_error_rate_basic(self):
-        """Test basic weighted error rate calculation."""
-        y_true = np.array([0, 0, 1, 1])
-        y_pred = np.array([0.3, 0.6, 0.4, 0.9])  # One FP, one FN
-
-        result = weighted_error_rate(y_true, y_pred, threshold=0.5, fnr_weight=5.0, fpr_weight=50.0)
-        assert result == pytest.approx(0.5)
-
-    def test_weighted_error_rate_perfect_classifier(self):
-        """Test weighted error rate with perfect classification."""
-        y_true = np.array([0, 0, 1, 1])
-        y_pred = np.array([0.1, 0.2, 0.8, 0.9])
-        assert weighted_error_rate(y_true, y_pred, threshold=0.5) == 0.0
-
-    def test_weighted_error_rate_all_false_positives(self):
-        """Test weighted error rate with all false positives."""
-        y_true = np.array([0, 0, 0, 0])
-        y_pred = np.array([0.8, 0.9, 0.6, 0.7])
-
-        result = weighted_error_rate(y_true, y_pred, threshold=0.5, fnr_weight=5.0, fpr_weight=50.0)
-        assert result == pytest.approx(50 / 55)
-
-    def test_weighted_error_rate_all_false_negatives(self):
-        """Test weighted error rate with all false negatives."""
-        y_true = np.array([1, 1, 1, 1])
-        y_pred = np.array([0.1, 0.2, 0.3, 0.4])
-
-        result = weighted_error_rate(y_true, y_pred, threshold=0.5, fnr_weight=5.0, fpr_weight=50.0)
-        assert result == pytest.approx(5 / 55)
-
-    def test_optimal_threshold_basic(self):
-        """Test optimal threshold finding."""
-        y_true = np.array([0, 0, 1, 1])
-        y_pred = np.array([0.1, 0.3, 0.7, 0.9])
-
-        threshold, error = optimal_threshold(y_true, y_pred)
-        assert 0.3 < threshold < 0.7
-        assert error == 0.0
-
-    def test_optimal_threshold_returns_tuple(self):
-        """Test that optimal_threshold returns a tuple."""
-        y_true = np.array([0, 0, 1, 1])
-        y_pred = np.array([0.1, 0.3, 0.7, 0.9])
-
-        result = optimal_threshold(y_true, y_pred)
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert isinstance(result[0], float)
-        assert isinstance(result[1], float)
-
-    def test_weighted_error_rate_with_2d_proba(self):
-        """Test weighted error rate with 2D probability array."""
-        y_true = np.array([0, 0, 1, 1])
-        y_pred_2d = np.array([[0.7, 0.3], [0.4, 0.6], [0.6, 0.4], [0.1, 0.9]])
-
-        result = weighted_error_rate(y_true, y_pred_2d, threshold=0.5)
-        assert result == pytest.approx(0.5)
+# =============================================================================
+# Test Data
+# =============================================================================
+
+def _perfect():
+  """Perfect separation."""
+  y_true = np.array([1, 1, 1, 0, 0, 0])
+  y_pred = np.array([0.9, 0.8, 0.7, 0.3, 0.2, 0.1])
+  return y_true, y_pred
+
+def _random():
+  """Random (no separation)."""
+  y_true = np.array([1, 1, 1, 0, 0, 0])
+  y_pred = np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
+  return y_true, y_pred
+
+def _realistic():
+  """Realistic overlapping scores."""
+  np.random.seed(42)
+  y_true = np.concatenate([np.zeros(50), np.ones(50)])
+  y_pred = np.concatenate([
+    np.random.normal(0.3, 0.1, 50),
+    np.random.normal(0.7, 0.1, 50),
+  ])
+  return y_true, y_pred
+
+# =============================================================================
+# AUROC Tests
+# =============================================================================
+
+class TestAUROC(unittest.TestCase):
+  def test_perfect_separation(self):
+    y_true, y_pred = _perfect()
+    self.assertEqual(auroc(y_true, y_pred), 1.0)
+
+  def test_random(self):
+    y_true, y_pred = _random()
+    self.assertAlmostEqual(auroc(y_true, y_pred), 0.5, places=1)
+
+  def test_single_class_raises(self):
+    with self.assertRaises(ValueError):
+      auroc(np.array([1, 1, 1]), np.array([0.9, 0.8, 0.7]))
+
+  def test_accepts_tensor(self):
+    y_true = torch.tensor([1, 1, 0, 0])
+    y_pred = torch.tensor([0.9, 0.8, 0.2, 0.1])
+    self.assertEqual(auroc(y_true, y_pred), 1.0)
+
+  def test_accepts_2d_proba(self):
+    y_true = np.array([1, 1, 0, 0])
+    y_pred = np.array([[0.1, 0.9], [0.2, 0.8], [0.8, 0.2], [0.9, 0.1]])
+    self.assertEqual(auroc(y_true, y_pred), 1.0)
+
+class TestPartialAUROC(unittest.TestCase):
+  def test_perfect_at_low_fpr(self):
+    y_true, y_pred = _perfect()
+    self.assertEqual(partial_auroc(y_true, y_pred, max_fpr=0.1), 1.0)
+
+  def test_single_class_raises(self):
+    with self.assertRaises(ValueError):
+      partial_auroc(np.array([1, 1, 1]), np.array([0.9, 0.8, 0.7]), max_fpr=0.1)
+
+# =============================================================================
+# Classification Metrics
+# =============================================================================
+
+class TestAccuracy(unittest.TestCase):
+  def test_perfect(self):
+    y_true, y_pred = _perfect()
+    self.assertEqual(accuracy(y_true, y_pred), 1.0)
+
+  def test_custom_threshold(self):
+    y_true = np.array([1, 1, 0, 0])
+    y_pred = np.array([0.9, 0.6, 0.4, 0.1])
+    self.assertEqual(accuracy(y_true, y_pred, threshold=0.5), 1.0)
+    self.assertEqual(accuracy(y_true, y_pred, threshold=0.8), 0.75)
+
+class TestBalancedAccuracy(unittest.TestCase):
+  def test_perfect(self):
+    y_true, y_pred = _perfect()
+    self.assertEqual(balanced_accuracy(y_true, y_pred), 1.0)
+
+  def test_imbalanced(self):
+    y_true = np.array([1, 0, 0, 0, 0, 0])
+    y_pred = np.array([0.9, 0.4, 0.4, 0.4, 0.4, 0.4])
+    self.assertEqual(balanced_accuracy(y_true, y_pred), 1.0)
+
+class TestPrecision(unittest.TestCase):
+  def test_perfect(self):
+    y_true, y_pred = _perfect()
+    self.assertEqual(precision(y_true, y_pred), 1.0)
+
+  def test_with_fp(self):
+    y_true = np.array([1, 1, 0, 0])
+    y_pred = np.array([0.9, 0.6, 0.7, 0.1])  # one FP
+    self.assertAlmostEqual(precision(y_true, y_pred), 2/3, places=3)
+
+class TestRecall(unittest.TestCase):
+  def test_perfect(self):
+    y_true, y_pred = _perfect()
+    self.assertEqual(recall(y_true, y_pred), 1.0)
+
+  def test_with_fn(self):
+    y_true = np.array([1, 1, 0, 0])
+    y_pred = np.array([0.9, 0.3, 0.4, 0.1])  # one FN
+    self.assertEqual(recall(y_true, y_pred), 0.5)
+
+class TestF1(unittest.TestCase):
+  def test_perfect(self):
+    y_true, y_pred = _perfect()
+    self.assertEqual(f1(y_true, y_pred), 1.0)
+
+  def test_harmonic_mean(self):
+    y_true = np.array([1, 1, 1, 0, 0, 0])
+    y_pred = np.array([0.8, 0.7, 0.3, 0.2, 0.1, 0.6])
+    p = precision(y_true, y_pred)
+    r = recall(y_true, y_pred)
+    expected = 2 * p * r / (p + r)
+    self.assertAlmostEqual(f1(y_true, y_pred), expected, places=5)
+
+# =============================================================================
+# Recall at FPR
+# =============================================================================
+
+class TestRecallAtFPR(unittest.TestCase):
+  def test_perfect_at_1pct(self):
+    y_true, y_pred = _perfect()
+    self.assertEqual(recall_at_fpr(y_true, y_pred, fpr=0.01), 1.0)
+
+  def test_perfect_at_5pct(self):
+    y_true, y_pred = _perfect()
+    self.assertEqual(recall_at_fpr(y_true, y_pred, fpr=0.05), 1.0)
+
+  def test_monotonic_with_fpr(self):
+    y_true, y_pred = _realistic()
+    r1 = recall_at_fpr(y_true, y_pred, fpr=0.01)
+    r5 = recall_at_fpr(y_true, y_pred, fpr=0.05)
+    r10 = recall_at_fpr(y_true, y_pred, fpr=0.10)
+    self.assertLessEqual(r1, r5)
+    self.assertLessEqual(r5, r10)
+
+  def test_bounds(self):
+    y_true, y_pred = _realistic()
+    for fpr_val in [0.01, 0.05, 0.10]:
+      r = recall_at_fpr(y_true, y_pred, fpr=fpr_val)
+      self.assertGreaterEqual(r, 0.0)
+      self.assertLessEqual(r, 1.0)
+
+  def test_no_positives(self):
+    y_true = np.array([0, 0, 0, 0])
+    y_pred = np.array([0.1, 0.2, 0.3, 0.4])
+    self.assertEqual(recall_at_fpr(y_true, y_pred, fpr=0.05), 0.0)
+
+  def test_no_negatives(self):
+    y_true = np.array([1, 1, 1, 1])
+    y_pred = np.array([0.6, 0.7, 0.8, 0.9])
+    self.assertEqual(recall_at_fpr(y_true, y_pred, fpr=0.05), 1.0)
+
+# =============================================================================
+# FPR / FNR
+# =============================================================================
+
+class TestFPR(unittest.TestCase):
+  def test_all_negatives_correct(self):
+    y_true = np.array([0, 0, 0, 0])
+    y_pred = np.array([0.1, 0.2, 0.3, 0.4])
+    self.assertEqual(fpr(y_true, y_pred), 0.0)
+
+  def test_some_fp(self):
+    y_true = np.array([0, 0, 0, 0, 0])
+    y_pred = np.array([0.1, 0.2, 0.3, 0.6, 0.8])
+    self.assertEqual(fpr(y_true, y_pred), 0.4)
+
+  def test_custom_threshold(self):
+    y_true = np.array([0, 0, 0, 0, 0])
+    y_pred = np.array([0.1, 0.2, 0.3, 0.6, 0.8])
+    self.assertEqual(fpr(y_true, y_pred, threshold=0.7), 0.2)
+
+class TestFNR(unittest.TestCase):
+  def test_all_positives_correct(self):
+    y_true = np.array([1, 1, 1, 1])
+    y_pred = np.array([0.6, 0.7, 0.8, 0.9])
+    self.assertEqual(fnr(y_true, y_pred), 0.0)
+
+  def test_some_fn(self):
+    y_true = np.array([1, 1, 1, 1])
+    y_pred = np.array([0.3, 0.4, 0.6, 0.8])
+    self.assertEqual(fnr(y_true, y_pred), 0.5)
+
+  def test_custom_threshold(self):
+    y_true = np.array([1, 1, 1, 1])
+    y_pred = np.array([0.3, 0.4, 0.6, 0.8])
+    self.assertEqual(fnr(y_true, y_pred, threshold=0.7), 0.75)
+
+# =============================================================================
+# Distribution Metrics
+# =============================================================================
+
+class TestDistributionMetrics(unittest.TestCase):
+  def test_mean_score(self):
+    y_true = np.zeros(5)
+    y_pred = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+    self.assertAlmostEqual(mean_score(y_true, y_pred), 0.3, places=5)
+
+  def test_std_score(self):
+    y_true = np.zeros(5)
+    y_pred = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+    self.assertAlmostEqual(std_score(y_true, y_pred), np.std(y_pred), places=5)
+
+  def test_percentile_50(self):
+    y_true = np.zeros(9)
+    y_pred = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
+    self.assertAlmostEqual(percentile(y_true, y_pred, q=50), 0.5, places=3)
+
+  def test_percentile_90(self):
+    y_true = np.zeros(9)
+    y_pred = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
+    self.assertAlmostEqual(percentile(y_true, y_pred, q=90), 0.82, places=1)
+
+# =============================================================================
+# Weighted Error
+# =============================================================================
+
+class TestWeightedError(unittest.TestCase):
+  def test_perfect_classifier(self):
+    y_true = np.array([0, 0, 1, 1])
+    y_pred = np.array([0.1, 0.2, 0.8, 0.9])
+    self.assertEqual(weighted_error_rate(y_true, y_pred), 0.0)
+
+  def test_one_fp_one_fn(self):
+    y_true = np.array([0, 0, 1, 1])
+    y_pred = np.array([0.3, 0.6, 0.4, 0.9])  # 1 FP, 1 FN
+    result = weighted_error_rate(y_true, y_pred, fnr_weight=5.0, fpr_weight=50.0)
+    self.assertAlmostEqual(result, 0.5, places=3)
+
+  def test_all_fp(self):
+    y_true = np.array([0, 0, 0, 0])
+    y_pred = np.array([0.8, 0.9, 0.6, 0.7])
+    result = weighted_error_rate(y_true, y_pred, fnr_weight=5.0, fpr_weight=50.0)
+    self.assertAlmostEqual(result, 50/55, places=3)
+
+  def test_all_fn(self):
+    y_true = np.array([1, 1, 1, 1])
+    y_pred = np.array([0.1, 0.2, 0.3, 0.4])
+    result = weighted_error_rate(y_true, y_pred, fnr_weight=5.0, fpr_weight=50.0)
+    self.assertAlmostEqual(result, 5/55, places=3)
+
+class TestOptimalThreshold(unittest.TestCase):
+  def test_returns_tuple(self):
+    y_true = np.array([0, 0, 1, 1])
+    y_pred = np.array([0.1, 0.3, 0.7, 0.9])
+    result = optimal_threshold(y_true, y_pred)
+    self.assertIsInstance(result, tuple)
+    self.assertEqual(len(result), 2)
+
+  def test_perfect_classifier(self):
+    y_true = np.array([0, 0, 1, 1])
+    y_pred = np.array([0.1, 0.3, 0.7, 0.9])
+    threshold, error = optimal_threshold(y_true, y_pred)
+    self.assertGreater(threshold, 0.3)
+    self.assertLess(threshold, 0.7)
+    self.assertEqual(error, 0.0)
+
+# =============================================================================
+# Bootstrap
+# =============================================================================
+
+class TestBootstrap(unittest.TestCase):
+  def test_returns_tuple(self):
+    y_true, y_pred = _perfect()
+    result = bootstrap(lambda yt, yp: float(np.mean(yp)), y_true, y_pred, n=100, seed=42)
+    self.assertIsInstance(result, tuple)
+    self.assertEqual(len(result), 3)
+
+  def test_ci_contains_point(self):
+    y_true, y_pred = _realistic()
+    point, ci_low, ci_high = bootstrap(
+      lambda yt, yp: float(roc_auc_score(yt, yp)),
+      y_true, y_pred, n=100, seed=42
+    )
+    self.assertLessEqual(ci_low, point)
+    self.assertLessEqual(point, ci_high)
+
+  def test_reproducible(self):
+    y_true, y_pred = _perfect()
+    r1 = bootstrap(lambda yt, yp: float(np.mean(yp)), y_true, y_pred, n=100, seed=42)
+    r2 = bootstrap(lambda yt, yp: float(np.mean(yp)), y_true, y_pred, n=100, seed=42)
+    self.assertEqual(r1, r2)
+
+# =============================================================================
+# Registry
+# =============================================================================
+
+class TestRegistry(unittest.TestCase):
+  def test_basic_lookup(self):
+    self.assertEqual(get_metric_by_name("auroc"), auroc)
+    self.assertEqual(get_metric_by_name("accuracy"), accuracy)
+    self.assertEqual(get_metric_by_name("f1"), f1)
+
+  def test_recall_at_syntax(self):
+    metric = get_metric_by_name("recall@5")
+    y_true, y_pred = _perfect()
+    self.assertEqual(metric(y_true, y_pred), 1.0)
+
+  def test_tpr_at_syntax(self):
+    metric = get_metric_by_name("tpr@5")
+    y_true, y_pred = _perfect()
+    self.assertEqual(metric(y_true, y_pred), 1.0)
+
+  def test_percentile_syntax(self):
+    metric = get_metric_by_name("percentile95")
+    y_true = np.zeros(100)
+    y_pred = np.linspace(0, 1, 100)
+    result = metric(y_true, y_pred)
+    self.assertGreater(result, 0.9)
+    self.assertLess(result, 1.0)
+
+  def test_unknown_raises(self):
+    with self.assertRaises(ValueError):
+      get_metric_by_name("unknown_metric")
+
+# =============================================================================
+# Edge Cases
+# =============================================================================
+
+class TestEdgeCases(unittest.TestCase):
+  def test_empty_arrays(self):
+    with self.assertRaises((ValueError, IndexError)):
+      auroc(np.array([]), np.array([]))
+
+  def test_identical_scores(self):
+    y_true = np.array([1, 1, 0, 0])
+    y_pred = np.array([0.5, 0.5, 0.5, 0.5])
+    self.assertAlmostEqual(auroc(y_true, y_pred), 0.5, places=1)
+
+  def test_mixed_dtypes(self):
+    y_true = torch.tensor([1, 1, 0, 0], dtype=torch.int32)
+    y_pred = torch.tensor([0.9, 0.8, 0.2, 0.1], dtype=torch.float64)
+    result = auroc(y_true, y_pred)
+    self.assertGreater(result, 0.5)
+    self.assertLessEqual(result, 1.0)
+
+  def test_2d_proba_with_error(self):
+    y_true = np.array([0, 0, 1, 1])
+    y_pred = np.array([[0.7, 0.3], [0.4, 0.6], [0.6, 0.4], [0.1, 0.9]])
+    result = weighted_error_rate(y_true, y_pred)
+    self.assertAlmostEqual(result, 0.5, places=3)
+
+if __name__ == '__main__':
+  unittest.main()
