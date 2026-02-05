@@ -86,7 +86,7 @@ def build_token_metadata(
     model_family = get_model_family(tokenizer)
     prefix_pattern = _get_prefix_pattern(model_family)
     arch = ArchitectureRegistry.get_architecture_by_name(model_family)
-    padding_config = arch.get_token_padding()
+    pad_left, pad_right = arch.get_token_padding()
 
     for batch_idx, dialogue in enumerate(dialogues):
         char_idx = 0
@@ -139,7 +139,7 @@ def build_token_metadata(
 
     role_ids_with_padding = role_ids_no_padding.clone()
 
-    if padding_config.left > 0 or padding_config.right > 0:
+    if pad_left > 0 or pad_right > 0:
         for batch_idx in range(batch_size):
             for role_id in [0, 1, 2]:  # system, user, assistant
                 role_mask = role_ids_no_padding[batch_idx] == role_id
@@ -160,8 +160,8 @@ def build_token_metadata(
                 ends = torch.where(diff == -1)[0]
 
                 for start, end in zip(starts, ends):
-                    padded_start = max(0, start - padding_config.left)
-                    padded_end = min(seq_len, end + padding_config.right)
+                    padded_start = max(0, start - pad_left)
+                    padded_end = min(seq_len, end + pad_right)
                     role_ids_with_padding[batch_idx, padded_start:padded_end] = role_id
 
     # Mark BOS tokens as system only in the padded view (include_padding=True)

@@ -1,335 +1,188 @@
+"""Model architecture definitions (functional style).
+
+Each architecture is a frozen dataclass containing callables for accessing
+model internals. The get_arch() function auto-detects the architecture.
+"""
+
+from __future__ import annotations
+
 import re
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-import torch
-
-from ..logger import logger
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
+    import torch.nn as nn
     from transformers import PreTrainedModel
 
 
-@dataclass
-class TokenPadding:
-    """Token padding configuration for role masks."""
+@dataclass(frozen=True, slots=True)
+class Arch:
+    """Architecture specification with callables for model access."""
 
-    left: int  # Tokens before message content
-    right: int  # Tokens after message content
+    get_layers: Callable[[Any], list["nn.Module"]]
+    get_layer: Callable[[Any, int], "nn.Module"]
+    get_layernorm: Callable[[Any, int], "nn.Module"]
+    set_layers: Callable[[Any, list], None]
+    num_layers: Callable[[Any], int]
+    token_padding: tuple[int, int]  # (left, right)
+    prefix_pattern: re.Pattern[str]
+    fold_system: bool
 
+    # Compatibility methods (call the stored callables)
+    def get_layer_module(self, model: "PreTrainedModel", layer_idx: int) -> "nn.Module":
+        return self.get_layer(model, layer_idx)
 
-class ModelArchitecture(ABC):
-    """Base class for handling different model architectures."""
-
-    @abstractmethod
-    def get_layer_norm(
-        self, model: "PreTrainedModel", layer_idx: int
-    ) -> torch.nn.Module:
-        """Get the layer normalization module for a specific layer."""
-        pass
-
-    @abstractmethod
-    def get_layer_module(
-        self, model: "PreTrainedModel", layer_idx: int
-    ) -> torch.nn.Module:
-        """Get the full transformer block module for a specific layer.
-
-        This is used for post-block activation capture that aligns with
-        Hugging Face hidden_states semantics.
-        """
-        pass
-
-    @abstractmethod
-    def get_layers(self, model: "PreTrainedModel") -> list[torch.nn.Module]:
-        """Get all layers of the model."""
-        pass
-
-    @abstractmethod
-    def set_layers(
-        self, model: "PreTrainedModel", layers: list[torch.nn.Module]
-    ) -> None:
-        """Set the model's layers."""
-        pass
-
-    @abstractmethod
-    def get_token_padding(self) -> TokenPadding:
-        """Get token padding configuration for this architecture.
-
-        Returns:
-            TokenPadding configuration for the architecture
-        """
-        pass
-
-    @abstractmethod
-    def get_prefix_pattern(self) -> re.Pattern[str]:
-        """Get regex pattern for matching chat template tokens.
-
-        This pattern is used to accurately locate message boundaries in tokenized text.
-
-        Returns:
-            Compiled regex pattern for this architecture
-        """
-        pass
-
-    @abstractmethod
-    def should_fold_system_messages(self) -> bool:
-        """Whether system messages should be folded into user messages.
-
-        Some models (like Gemma) don't support system messages and require
-        folding them into the first user message.
-
-        Returns:
-            True if system messages should be folded, False otherwise
-        """
-        pass
-
-    @abstractmethod
-    def get_num_layers(self, model: "PreTrainedModel") -> int:
-        """Get the number of layers in the model.
-
-        Args:
-            model: The model to get layer count from
-
-        Returns:
-            Number of layers in the model
-        """
-        pass
-
-
-class LlamaArchitecture(ModelArchitecture):
-    """Architecture handler for LLaMA-style models."""
-
-    def get_layer_norm(
-        self, model: "PreTrainedModel", layer_idx: int
-    ) -> torch.nn.Module:
-        return model.model.layers[layer_idx].input_layernorm  # type: ignore
-
-    def get_layer_module(
-        self, model: "PreTrainedModel", layer_idx: int
-    ) -> torch.nn.Module:
-        return model.model.layers[layer_idx]  # type: ignore
-
-    def get_layers(self, model: "PreTrainedModel") -> list[torch.nn.Module]:
-        return model.model.layers  # type: ignore
-
-    def set_layers(
-        self, model: "PreTrainedModel", layers: list[torch.nn.Module]
-    ) -> None:
-        model.model.layers = layers  # type: ignore
-
-    def get_token_padding(self) -> TokenPadding:
-        return TokenPadding(left=4, right=1)
-
-    def get_prefix_pattern(self) -> re.Pattern[str]:
-        """Get LLaMA-specific chat template regex pattern."""
-        begin_of_text = r"((<\|pad\|>)*(<\|begin_of_text\|>))?"
-        header = r"<\|start_header_id\|>(system|user|assistant)<\|end_header_id\|>\n\n"
-        end_of_turn = r"<\|eot_id\|>"
-        # llama3 system prompt has some boilerplate which we keep constant across all prompts
-        date_info = r"(Cutting Knowledge Date: December 2023\nToday Date: \d\d \w\w\w 202[45]\n\n)?"
-        return re.compile(
-            rf"({begin_of_text}{header}{date_info})?({end_of_turn}{header})?(\n\n)?"
-        )
-
-    def should_fold_system_messages(self) -> bool:
-        return False
+    def get_layer_norm(self, model: "PreTrainedModel", layer_idx: int) -> "nn.Module":
+        return self.get_layernorm(model, layer_idx)
 
     def get_num_layers(self, model: "PreTrainedModel") -> int:
-        """Get the number of layers for LLaMA models."""
-        config = model.config
-        if hasattr(config, "num_hidden_layers"):
-            return config.num_hidden_layers  # type: ignore
-        elif hasattr(config, "n_layers"):
-            return config.n_layers  # type: ignore
-        elif hasattr(config, "num_layers"):
-            return config.num_layers  # type: ignore
-        else:
-            raise ValueError(
-                f"Cannot determine number of layers for LLaMA model: {model}"
-            )
+        return self.num_layers(model)
 
-
-class GemmaArchitecture(ModelArchitecture):
-    """Architecture handler for Gemma models."""
-
-    def get_layer_norm(
-        self, model: "PreTrainedModel", layer_idx: int
-    ) -> torch.nn.Module:
-        return model.language_model.model.layers[layer_idx].input_layernorm  # type: ignore
-
-    def get_layer_module(
-        self, model: "PreTrainedModel", layer_idx: int
-    ) -> torch.nn.Module:
-        return model.language_model.model.layers[layer_idx]  # type: ignore
-
-    def get_layers(self, model: "PreTrainedModel") -> list[torch.nn.Module]:
-        return model.language_model.model.layers  # type: ignore
-
-    def set_layers(
-        self, model: "PreTrainedModel", layers: list[torch.nn.Module]
-    ) -> None:
-        model.language_model.model.layers = layers  # type: ignore
-
-    def get_token_padding(self) -> TokenPadding:
-        return TokenPadding(left=3, right=2)
+    def get_token_padding(self) -> tuple[int, int]:
+        return self.token_padding
 
     def get_prefix_pattern(self) -> re.Pattern[str]:
-        """Get Gemma-specific chat template regex pattern."""
-        begin_of_text = r"(<pad>)*(<bos>)?"
-        end_of_last = r"(<end_of_turn>\n)?"
-        start_of_turn = r"<start_of_turn>(user|model)\n"
-        return re.compile(
-            rf"{begin_of_text}{start_of_turn}|{end_of_last}{start_of_turn}|(\n\n)?"
-        )
+        return self.prefix_pattern
 
     def should_fold_system_messages(self) -> bool:
-        return True  # Gemma doesn't support system messages
-
-    def get_num_layers(self, model: "PreTrainedModel") -> int:
-        """Get the number of layers for Gemma models."""
-        # For Gemma models, need to access through language_model attribute
-        base_model = model.language_model if hasattr(model, "language_model") else model
-        config = base_model.config
-
-        if hasattr(config, "num_hidden_layers"):
-            return config.num_hidden_layers  # type: ignore
-        elif hasattr(config, "n_layers"):
-            return config.n_layers  # type: ignore
-        elif hasattr(config, "num_layers"):
-            return config.num_layers  # type: ignore
-        else:
-            raise ValueError(
-                f"Cannot determine number of layers for Gemma model: {model}"
-            )
+        return self.fold_system
 
 
-class Gemma3Architecture(ModelArchitecture):
-    """Architecture handler for Gemma3 models (multimodal)."""
+# =============================================================================
+# Helper functions for num_layers extraction
+# =============================================================================
 
-    def get_layer_norm(
-        self, model: "PreTrainedModel", layer_idx: int
-    ) -> torch.nn.Module:
-        return model.language_model.layers[layer_idx].input_layernorm  # type: ignore
 
-    def get_layer_module(
-        self, model: "PreTrainedModel", layer_idx: int
-    ) -> torch.nn.Module:
-        return model.language_model.layers[layer_idx]  # type: ignore
+def _num_layers_from_config(model: Any) -> int:
+    """Extract num_layers from model config, trying common attribute names."""
+    config = model.config
+    for attr in ("num_hidden_layers", "n_layers", "num_layers"):
+        if hasattr(config, attr):
+            return getattr(config, attr)
+    raise ValueError(f"Cannot determine number of layers for model: {type(model)}")
 
-    def get_layers(self, model: "PreTrainedModel") -> list[torch.nn.Module]:
-        return model.language_model.layers  # type: ignore
 
-    def set_layers(
-        self, model: "PreTrainedModel", layers: list[torch.nn.Module]
-    ) -> None:
-        model.language_model.layers = layers  # type: ignore
+def _num_layers_gemma(model: Any) -> int:
+    """Extract num_layers for Gemma models (may have language_model wrapper)."""
+    base = model.language_model if hasattr(model, "language_model") else model
+    return _num_layers_from_config(base)
 
-    def get_token_padding(self) -> TokenPadding:
-        return TokenPadding(left=3, right=2)
 
-    def get_prefix_pattern(self) -> re.Pattern[str]:
-        """Get Gemma3-specific chat template regex pattern."""
-        begin_of_text = r"(<pad>)*(<bos>)?"
-        end_of_last = r"(<end_of_turn>\n)?"
-        start_of_turn = r"<start_of_turn>(user|model)\n"
-        return re.compile(
-            rf"{begin_of_text}{start_of_turn}|{end_of_last}{start_of_turn}|(\n\n)?"
-        )
+# =============================================================================
+# Architecture definitions
+# =============================================================================
 
-    def should_fold_system_messages(self) -> bool:
-        return True  # Gemma3 doesn't support system messages
+# LLaMA-style chat template pattern
+_LLAMA_PREFIX = re.compile(
+    r"((<\|pad\|>)*(<\|begin_of_text\|>))?"
+    r"(<\|start_header_id\|>(system|user|assistant)<\|end_header_id\|>\n\n"
+    r"(Cutting Knowledge Date: December 2023\nToday Date: \d\d \w\w\w 202[45]\n\n)?)?"
+    r"(<\|eot_id\|><\|start_header_id\|>(system|user|assistant)<\|end_header_id\|>\n\n)?(\n\n)?"
+)
 
-    def get_num_layers(self, model: "PreTrainedModel") -> int:
-        """Get the number of layers for Gemma3 models."""
-        return model.language_model.config.num_hidden_layers  # type: ignore
+# Gemma-style chat template pattern
+_GEMMA_PREFIX = re.compile(
+    r"(<pad>)*(<bos>)?<start_of_turn>(user|model)\n|"
+    r"(<end_of_turn>\n)?<start_of_turn>(user|model)\n|(\n\n)?"
+)
+
+ARCHITECTURES: dict[str, Arch] = {
+    "llama": Arch(
+        get_layers=lambda m: list(m.model.layers),
+        get_layer=lambda m, i: m.model.layers[i],
+        get_layernorm=lambda m, i: m.model.layers[i].input_layernorm,
+        set_layers=lambda m, layers: setattr(m.model, "layers", type(m.model.layers)(layers)),
+        num_layers=_num_layers_from_config,
+        token_padding=(4, 1),
+        prefix_pattern=_LLAMA_PREFIX,
+        fold_system=False,
+    ),
+    "gemma": Arch(
+        get_layers=lambda m: list(m.language_model.model.layers),
+        get_layer=lambda m, i: m.language_model.model.layers[i],
+        get_layernorm=lambda m, i: m.language_model.model.layers[i].input_layernorm,
+        set_layers=lambda m, layers: setattr(m.language_model.model, "layers", type(m.language_model.model.layers)(layers)),
+        num_layers=_num_layers_gemma,
+        token_padding=(3, 2),
+        prefix_pattern=_GEMMA_PREFIX,
+        fold_system=True,
+    ),
+    "gemma3": Arch(
+        get_layers=lambda m: list(m.language_model.layers),
+        get_layer=lambda m, i: m.language_model.layers[i],
+        get_layernorm=lambda m, i: m.language_model.layers[i].input_layernorm,
+        set_layers=lambda m, layers: setattr(m.language_model, "layers", type(m.language_model.layers)(layers)),
+        num_layers=lambda m: m.language_model.config.num_hidden_layers,
+        token_padding=(3, 2),
+        prefix_pattern=_GEMMA_PREFIX,
+        fold_system=True,
+    ),
+}
+
+
+# =============================================================================
+# Public API
+# =============================================================================
+
+
+def get_arch(model: "PreTrainedModel") -> Arch:
+    """Auto-detect and return the architecture for a model.
+
+    Handles PEFT-wrapped models by unwrapping to the base model.
+    """
+    # Unwrap PEFT models
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+
+    for arch in ARCHITECTURES.values():
+        try:
+            arch.get_layernorm(base, 0)
+            return arch
+        except (AttributeError, IndexError, TypeError):
+            continue
+
+    supported = ", ".join(ARCHITECTURES.keys())
+    raise ValueError(
+        f"Unsupported model architecture: {type(base).__name__}\n"
+        f"Supported: {supported}"
+    )
+
+
+def get_arch_by_name(name: str) -> Arch:
+    """Get architecture by name."""
+    if name not in ARCHITECTURES:
+        raise ValueError(f"Unknown architecture: {name}. Supported: {list(ARCHITECTURES.keys())}")
+    return ARCHITECTURES[name]
+
+
+def detect_arch_from_tokenizer(tokenizer_name: str) -> str:
+    """Detect architecture name from tokenizer name/path."""
+    name_lower = tokenizer_name.lower()
+    if "llama" in name_lower:
+        return "llama"
+    if "gemma" in name_lower:
+        return "gemma"
+    raise ValueError(
+        f"Cannot detect architecture from tokenizer: {tokenizer_name}\n"
+        f"Supported: {list(ARCHITECTURES.keys())}"
+    )
+
+
+# =============================================================================
+# Backwards compatibility shim (to be removed)
+# =============================================================================
 
 
 class ArchitectureRegistry:
-    """Registry for mapping model types to their architecture handlers."""
-
-    _architectures: dict[str, type[ModelArchitecture]] = {
-        "llama": LlamaArchitecture,
-        "gemma": GemmaArchitecture,
-        "gemma3": Gemma3Architecture,
-    }
+    """Backwards compatibility wrapper. Use get_arch() directly."""
 
     @classmethod
-    def get_architecture_by_name(cls, name: str) -> ModelArchitecture:
-        """Get architecture handler by name.
+    def get_architecture(cls, model: "PreTrainedModel") -> Arch:
+        return get_arch(model)
 
-        Args:
-            name: Architecture name (e.g., 'llama', 'gemma')
-
-        Returns:
-            ModelArchitecture instance for the specified name
-
-        Raises:
-            ValueError: If architecture name is not supported
-        """
-        arch_class = cls._architectures.get(name)
-        if arch_class is None:
-            logger.error("Unsupported architecture requested: %s", name)
-            raise ValueError(f"Unsupported architecture: {name}")
-        return arch_class()
+    @classmethod
+    def get_architecture_by_name(cls, name: str) -> Arch:
+        return get_arch_by_name(name)
 
     @classmethod
     def detect_from_tokenizer_name(cls, tokenizer_name: str) -> str:
-        """Detect model family from tokenizer name.
-
-        Args:
-            tokenizer_name: Name or path of the tokenizer
-
-        Returns:
-            Model family string ("llama", "gemma", etc.)
-        """
-        name_lower = tokenizer_name.lower()
-
-        if "llama" in name_lower:
-            return "llama"
-        elif "gemma" in name_lower:
-            return "gemma"
-        else:
-            supported = ", ".join(cls._architectures.keys())
-            logger.error(
-                "Could not detect architecture from tokenizer name: %s",
-                tokenizer_name,
-            )
-            raise ValueError(
-                f"Unable to detect architecture for tokenizer '{tokenizer_name}'.\n"
-                f"Supported architectures: {supported}\n"
-                f"Hint: Tokenizer name should contain one of: {supported}"
-            )
-
-    @classmethod
-    def get_architecture(cls, model: "PreTrainedModel") -> ModelArchitecture:
-        """Detect and return the appropriate architecture handler."""
-        # Handle PEFT models by unwrapping to get the base model
-        base_model = model
-        if hasattr(model, "get_base_model"):
-            # PEFT models have a get_base_model() method
-            base_model = model.get_base_model()  # type: ignore
-            logger.debug(f"Unwrapped PEFT model to base model: {type(base_model)}")
-
-        for _, arch_class in cls._architectures.items():
-            try:
-                arch = arch_class()
-                # Test if this architecture matches by trying to access a layer
-                # Use base_model which is either the unwrapped PEFT model or the original model
-                arch.get_layer_norm(base_model, 0)
-                logger.debug(f"Detected architecture: {arch_class.__name__}")
-                return arch
-            except (AttributeError, IndexError, TypeError):
-                continue
-
-        supported = ", ".join(cls._architectures.keys())
-        logger.error(
-            f"Unsupported model architecture: {type(base_model)} (original: {type(model)})"
-        )
-        raise ValueError(
-            f"Unsupported model architecture: {type(base_model).__name__}\n"
-            f"Supported architectures: {supported}\n"
-            f"Hint: The model type must be one of: LLaMA-style (LlamaForCausalLM) "
-            f"or Gemma-style (GemmaForCausalLM). "
-            f"If you have a compatible model, please open an issue on GitHub."
-        )
+        return detect_arch_from_tokenizer(tokenizer_name)
