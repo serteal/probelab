@@ -95,7 +95,7 @@ class MLP(BaseProbe):
         if X.has_axis(Axis.SEQ):
             features, tokens_per_sample = X.extract_tokens()
             if y_tensor.ndim == 1:
-                labels = torch.repeat_interleave(y_tensor, tokens_per_sample.cpu())
+                labels = torch.repeat_interleave(y_tensor, tokens_per_sample.to(y_tensor.device))
             elif y_tensor.ndim == 2:
                 labels = y_tensor[X.detection_mask.cpu().bool()]
             else:
