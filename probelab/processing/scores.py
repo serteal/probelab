@@ -276,11 +276,10 @@ class Scores:
         Returns:
             Sequence-level Scores with axes (BATCH, CLASS)
         """
-        if not 0.0 < alpha <= 1.0:
-            raise ValueError(f"alpha must be in (0, 1], got {alpha}")
-
         if not self.has_axis(ScoreAxis.SEQ):
             return self  # Already sequence-level
+
+        from ..utils.pooling import masked_pool
 
         scores = self.scores[:, :, 1]  # Positive class [batch, seq]
         batch_size, seq_len = scores.shape
@@ -289,21 +288,11 @@ class Scores:
         if self.tokens_per_sample is not None:
             seq_idx = torch.arange(seq_len, device=scores.device)
             mask = seq_idx.unsqueeze(0) < self.tokens_per_sample.to(scores.device).unsqueeze(1)
-            tokens_per_sample = self.tokens_per_sample.to(scores.device)
         else:
             mask = torch.ones(batch_size, seq_len, device=scores.device, dtype=torch.bool)
-            tokens_per_sample = torch.full((batch_size,), seq_len, device=scores.device, dtype=torch.long)
 
-        # Compute EMA
-        ema = torch.zeros_like(scores)
-        ema[:, 0] = alpha * scores[:, 0] * mask[:, 0].float()
-        for j in range(1, seq_len):
-            ema[:, j] = (alpha * scores[:, j] + (1 - alpha) * ema[:, j - 1]) * mask[:, j].float()
-            ema[:, j] += ema[:, j - 1] * (~mask[:, j]).float()
-
-        # Max over valid positions
-        max_scores = ema.masked_fill(~mask, float("-inf")).max(dim=1).values
-        max_scores = torch.where(tokens_per_sample == 0, torch.zeros_like(max_scores), max_scores)
+        # Use masked_pool with EMA method
+        max_scores = masked_pool(scores, mask, "ema", seq_dim=1, batch_dim=0, alpha=alpha)
 
         probs = torch.stack([1 - max_scores, max_scores], dim=-1)
         return Scores.from_sequence_scores(probs, self.batch_indices)
@@ -317,17 +306,13 @@ class Scores:
         Returns:
             Sequence-level Scores with axes (BATCH, CLASS)
         """
-        if window_size < 1:
-            raise ValueError(f"window_size must be >= 1, got {window_size}")
-
         if not self.has_axis(ScoreAxis.SEQ):
             return self  # Already sequence-level
 
-        import torch.nn.functional as F
+        from ..utils.pooling import masked_pool
 
         scores = self.scores[:, :, 1]  # Positive class [batch, seq]
         batch_size, seq_len = scores.shape
-        w = window_size
 
         # Build mask
         if self.tokens_per_sample is not None:
@@ -336,19 +321,8 @@ class Scores:
         else:
             mask = torch.ones(batch_size, seq_len, device=scores.device, dtype=torch.bool)
 
-        # Rolling mean via cumsum
-        masked_scores, masked_counts = scores * mask.float(), mask.float()
-        cum_scores = F.pad(torch.cumsum(masked_scores, dim=1), (w, 0), value=0)
-        cum_counts = F.pad(torch.cumsum(masked_counts, dim=1), (w, 0), value=0)
-
-        roll_scores = cum_scores[:, w:] - cum_scores[:, :-w]
-        roll_counts = cum_counts[:, w:] - cum_counts[:, :-w]
-        rolling_means = roll_scores / roll_counts.clamp(min=1)
-
-        # Max over valid windows
-        valid_mask = roll_counts > 0
-        max_scores = rolling_means.masked_fill(~valid_mask, float("-inf")).max(dim=1).values
-        max_scores = torch.where(~valid_mask.any(dim=1), torch.zeros_like(max_scores), max_scores)
+        # Use masked_pool with rolling method
+        max_scores = masked_pool(scores, mask, "rolling", seq_dim=1, batch_dim=0, window_size=window_size)
 
         probs = torch.stack([1 - max_scores, max_scores], dim=-1)
         return Scores.from_sequence_scores(probs, self.batch_indices)
