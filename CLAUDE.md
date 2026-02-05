@@ -28,20 +28,23 @@ import probelab as pl
 # Core types
 from probelab import Label, Activations, Scores
 
-# Activation collection
-from probelab import collect_activations
+# Processing (tokenization + activation collection)
+from probelab.processing import tokenize_dataset, collect_activations, Tokens
 
 # Probes
 from probelab.probes import Logistic, MLP, Attention
 
 # Datasets
-from probelab.datasets import CircuitBreakersDataset, DolusChatDataset
+from probelab.datasets import CircuitBreakersDataset, BenignInstructionsDataset
 
 # Metrics
 from probelab.metrics import auroc, recall_at_fpr
 
 # Masks for selective token processing
 from probelab import masks
+
+# Utilities
+from probelab import Normalize
 ```
 
 ## Commands
@@ -67,12 +70,13 @@ uv run pytest tests/
 # Run tests with verbose output
 uv run pytest tests/ -v
 
-# Run specific test files
-uv run pytest tests/test_activations.py -v
-uv run pytest tests/test_probes.py -v
-uv run pytest tests/test_scores.py -v
-uv run pytest tests/test_masks.py -v
-uv run pytest tests/test_metrics.py -v
+# Run specific test modules
+uv run pytest tests/test_activations.py -v   # Activations container
+uv run pytest tests/test_probes.py -v        # Probe implementations
+uv run pytest tests/test_scores.py -v        # Scores container
+uv run pytest tests/test_masks.py -v         # Mask functions
+uv run pytest tests/datasets/ -v             # Dataset classes
+uv run pytest tests/utils/ -v                # Utilities
 
 # Run with coverage
 uv run pytest tests/ --cov=probelab --cov-report=html --cov-report=term
@@ -100,64 +104,80 @@ probelab is a library for training classifiers (probes) on LLM activations. The 
 
 ```
 probelab/
-├── __init__.py          # Public API exports
-├── types.py             # Core type definitions (Label, Message, Dialogue)
-├── datasets/            # Dataset handling
-│   ├── base.py         # DialogueDataset base class
-│   ├── deception.py    # Deception detection datasets
-│   └── harmfulness.py  # Harmfulness detection datasets
+├── __init__.py          # Exports: Activations, Scores, Label, Normalize, logger
+├── types.py             # Core types (Label, Message, Dialogue, Role)
+├── masks.py             # Mask functions (all, assistant, user, nth_message, etc.)
+├── metrics.py           # auroc, recall_at_fpr
+├── logger.py            # Logging config
+│
+├── processing/          # Tokenization + activation collection
+│   ├── tokenization.py     # Tokens, tokenize_dialogues, tokenize_dataset
+│   ├── activations.py      # Activations, collect_activations, stream_activations
+│   ├── scores.py           # Scores (pool, ema, rolling)
+│   └── chat_templates.py   # TEMPLATES dict for tokenizer config
+│
 ├── models/              # Model interfaces
-│   ├── architectures.py # Model-specific configurations
-│   └── hooks.py        # PyTorch hook management
-├── processing/          # Data processing
-│   ├── activations.py  # Activations container (select, pool methods)
-│   ├── scores.py       # Scores container (pool, ema, rolling methods)
-│   └── tokenization.py # Dialogue tokenization
+│   ├── architectures.py    # ARCHITECTURES dict for model structure
+│   └── hooks.py            # HookedModel context manager
+│
 ├── probes/              # Probe implementations
-│   ├── base.py         # BaseProbe abstract class
-│   ├── logistic.py     # Logistic regression probe
-│   ├── mlp.py          # MLP probe
-│   └── attention.py    # Attention-based probe
-├── masks/               # Mask functions
-│   ├── basic.py        # all, none, last_token
-│   ├── role.py         # assistant, user, system
-│   └── composite.py    # AndMask, OrMask, NotMask
-├── utils/               # Utilities
-│   ├── pooling.py      # masked_pool utility
-│   └── validation.py   # check_activations, check_scores
-├── metrics.py           # auroc, recall_at_fpr, etc.
-└── logger.py           # Logging configuration
+│   ├── base.py             # BaseProbe abstract class
+│   ├── logistic.py         # Logistic regression
+│   ├── mlp.py              # MLP
+│   └── attention.py        # Attention-based
+│
+├── datasets/            # Dataset classes (17 files)
+│   ├── base.py             # Dataset base class
+│   └── ...                 # Domain-specific datasets
+│
+└── utils/               # Utilities
+    ├── normalize.py        # Normalize class
+    ├── pooling.py          # masked_pool utility
+    └── validation.py       # check_activations, check_scores
 ```
 
 ### Core API Pattern
 
-The API follows an **Activations-centric** pattern - operations are methods on data objects:
+The API follows a **two-step** pattern: tokenize first, then collect activations:
 
 ```python
 import probelab as pl
 
-# 1. Collect activations
-acts = pl.collect_activations(
-    model=model,
-    tokenizer=tokenizer,
-    data=dataset,
-    layers=[16],
-    mask=pl.masks.assistant(),
-    batch_size=32
-)
+# 1. Tokenize with mask (determines which tokens to extract)
+tokens = pl.processing.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
 
-# 2. Transform activations (method chaining)
+# 2. Collect activations
+acts = pl.processing.collect_activations(model, tokens, layers=[16])
+
+# 3. Transform activations (method chaining)
 prepared = acts.select(layer=16).pool("sequence", "mean")
 
-# 3. Train probe
+# 4. Train probe
 probe = pl.probes.Logistic(device="cuda").fit(prepared, labels)
 
-# 4. Predict and get probabilities
-scores = probe.predict(test_acts.select(layer=16).pool("sequence", "mean"))
+# 5. Predict and get probabilities
+scores = probe.predict(test_prepared)
 probs = scores.scores  # [batch, 2] tensor
 ```
 
 ### Key Classes
+
+**Tokens** - Tokenized inputs ready for activation collection:
+```python
+# Created via tokenize_dataset or tokenize_dialogues
+tokens = pl.processing.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
+
+# Properties
+tokens.input_ids        # [batch, seq] token IDs
+tokens.attention_mask   # [batch, seq] attention mask
+tokens.detection_mask   # [batch, seq] which tokens to extract (from mask)
+tokens.padding_side     # "left" or "right"
+
+# Methods
+tokens.to("cuda")       # Move to device
+tokens[10:20]           # Slice
+len(tokens)             # Batch size
+```
 
 **Activations** - Axis-aware container for hidden states:
 ```python
@@ -170,10 +190,8 @@ acts.to("cuda")                 # Move to device
 
 # Properties
 acts.shape                      # Tensor shape
-acts.n_layers                   # Number of layers
-acts.batch_size                 # Batch size
-acts.seq_len                    # Sequence length
-acts.d_model                    # Hidden dimension
+acts.has_axis(Axis.LAYER)       # Check if axis exists
+acts.axis_size(Axis.BATCH)      # Size of axis
 ```
 
 **Scores** - Container for probe predictions:
@@ -212,35 +230,33 @@ probe = Attention(hidden_dim=64, device="cuda")
 ```python
 import probelab as pl
 
-# Load data
-dataset = pl.datasets.CircuitBreakersDataset()
+# Load and split data
+train_ds, test_ds = pl.datasets.CircuitBreakersDataset().split(0.8)
+
+# Tokenize
+train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
+test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
 # Collect activations
-acts = pl.collect_activations(
-    model=model,
-    tokenizer=tokenizer,
-    data=dataset,
-    layers=[16],
-    mask=pl.masks.assistant(),
-    batch_size=32
-)
+train_acts = pl.processing.collect_activations(model, train_tokens, layers=[16])
+test_acts = pl.processing.collect_activations(model, test_tokens, layers=[16])
 
 # Prepare and train
-prepared = acts.select(layer=16).pool("sequence", "mean")
-probe = pl.probes.Logistic(device="cuda").fit(prepared, dataset.labels)
+train_prepared = train_acts.select(layer=16).pool("sequence", "mean")
+test_prepared = test_acts.select(layer=16).pool("sequence", "mean")
+probe = pl.probes.Logistic(device="cuda").fit(train_prepared, train_ds.labels)
 
 # Evaluate
-test_acts = pl.collect_activations(...)
-test_prepared = test_acts.select(layer=16).pool("sequence", "mean")
 scores = probe.predict(test_prepared)
 probs = scores.scores[:, 1].cpu().numpy()
-print(f"AUROC: {pl.metrics.auroc(test_labels, probs):.3f}")
+print(f"AUROC: {pl.metrics.auroc([l.value for l in test_ds.labels], probs):.3f}")
 ```
 
 **2. Multi-Layer Analysis**
 ```python
 # Collect from multiple layers
-acts = pl.collect_activations(..., layers=[8, 12, 16, 20])
+tokens = pl.processing.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
+acts = pl.processing.collect_activations(model, tokens, layers=[8, 12, 16, 20])
 
 # Train probe on each layer
 results = {}
@@ -253,8 +269,8 @@ for layer in [8, 12, 16, 20]:
 
 **3. Token-Level with Score Aggregation**
 ```python
-# Train on tokens
-prepared = acts.select(layer=16)  # Keep SEQ axis
+# Train on tokens (keep SEQ axis)
+prepared = acts.select(layer=16)
 probe = pl.probes.Logistic().fit(prepared, labels)
 
 # Predict and aggregate
@@ -271,7 +287,19 @@ mask = pl.masks.AndMask(
     pl.masks.nth_message(-1)
 )
 
-acts = pl.collect_activations(..., mask=mask)
+tokens = pl.processing.tokenize_dataset(dataset, tokenizer, mask=mask)
+acts = pl.processing.collect_activations(model, tokens, layers=[16])
+```
+
+**5. Streaming for Large Datasets**
+```python
+# Stream activations to avoid OOM
+tokens = pl.processing.tokenize_dataset(large_dataset, tokenizer, mask=pl.masks.all())
+
+for acts_batch, indices, seq_len in pl.processing.stream_activations(model, tokens, layers=[16]):
+    # Process each batch incrementally
+    prepared = acts_batch.select(layer=16).pool("sequence", "mean")
+    # ... accumulate results
 ```
 
 ### Adding New Probes
@@ -280,37 +308,33 @@ acts = pl.collect_activations(..., mask=mask)
 2. Implement: `fit(X: Activations, y) -> self`, `predict(X: Activations) -> Scores`, `save()`, `load()`
 3. Add tests in `tests/test_probes.py`
 
+### Adding New Model Architectures
+
+Model and tokenizer configs are separate:
+
+1. **New model structure** → Edit `models/architectures.py`, add to `ARCHITECTURES` dict
+2. **New chat template** → Edit `processing/chat_templates.py`, add to `TEMPLATES` dict
+
+```python
+# models/architectures.py
+ARCHITECTURES["mistral"] = Arch(
+    get_layers=lambda m: list(m.model.layers),
+    get_layer=lambda m, i: m.model.layers[i],
+    get_layernorm=lambda m, i: m.model.layers[i].input_layernorm,
+    set_layers=lambda m, layers: setattr(m.model, "layers", ...),
+    num_layers=_num_layers_from_config,
+)
+
+# processing/chat_templates.py
+TEMPLATES["mistral"] = {
+    "prefix_pattern": re.compile(r"..."),
+    "fold_system": False,
+    "token_padding": (0, 0),
+}
+```
+
 ### Best Practices
 
-1. **Memory**: Use streaming for large datasets, appropriate batch sizes
+1. **Memory**: Use `stream_activations()` for large datasets
 2. **Reproducibility**: Save probes with `probe.save()`, log hyperparameters
 3. **Testing**: Test on both CPU and GPU, include edge cases
-
-### Recent Changes (Breaking)
-
-**Removed:**
-- `Pipeline` class - Use direct method chaining on Activations/Scores
-- `transforms/` module - Use `Activations.select()`, `Activations.pool()`, `Scores.pool()`, `Scores.ema()`, `Scores.rolling()`
-- `coordination/` module - For multi-probe training, just use loops
-
-**Migration:**
-```python
-# OLD (Pipeline-based)
-from probelab import Pipeline
-from probelab.transforms import pre, post
-
-pipeline = Pipeline([
-    ("select", pre.SelectLayer(16)),
-    ("pool", pre.Pool(dim="sequence", method="mean")),
-    ("probe", Logistic()),
-])
-pipeline.fit(acts, labels)
-probs = pipeline.predict(test_acts)
-
-# NEW (Direct API)
-prepared = acts.select(layer=16).pool("sequence", "mean")
-probe = Logistic().fit(prepared, labels)
-test_prepared = test_acts.select(layer=16).pool("sequence", "mean")
-scores = probe.predict(test_prepared)
-probs = scores.scores
-```

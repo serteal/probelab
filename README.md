@@ -37,36 +37,25 @@ train_ds, test_ds = (
     pl.datasets.CircuitBreakersDataset() + pl.datasets.BenignInstructionsDataset()
 ).split(0.8)
 
-# Collect activations from assistant tokens only
-train_acts = pl.collect_activations(
-    model=model,
-    tokenizer=tokenizer,
-    data=train_ds,
-    layers=[16],
-    mask=pl.masks.assistant(),
-    batch_size=32,
-)
+# Tokenize with mask selecting assistant tokens only
+train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
+test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
-# Prepare activations: select layer, pool over sequence
+# Collect activations
+train_acts = pl.processing.collect_activations(model, train_tokens, layers=[16])
+test_acts = pl.processing.collect_activations(model, test_tokens, layers=[16])
+
+# Prepare: select layer, pool over sequence
 train_prepared = train_acts.select(layer=16).pool("sequence", "mean")
+test_prepared = test_acts.select(layer=16).pool("sequence", "mean")
 
-# Train multiple probes
+# Train probes
 probes = {
     "logistic": pl.probes.Logistic(device="cuda").fit(train_prepared, train_ds.labels),
     "mlp": pl.probes.MLP(device="cuda").fit(train_prepared, train_ds.labels),
 }
 
 # Evaluate
-test_acts = pl.collect_activations(
-    model=model,
-    tokenizer=tokenizer,
-    data=test_ds,
-    layers=[16],
-    mask=pl.masks.assistant(),
-    batch_size=32,
-)
-test_prepared = test_acts.select(layer=16).pool("sequence", "mean")
-
 for name, probe in probes.items():
     scores = probe.predict(test_prepared)
     y_pred = scores.scores[:, 1].cpu().numpy()
