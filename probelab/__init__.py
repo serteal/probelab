@@ -4,7 +4,6 @@
 from . import datasets, masks, metrics, probes, processing
 
 # Primary API
-from .logger import logger
 from .processing import Activations, Scores
 from .types import Label
 
@@ -15,7 +14,6 @@ __all__ = [
     "Activations",
     "Scores",
     "Label",
-    "logger",
     # Submodule access
     "processing",
     "probes",
