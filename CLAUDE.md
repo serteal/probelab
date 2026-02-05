@@ -299,14 +299,6 @@ test_norm = norm(test_acts)
 2. **Reproducibility**: Save probes with `probe.save()`, log hyperparameters
 3. **Testing**: Test on both CPU and GPU, include edge cases
 
-### Environment Variables
-
-```bash
-PROBELAB_LOG_LEVEL=INFO
-PROBELAB_CACHE_DIR=/path/to/cache
-PROBELAB_DEFAULT_DEVICE=cuda:0
-```
-
 ### Recent Changes (Breaking)
 
 **Removed:**

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Generator, Iterator, Literal
@@ -492,12 +491,7 @@ class ActivationIterator:
         self._model, self._tokenizer, self._inputs = model, tokenizer, inputs
         self._layers, self._batch_size, self._num_batches = layers, batch_size, num_batches
         self._hook_point, self._detach = hook_point, detach
-        # Resolve verbose
-        if verbose is None:
-            verbose = os.environ.get("PROBELAB_VERBOSE", "true").lower() != "false"
-        if os.environ.get("PROBELAB_DISABLE_PROGRESS", "").lower() in ("1", "true", "yes"):
-            verbose = False
-        self._verbose = verbose
+        self._verbose = verbose if verbose is not None else True
 
     @property
     def layers(self) -> list[int]:
@@ -557,10 +551,7 @@ def collect_activations(
     if streaming:
         return ActivationIterator(model, tokenizer, tokenized, layers_list, batch_size, verbose, num_batches, hook_point, detach_activations)
 
-    # Resolve verbose
-    show_progress = verbose if verbose is not None else os.environ.get("PROBELAB_VERBOSE", "true").lower() != "false"
-    if os.environ.get("PROBELAB_DISABLE_PROGRESS", "").lower() in ("1", "true", "yes"):
-        show_progress = False
+    show_progress = verbose if verbose is not None else True
 
     pool = AggregationMethod(collection_strategy) if collection_strategy else None
     gen = _iter_batches(model, tokenizer, tokenized, layers_list, batch_size, hook_point, detach_activations)

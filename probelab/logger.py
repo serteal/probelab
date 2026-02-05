@@ -1,19 +1,6 @@
-"""Logging utilities for probelab.
-
-Provides a library-local logger named "probelab" without modifying the root logger.
-Defaults to console-only logging with no files written on import.
-
-Usage:
-    from probelab.logger import logger  # console-only by default
-    logger.info("Hello")
-
-Opt-in file logging:
-    from probelab.logger import setup_logger
-    setup_logger(logfile="probelab.log")  # add file handler
-"""
+"""Logging utilities for probelab."""
 
 import logging
-import os
 from pathlib import Path
 
 _DEFAULT_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
@@ -46,19 +33,10 @@ def _has_file_handler(logger: logging.Logger, path: Path) -> bool:
 def setup_logger(
     *,
     logfile: str | Path | None = None,
-    level: str | None = None,
+    level: str = "INFO",
     file_level: str = "WARNING",
 ) -> logging.Logger:
-    """Configure the library-local "probelab" logger.
-
-    - By default (logfile=None) configures console-only logging and does NOT write files.
-    - If `logfile` is provided, adds a file handler at `file_level`.
-    - If `level` is None, uses PROBELAB_LOG_LEVEL env var or "INFO" as default.
-
-    Returns the configured "probelab" logger.
-    """
-    if level is None:
-        level = os.environ.get("PROBELAB_LOG_LEVEL", "INFO")
+    """Configure the probelab logger. Optionally adds file handler if logfile provided."""
 
     logger = logging.getLogger("probelab")
     logger.setLevel(level)
