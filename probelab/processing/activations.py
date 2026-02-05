@@ -194,71 +194,47 @@ class Activations:
     @classmethod
     def from_hidden_states(
         cls,
-        hidden_states: tuple[tuple[torch.Tensor, ...], ...] | torch.Tensor,
+        hidden_states: tuple[tuple[torch.Tensor, ...], ...] | tuple[torch.Tensor, ...] | torch.Tensor,
         *,
         input_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | None = None,
         detection_mask: torch.Tensor | None = None,
-        layer_indices: list[int] | None = None,
+        layer_indices: list[int] | int | None = None,
         batch_indices: torch.Tensor | None = None,
     ) -> "Activations":
-        """Create Activations from pre-extracted hidden states."""
-        if isinstance(hidden_states, tuple):
-            if len(hidden_states) == 0:
-                raise ValueError("Empty hidden_states tuple")
+        """Create Activations from hidden states (tensor, tuple of tensors, or nested tuple)."""
+        # Normalize layer_indices to list
+        if isinstance(layer_indices, int):
+            layer_indices = [layer_indices]
 
-            first_elem = hidden_states[0]
-
-            if isinstance(first_elem, torch.Tensor):
-                if layer_indices is not None:
-                    layer_indices_to_select = [layer_indices] if not isinstance(layer_indices, (list, tuple)) else list(layer_indices)
-                    selected_layers = [hidden_states[idx] for idx in layer_indices_to_select]
-                    actual_layer_indices = layer_indices_to_select
-                else:
-                    selected_layers = list(hidden_states)
-                    actual_layer_indices = list(range(len(hidden_states)))
-                activations_tensor = torch.stack(selected_layers, dim=0)
-
-            elif isinstance(first_elem, (tuple, list)):
-                num_steps = len(hidden_states)
-                num_layers = len(hidden_states[0])
-                if num_layers == 0:
-                    raise ValueError("Empty layer tuple in hidden_states")
-
-                for step_idx, step_tuple in enumerate(hidden_states):
-                    if len(step_tuple) != num_layers:
-                        raise ValueError(
-                            f"Inconsistent layer count: step 0 has {num_layers} layers, "
-                            f"step {step_idx} has {len(step_tuple)} layers"
-                        )
-
-                if layer_indices is not None:
-                    selected_layer_indices = [layer_indices] if not isinstance(layer_indices, (list, tuple)) else list(layer_indices)
-                    actual_layer_indices = selected_layer_indices
-                else:
-                    selected_layer_indices = list(range(num_layers))
-                    actual_layer_indices = selected_layer_indices
-
-                layer_tensors = []
-                for layer_idx in selected_layer_indices:
-                    step_tensors = [hidden_states[step_idx][layer_idx] for step_idx in range(num_steps)]
-                    layer_tensor = torch.cat(step_tensors, dim=1)
-                    layer_tensors.append(layer_tensor)
-                activations_tensor = torch.stack(layer_tensors, dim=0)
+        # Convert to 4D tensor [layer, batch, seq, hidden]
+        if isinstance(hidden_states, torch.Tensor):
+            if hidden_states.ndim != 4:
+                raise ValueError(f"Expected 4D tensor [layer, batch, seq, hidden], got {hidden_states.shape}")
+            tensor = hidden_states
+            indices = layer_indices or list(range(tensor.shape[0]))
+        elif isinstance(hidden_states, tuple) and len(hidden_states) > 0:
+            first = hidden_states[0]
+            if isinstance(first, torch.Tensor):
+                # Tuple of tensors: one tensor per layer
+                indices = layer_indices or list(range(len(hidden_states)))
+                tensor = torch.stack([hidden_states[i] for i in indices], dim=0)
+            elif isinstance(first, (tuple, list)):
+                # Nested tuple: (steps, layers) -> concat steps, stack layers
+                num_layers = len(first)
+                indices = layer_indices or list(range(num_layers))
+                tensor = torch.stack([
+                    torch.cat([step[i] for step in hidden_states], dim=1)
+                    for i in indices
+                ], dim=0)
             else:
-                raise TypeError(f"Expected tuple of Tensors or tuple of tuples, got tuple of {type(first_elem)}")
-
-        elif isinstance(hidden_states, torch.Tensor):
-            activations_tensor = hidden_states
-            if activations_tensor.ndim != 4:
-                raise ValueError(f"Expected 4D tensor [layer, batch, seq, hidden], got shape {activations_tensor.shape}")
-            actual_layer_indices = layer_indices
+                raise TypeError(f"Expected tuple of Tensors or tuples, got tuple of {type(first)}")
         else:
-            raise TypeError(f"hidden_states must be tuple or Tensor, got {type(hidden_states)}")
+            raise TypeError(f"hidden_states must be tensor or non-empty tuple, got {type(hidden_states)}")
 
         return cls.from_tensor(
-            activations=activations_tensor,
-            layer_indices=actual_layer_indices,
+            activations=tensor,
+            layer_indices=indices,
             attention_mask=attention_mask,
             detection_mask=detection_mask,
             input_ids=input_ids,

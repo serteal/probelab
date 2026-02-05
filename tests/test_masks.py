@@ -165,26 +165,26 @@ class TestMaskComposition(unittest.TestCase):
     self.assertTrue(result.all())
 
 # =============================================================================
-# AndMask, OrMask, NotMask
+# Mask Operators (&, |, ~)
 # =============================================================================
 
-class TestExplicitCompositors(unittest.TestCase):
-  def test_and_mask(self):
+class TestMaskOperators(unittest.TestCase):
+  def test_and_operator(self):
     meta = _metadata()
-    m = masks.AndMask(masks.all(), masks.assistant())
+    m = masks.all() & masks.assistant()
     result = m(_dialogues(), meta)
     expected = masks.assistant()(_dialogues(), meta)
     self.assertTrue(torch.equal(result, expected))
 
-  def test_or_mask(self):
+  def test_or_operator(self):
     meta = _metadata()
-    m = masks.OrMask(masks.assistant(), masks.user())
+    m = masks.assistant() | masks.user()
     result = m(_dialogues(), meta)
     self.assertTrue(result.all())
 
-  def test_not_mask(self):
+  def test_not_operator(self):
     meta = _metadata()
-    m = masks.NotMask(masks.assistant())
+    m = ~masks.assistant()
     result = m(_dialogues(), meta)
     expected = masks.user()(_dialogues(), meta)
     self.assertTrue(torch.equal(result, expected))

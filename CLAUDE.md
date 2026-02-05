@@ -281,11 +281,8 @@ probs = aggregated.scores
 
 **4. Using Masks**
 ```python
-# Only detect on last assistant message
-mask = pl.masks.AndMask(
-    pl.masks.assistant(),
-    pl.masks.nth_message(-1)
-)
+# Only detect on last assistant message (compose with & operator)
+mask = pl.masks.assistant() & pl.masks.nth_message(-1)
 
 tokens = pl.processing.tokenize_dataset(dataset, tokenizer, mask=mask)
 acts = pl.processing.collect_activations(model, tokens, layers=[16])

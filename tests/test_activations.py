@@ -592,5 +592,60 @@ class TestLayerTensorIndices(unittest.TestCase):
             a.get_layer_tensor_indices(7)
 
 
+class TestFromHiddenStates(unittest.TestCase):
+    """Tests for the simplified from_hidden_states method."""
+
+    def test_from_tensor_4d(self):
+        t = torch.randn(3, 4, 8, 16)  # [layer, batch, seq, hidden]
+        a = Activations.from_hidden_states(t, attention_mask=torch.ones(4, 8),
+                                            input_ids=torch.ones(4, 8, dtype=torch.long))
+        self.assertEqual(a.shape, (3, 4, 8, 16))
+        self.assertEqual(a.layer_indices, [0, 1, 2])
+
+    def test_from_tuple_of_tensors(self):
+        # Tuple of tensors: one per layer
+        layers = tuple(torch.randn(4, 8, 16) for _ in range(3))
+        a = Activations.from_hidden_states(layers, attention_mask=torch.ones(4, 8),
+                                            input_ids=torch.ones(4, 8, dtype=torch.long))
+        self.assertEqual(a.shape, (3, 4, 8, 16))
+        self.assertEqual(a.layer_indices, [0, 1, 2])
+
+    def test_from_tuple_of_tensors_with_layer_selection(self):
+        layers = tuple(torch.randn(4, 8, 16) for _ in range(5))
+        a = Activations.from_hidden_states(layers, layer_indices=[1, 3],
+                                            attention_mask=torch.ones(4, 8),
+                                            input_ids=torch.ones(4, 8, dtype=torch.long))
+        self.assertEqual(a.shape, (2, 4, 8, 16))
+        self.assertEqual(a.layer_indices, [1, 3])
+
+    def test_from_nested_tuple(self):
+        # Nested tuple: (steps, layers) - e.g., from streaming
+        steps = tuple(
+            tuple(torch.randn(1, 4, 16) for _ in range(3))  # 3 layers
+            for _ in range(2)  # 2 steps
+        )
+        a = Activations.from_hidden_states(steps, attention_mask=torch.ones(1, 8),
+                                            input_ids=torch.ones(1, 8, dtype=torch.long))
+        self.assertEqual(a.shape, (3, 1, 8, 16))  # Concatenated along seq dim
+        self.assertEqual(a.layer_indices, [0, 1, 2])
+
+    def test_layer_indices_as_int(self):
+        layers = tuple(torch.randn(4, 8, 16) for _ in range(5))
+        a = Activations.from_hidden_states(layers, layer_indices=2,
+                                            attention_mask=torch.ones(4, 8),
+                                            input_ids=torch.ones(4, 8, dtype=torch.long))
+        self.assertEqual(a.shape, (1, 4, 8, 16))
+        self.assertEqual(a.layer_indices, [2])
+
+    def test_invalid_tensor_shape_raises(self):
+        t = torch.randn(4, 8, 16)  # 3D instead of 4D
+        with self.assertRaises(ValueError):
+            Activations.from_hidden_states(t)
+
+    def test_empty_tuple_raises(self):
+        with self.assertRaises(TypeError):
+            Activations.from_hidden_states(())
+
+
 if __name__ == "__main__":
     unittest.main()

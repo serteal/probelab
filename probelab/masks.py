@@ -1,7 +1,7 @@
 """Functional mask system for selective token processing.
 
 Masks are callable objects that select tokens based on dialogues and metadata.
-They compose with boolean operators (&, |, ~) for complex selection logic.
+Compose masks with boolean operators: & (and), | (or), ~ (not).
 
 Usage:
     from probelab import masks
@@ -10,10 +10,10 @@ Usage:
     mask = masks.assistant()
     mask = masks.nth_message(-1)
 
-    # Composed masks
-    mask = masks.assistant() & masks.nth_message(-1)
-    mask = masks.contains("yes") | masks.contains("no")
-    mask = ~masks.user()  # All non-user tokens
+    # Compose with operators (not wrapper functions)
+    mask = masks.assistant() & masks.nth_message(-1)  # AND
+    mask = masks.contains("yes") | masks.contains("no")  # OR
+    mask = ~masks.user()  # NOT (inverts, keeps padding masked)
 """
 
 from __future__ import annotations
@@ -555,34 +555,6 @@ def special_tokens(special_token_ids: set[int] | None = None) -> Mask:
 
 
 # =============================================================================
-# Composite Masks (for explicit construction)
-# =============================================================================
-
-
-def AndMask(mask1: Mask, mask2: Mask) -> Mask:
-    """Logical AND of two masks."""
-    return mask1 & mask2
-
-
-def OrMask(mask1: Mask, mask2: Mask) -> Mask:
-    """Logical OR of two masks."""
-    return mask1 | mask2
-
-
-def NotMask(mask: Mask, *, keep_padding_masked: bool = True) -> Mask:
-    """Logical NOT of a mask.
-
-    Args:
-        mask: Mask to negate.
-        keep_padding_masked: If True (default), padding tokens remain masked.
-    """
-    if keep_padding_masked:
-        return ~mask
-    else:
-        return Mask(lambda d, m: ~mask(d, m), ("~raw", mask.key))
-
-
-# =============================================================================
 # Exports
 # =============================================================================
 
@@ -612,8 +584,4 @@ __all__ = [
     "regex",
     # Content masks
     "special_tokens",
-    # Composite constructors
-    "AndMask",
-    "OrMask",
-    "NotMask",
 ]
