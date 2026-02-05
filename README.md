@@ -21,7 +21,6 @@ uv sync
 ```python
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
 import probelab as pl
 
 # Load model
@@ -32,9 +31,9 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-# Combine datasets to build a balanced binary task
+# Load and combine datasets
 train_ds, test_ds = (
-    pl.datasets.CircuitBreakersDataset() + pl.datasets.BenignInstructionsDataset()
+    pl.datasets.load("circuit_breakers") + pl.datasets.load("benign_instructions")
 ).split(0.8)
 
 # Tokenize with mask selecting assistant tokens only
@@ -49,18 +48,14 @@ test_acts = pl.processing.collect_activations(model, test_tokens, layers=[16])
 train_prepared = train_acts.select(layer=16).pool("sequence", "mean")
 test_prepared = test_acts.select(layer=16).pool("sequence", "mean")
 
-# Train probes
-probes = {
-    "logistic": pl.probes.Logistic(device="cuda").fit(train_prepared, train_ds.labels),
-    "mlp": pl.probes.MLP(device="cuda").fit(train_prepared, train_ds.labels),
-}
-
-# Evaluate
-for name, probe in probes.items():
+# Train and evaluate (probes auto-detect device from input)
+for name, probe in [
+    ("logistic", pl.probes.Logistic()),
+    ("mlp", pl.probes.MLP()),
+]:
+    probe.fit(train_prepared, train_ds.labels)
     scores = probe.predict(test_prepared)
-    y_pred = scores.scores[:, 1].cpu().numpy()
-    y_true = [label.value for label in test_ds.labels]
-    print(f"{name}: AUROC={pl.metrics.auroc(y_true, y_pred):.3f}")
+    print(f"{name}: AUROC={pl.metrics.auroc(test_ds.labels, scores.scores):.3f}")
 ```
 
 ## Development

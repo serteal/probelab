@@ -25,26 +25,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```python
 import probelab as pl
 
-# Core types
-from probelab import Label, Activations, Scores
+# Load data via registry
+dataset = pl.datasets.load("circuit_breakers")
+pl.datasets.list_datasets(category="deception")
 
-# Processing (tokenization + activation collection)
-from probelab.processing import tokenize_dataset, collect_activations, Tokens
+# Tokenize and collect activations
+tokens = pl.processing.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
+acts = pl.processing.collect_activations(model, tokens, layers=[16])
 
-# Probes
-from probelab.probes import Logistic, MLP, Attention
+# Train probe (auto-detects device from input)
+probe = pl.probes.Logistic().fit(acts.select(layer=16).pool("sequence", "mean"), labels)
 
-# Datasets
-from probelab.datasets import CircuitBreakersDataset, BenignInstructionsDataset
-
-# Metrics
-from probelab.metrics import auroc, recall_at_fpr
-
-# Masks for selective token processing
-from probelab import masks
-
-# Utilities
-from probelab import Normalize
+# Evaluate
+score = pl.metrics.auroc(labels, probe.predict(test_acts).scores)
 ```
 
 ## Commands
@@ -104,7 +97,7 @@ probelab is a library for training classifiers (probes) on LLM activations. The 
 
 ```
 probelab/
-├── __init__.py          # Exports: Activations, Scores, Label, Normalize, logger
+├── __init__.py          # Exports: Activations, Scores, Label
 ├── types.py             # Core types (Label, Message, Dialogue, Role)
 ├── masks.py             # Mask functions (all, assistant, user, nth_message, etc.)
 ├── metrics.py           # auroc, recall_at_fpr
@@ -152,8 +145,8 @@ acts = pl.processing.collect_activations(model, tokens, layers=[16])
 # 3. Transform activations (method chaining)
 prepared = acts.select(layer=16).pool("sequence", "mean")
 
-# 4. Train probe
-probe = pl.probes.Logistic(device="cuda").fit(prepared, labels)
+# 4. Train probe (auto-detects device from input)
+probe = pl.probes.Logistic().fit(prepared, labels)
 
 # 5. Predict and get probabilities
 scores = probe.predict(test_prepared)
@@ -208,20 +201,20 @@ scores.shape                    # Tensor shape
 scores.batch_size               # Batch size
 ```
 
-**Probes** - Classifiers:
+**Probes** - Classifiers (auto-detect device from input, or specify explicitly):
 ```python
 # Logistic regression
-probe = Logistic(C=1.0, device="cuda")
+probe = Logistic(C=1.0)  # device auto-detected in fit()
 probe.fit(activations, labels)
 scores = probe.predict(activations)  # Returns Scores object
 probe.save("probe.pt")
-probe = Logistic.load("probe.pt")
+probe = Logistic.load("probe.pt", device="cuda")  # explicit on load
 
 # MLP
-probe = MLP(hidden_dim=64, dropout=0.1, device="cuda")
+probe = MLP(hidden_dim=64, dropout=0.1)
 
 # Attention (handles sequences internally)
-probe = Attention(hidden_dim=64, device="cuda")
+probe = Attention(hidden_dim=64)
 ```
 
 ### Common Workflows
@@ -231,7 +224,7 @@ probe = Attention(hidden_dim=64, device="cuda")
 import probelab as pl
 
 # Load and split data
-train_ds, test_ds = pl.datasets.CircuitBreakersDataset().split(0.8)
+train_ds, test_ds = pl.datasets.load("circuit_breakers").split(0.8)
 
 # Tokenize
 train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
@@ -244,12 +237,11 @@ test_acts = pl.processing.collect_activations(model, test_tokens, layers=[16])
 # Prepare and train
 train_prepared = train_acts.select(layer=16).pool("sequence", "mean")
 test_prepared = test_acts.select(layer=16).pool("sequence", "mean")
-probe = pl.probes.Logistic(device="cuda").fit(train_prepared, train_ds.labels)
+probe = pl.probes.Logistic().fit(train_prepared, train_ds.labels)
 
 # Evaluate
 scores = probe.predict(test_prepared)
-probs = scores.scores[:, 1].cpu().numpy()
-print(f"AUROC: {pl.metrics.auroc([l.value for l in test_ds.labels], probs):.3f}")
+print(f"AUROC: {pl.metrics.auroc(test_ds.labels, scores.scores):.3f}")
 ```
 
 **2. Multi-Layer Analysis**
@@ -264,7 +256,7 @@ for layer in [8, 12, 16, 20]:
     prepared = acts.select(layer=layer).pool("sequence", "mean")
     probe = pl.probes.Logistic().fit(prepared, labels)
     scores = probe.predict(test_prepared)
-    results[layer] = pl.metrics.auroc(test_labels, scores.scores[:, 1])
+    results[layer] = pl.metrics.auroc(test_labels, scores.scores)
 ```
 
 **3. Token-Level with Score Aggregation**
