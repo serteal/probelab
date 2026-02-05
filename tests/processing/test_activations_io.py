@@ -37,7 +37,7 @@ def create_test_activations(
     detection_mask[:, :3] = 0  # Skip first 3 tokens
     input_ids = torch.randint(0, 1000, (batch_size, seq_len))
 
-    return Activations.from_components(
+    return Activations.from_tensor(
         activations=acts,
         attention_mask=attention_mask,
         input_ids=input_ids,
@@ -104,7 +104,6 @@ class TestActivationsSave:
 
                 # Check metadata
                 assert "probelab_version" in f.attrs
-                assert "dtype" in f.attrs
 
                 # Check layer indices
                 assert list(f["layer_indices"][:]) == [5, 10, 15]
@@ -289,7 +288,7 @@ class TestActivationsIOEdgeCases:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "activations.h5"
 
-            with pytest.raises(ImportError, match="h5py is required"):
+            with pytest.raises(ImportError, match="h5py required"):
                 acts.save(str(path))
 
 

@@ -239,5 +239,5 @@ class TestLogistic:
         activations = create_test_activations(n_samples=10)
 
         # Test with wrong layer - should error during select
-        with pytest.raises(ValueError, match="Layer 5 is not available"):
+        with pytest.raises(ValueError, match="Layer 5 not available"):
             activations.select(layer=5)

@@ -278,7 +278,7 @@ class TestModelHelpers:
         model3 = Mock()
         model3.config = Mock(spec=[])  # Empty spec, no hidden_size
         model3.name_or_path = "unknown-model"
-        with pytest.raises(ValueError, match="Cannot determine hidden dimension"):
+        with pytest.raises(ValueError, match="Cannot determine hidden_size"):
             get_hidden_dim(model3)
 
 
@@ -293,7 +293,7 @@ class TestActivations:
         detection_mask = torch.ones(8, 16).bool()
         layer_indices = [0, 5, 10, 15]
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=mask,
             input_ids=input_ids,
@@ -321,7 +321,7 @@ class TestActivations:
         input_ids = torch.ones(4, 8, dtype=torch.long)
         detection_mask = torch.ones(4, 8).bool()
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=mask,
             input_ids=input_ids,
@@ -341,7 +341,7 @@ class TestActivations:
         input_ids = torch.ones(4, 8, dtype=torch.long)
         detection_mask = torch.ones(4, 8).bool()
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=mask,
             input_ids=input_ids,
@@ -367,7 +367,7 @@ class TestActivations:
     def test_get_layer_tensor_indices(self):
         """Test mapping layer indices to tensor indices."""
         acts = torch.randn(4, 2, 8, 16)
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(2, 8),
             input_ids=torch.ones(2, 8, dtype=torch.long),
@@ -382,13 +382,13 @@ class TestActivations:
         assert activations.get_layer_tensor_indices([0, 10]) == [0, 2]
 
         # Test error for unavailable layer
-        with pytest.raises(ValueError, match="Layer 7 is not available"):
+        with pytest.raises(ValueError, match="Layer 7 not available"):
             activations.get_layer_tensor_indices(7)
 
     def test_select_multiple_layers(self):
         """Test selecting multiple layers."""
         acts = torch.randn(4, 2, 8, 16)
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(2, 8),
             input_ids=torch.ones(2, 8, dtype=torch.long),
@@ -414,7 +414,7 @@ class TestActivations:
             ]
         ).float()
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(2, 8),
             input_ids=torch.ones(2, 8, dtype=torch.long),
@@ -444,7 +444,7 @@ class TestActivations:
             ]
         ).float()
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(2, 8),
             input_ids=torch.ones(2, 8, dtype=torch.long),
@@ -470,7 +470,7 @@ class TestActivations:
             ]
         ).float()
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(2, 8),
             input_ids=torch.ones(2, 8, dtype=torch.long),
@@ -490,7 +490,7 @@ class TestActivations:
     def test_pool_works_with_multi_layer(self):
         """Test that pool works with multi-layer activations."""
         acts = torch.randn(2, 2, 8, 16)  # 2 layers
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(2, 8),
             input_ids=torch.ones(2, 8, dtype=torch.long),
@@ -510,7 +510,7 @@ class TestActivations:
         acts = torch.randn(1, 2, 8, 16)  # 1 layer, 2 batch, 8 seq, 16 dim
         detection_mask = torch.zeros(2, 8)  # All tokens invalid
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(2, 8),
             input_ids=torch.ones(2, 8, dtype=torch.long),
@@ -530,7 +530,7 @@ class TestActivations:
         acts = torch.randn(1, 2, 8, 16)  # 1 layer, 2 batch, 8 seq, 16 dim
         detection_mask = torch.zeros(2, 8)  # All tokens invalid
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(2, 8),
             input_ids=torch.ones(2, 8, dtype=torch.long),
@@ -551,7 +551,7 @@ class TestActivations:
         acts = torch.randn(1, 2, 8, 16)  # 1 layer, 2 batch, 8 seq, 16 dim
         detection_mask = torch.zeros(2, 8)  # All tokens invalid
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(2, 8),
             input_ids=torch.ones(2, 8, dtype=torch.long),
@@ -577,7 +577,7 @@ class TestActivations:
             ]
         ).float()
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(3, 8),
             input_ids=torch.ones(3, 8, dtype=torch.long),
@@ -605,7 +605,7 @@ class TestActivations:
             ]
         ).float()
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(2, 8),
             input_ids=torch.ones(2, 8, dtype=torch.long),
@@ -632,7 +632,7 @@ class TestActivations:
     def test_to_token_level_requires_single_layer(self):
         """Test that to_token_level raises error for multi-layer."""
         acts = torch.randn(2, 2, 8, 16)  # 2 layers
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(2, 8),
             input_ids=torch.ones(2, 8, dtype=torch.long),
@@ -640,7 +640,7 @@ class TestActivations:
             layer_indices=[0, 1],
         )
 
-        with pytest.raises(ValueError, match="Token extraction requires single layer"):
+        with pytest.raises(ValueError, match="extract_tokens requires single layer"):
             activations.extract_tokens()
 
     def test_to_token_level_empty_mask(self):
@@ -648,7 +648,7 @@ class TestActivations:
         acts = torch.randn(1, 2, 8, 16)  # 1 layer, 2 batch, 8 seq, 16 dim
         detection_mask = torch.zeros(2, 8)  # All tokens invalid
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(2, 8),
             input_ids=torch.ones(2, 8, dtype=torch.long),
@@ -672,7 +672,7 @@ class TestActivations:
             ]
         ).float()
 
-        activations = Activations.from_components(
+        activations = Activations.from_tensor(
             activations=acts,
             attention_mask=torch.ones(3, 8),
             input_ids=torch.ones(3, 8, dtype=torch.long),

@@ -237,7 +237,7 @@ class TestProbeEdgeCases:
         )
 
         # Request non-existent layer 5
-        with pytest.raises(ValueError, match="Layer 5 is not available"):
+        with pytest.raises(ValueError, match="Layer 5 not available"):
             activations.select(layer=5)
 
     def test_probe_with_all_zero_features(self):
