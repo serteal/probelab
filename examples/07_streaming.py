@@ -77,10 +77,10 @@ for batch_acts, indices, seq_len in pl.processing.stream_activations(
 
 print(f"Accumulated {len(train_indices_seen)} training samples")
 
-# Train probe on streamed features using Activations.from_tensor()
-# 2D tensors [batch, hidden] are now supported directly
-train_acts_streamed = pl.Activations.from_tensor(train_features)
-print(f"Streamed activations: {train_acts_streamed.axes}, shape={train_acts_streamed.shape}")
+# Train probe on streamed features
+# 2D tensors [batch, hidden] use dims="bh"
+train_acts_streamed = pl.Activations(train_features, dims="bh")
+print(f"Streamed activations: dims={train_acts_streamed.dims}, shape={train_acts_streamed.shape}")
 
 # Train probe
 probe_streamed = pl.probes.Logistic()

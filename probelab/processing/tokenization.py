@@ -96,7 +96,12 @@ def preprocess_dialogue(
 
     for message in dialogue:
         if processed and processed[-1]["role"] == message.role:
-            processed[-1]["content"] += message.content.strip()
+            next_content = message.content.strip()
+            if next_content:
+                if processed[-1]["content"]:
+                    processed[-1]["content"] += " " + next_content
+                else:
+                    processed[-1]["content"] = next_content
         else:
             processed.append({"role": message.role, "content": message.content.strip()})
 

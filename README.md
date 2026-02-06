@@ -72,7 +72,7 @@ uv run pytest tests/ --cov=probelab --cov-report=html
   title = {probelab: A library for training probes on LLM activations},
   author = {Alex Serrano},
   url = {https://github.com/serteal/probelab},
-  version = {0.1.0},
+  version = {0.0.1},
   year = {2025},
 }
 ```

@@ -11,24 +11,25 @@ def acts(n_layers=1, batch=4, seq=8, d_model=16, layer_indices=None, detection_m
   """Create test activations. Simple, explicit, no magic."""
   if layer_indices is None:
     layer_indices = list(range(n_layers))
-  t = torch.randn(n_layers, batch, seq, d_model)
-  attn = torch.ones(batch, seq)
-  ids = torch.randint(0, 1000, (batch, seq))
+  t = torch.randn(batch, n_layers, seq, d_model)
   det = detection_mask if detection_mask is not None else torch.ones(batch, seq)
-  return Activations.from_tensor(activations=t, attention_mask=attn, input_ids=ids, detection_mask=det, layer_indices=layer_indices)
+  return Activations(
+    data=t,
+    dims="blsh",
+    mask=det,
+    layers=tuple(layer_indices),
+  )
 
 def separable_acts(n_samples=20, seq=8, d_model=8, gap=2.0):
   """Create linearly separable activations. First half positive, second half negative."""
   half = n_samples // 2
-  t = torch.zeros(1, n_samples, seq, d_model)
-  t[0, :half, :, 0] = gap  # positive class: high in dim 0
-  t[0, half:, :, 0] = -gap  # negative class: low in dim 0
-  t[:, :, :, 1:] = torch.randn(1, n_samples, seq, d_model - 1) * 0.1  # noise
-  attn = torch.ones(n_samples, seq)
-  ids = torch.ones(n_samples, seq, dtype=torch.long)
+  t = torch.zeros(n_samples, 1, seq, d_model)
+  t[:half, 0, :, 0] = gap  # positive class: high in dim 0
+  t[half:, 0, :, 0] = -gap  # negative class: low in dim 0
+  t[:, :, :, 1:] = torch.randn(n_samples, 1, seq, d_model - 1) * 0.1  # noise
   det = torch.ones(n_samples, seq)
   labels = [Label.POSITIVE] * half + [Label.NEGATIVE] * half
-  return Activations.from_tensor(activations=t, attention_mask=attn, input_ids=ids, detection_mask=det, layer_indices=[0]), labels
+  return Activations(data=t, dims="blsh", mask=det, layers=(0,)), labels
 
 # =============================================================================
 # Probability Tensor Helpers

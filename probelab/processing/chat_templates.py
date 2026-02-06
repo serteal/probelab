@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 _LLAMA_PREFIX = re.compile(
     r"((<\|pad\|>)*(<\|begin_of_text\|>))?"
     r"(<\|start_header_id\|>(system|user|assistant)<\|end_header_id\|>\n\n"
-    r"(Cutting Knowledge Date: December 2023\nToday Date: \d\d \w\w\w 202[45]\n\n)?)?"
+    r"(Cutting Knowledge Date: December 2023\nToday Date: \d\d \w\w\w \d{4}\n\n)?)?"
     r"(<\|eot_id\|><\|start_header_id\|>(system|user|assistant)<\|end_header_id\|>\n\n)?(\n\n)?"
 )
 

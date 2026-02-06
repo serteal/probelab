@@ -6,7 +6,7 @@ from sklearn.metrics import roc_auc_score
 from probelab.metrics import (
   auroc, partial_auroc, accuracy, balanced_accuracy, precision, recall, f1,
   recall_at_fpr, fpr, fnr, mean_score, std_score, percentile,
-  weighted_error_rate, optimal_threshold, bootstrap, get_metric_by_name,
+  weighted_error_rate, optimal_threshold, bootstrap,
 )
 
 # =============================================================================
@@ -297,38 +297,6 @@ class TestBootstrap(unittest.TestCase):
     r1 = bootstrap(lambda yt, yp: float(np.mean(yp)), y_true, y_pred, n=100, seed=42)
     r2 = bootstrap(lambda yt, yp: float(np.mean(yp)), y_true, y_pred, n=100, seed=42)
     self.assertEqual(r1, r2)
-
-# =============================================================================
-# Registry
-# =============================================================================
-
-class TestRegistry(unittest.TestCase):
-  def test_basic_lookup(self):
-    self.assertEqual(get_metric_by_name("auroc"), auroc)
-    self.assertEqual(get_metric_by_name("accuracy"), accuracy)
-    self.assertEqual(get_metric_by_name("f1"), f1)
-
-  def test_recall_at_syntax(self):
-    metric = get_metric_by_name("recall@5")
-    y_true, y_pred = _perfect()
-    self.assertEqual(metric(y_true, y_pred), 1.0)
-
-  def test_tpr_at_syntax(self):
-    metric = get_metric_by_name("tpr@5")
-    y_true, y_pred = _perfect()
-    self.assertEqual(metric(y_true, y_pred), 1.0)
-
-  def test_percentile_syntax(self):
-    metric = get_metric_by_name("percentile95")
-    y_true = np.zeros(100)
-    y_pred = np.linspace(0, 1, 100)
-    result = metric(y_true, y_pred)
-    self.assertGreater(result, 0.9)
-    self.assertLess(result, 1.0)
-
-  def test_unknown_raises(self):
-    with self.assertRaises(ValueError):
-      get_metric_by_name("unknown_metric")
 
 # =============================================================================
 # Edge Cases

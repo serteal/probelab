@@ -1,7 +1,5 @@
 """Function-based metrics for probe evaluation."""
 
-import functools
-
 import numpy as np
 import torch
 from sklearn.metrics import (
@@ -230,24 +228,3 @@ METRICS_REGISTRY = {
     "std_score": std_score,
     "weighted_error": weighted_error_rate,
 }
-
-
-def get_metric_by_name(name):
-    """Get metric function by name. Supports: recall@X, auroc@X, percentileX, fpr@X."""
-    if name in METRICS_REGISTRY:
-        return METRICS_REGISTRY[name]
-
-    if name.startswith(("recall@", "tpr@")):
-        fpr_val = float(name.split("@")[1]) / 100
-        return functools.partial(recall_at_fpr, fpr=fpr_val)
-    if name.startswith("auroc@"):
-        max_fpr = float(name.split("@")[1]) / 100
-        return functools.partial(partial_auroc, max_fpr=max_fpr)
-    if name.startswith("percentile"):
-        q = float(name[10:])
-        return functools.partial(percentile, q=q)
-    if name.startswith("fpr@"):
-        t = float(name.split("@")[1])
-        return functools.partial(fpr, threshold=t)
-
-    raise ValueError(f"Unknown metric: {name}")

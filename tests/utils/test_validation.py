@@ -73,7 +73,7 @@ class TestCheckActivations:
 
     def test_forbid_layer_error_message_includes_hint(self, activations_4d):
         """Error message includes helpful hint about SelectLayer."""
-        with pytest.raises(ValueError, match="pre.SelectLayer"):
+        with pytest.raises(ValueError, match="select_layers\\(layer_idx\\)"):
             check_activations(activations_4d, forbid_layer=True)
 
     def test_require_seq_passes(self, activations_3d):

@@ -77,14 +77,14 @@ def check_activations(
             f"{prefix}Expected single-layer activations, but found LAYER axis "
             f"with {X.n_layers} layers.\n"
             f"Available layers: {list(X.layers) if X.layers else []}\n"
-            f"Hint: Use pre.SelectLayer(layer_idx) in your pipeline to select a single layer."
+            f"Hint: Use select_layers(layer_idx) to choose one layer."
         )
 
     if require_seq and "s" not in X.dims:
         raise ValueError(
             f"{prefix}Expected activations with SEQ axis, but it is missing.\n"
             f"Current dims: {X.dims}\n"
-            f"Hint: The SEQ axis may have been removed by pool(dim='sequence'). "
+            f"Hint: The SEQ axis may have been removed by mean_pool()/max_pool()/last_pool(). "
             f"This estimator requires token-level activations."
         )
 
@@ -92,7 +92,7 @@ def check_activations(
         raise ValueError(
             f"{prefix}Expected pooled activations without SEQ axis, but SEQ axis is present.\n"
             f"Current dims: {X.dims}\n"
-            f"Hint: Use pre.Pool(dim='sequence', method='mean') to aggregate tokens."
+            f"Hint: Use mean_pool(), max_pool(), or last_pool() to aggregate tokens."
         )
 
     # Non-empty check

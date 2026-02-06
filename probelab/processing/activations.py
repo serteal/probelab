@@ -196,7 +196,7 @@ class Activations:
             )
             f.attrs["dims"] = self.dims
             f.attrs["dtype"] = str(self.data.dtype)
-            f.attrs["probelab_version"] = "0.2.0"
+            f.attrs["probelab_version"] = "0.0.1"
 
             if self.layers is not None:
                 f.create_dataset("layers", data=list(self.layers))
