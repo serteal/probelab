@@ -4,651 +4,374 @@ import unittest
 
 import torch
 
-from probelab.processing.activations import Activations, Axis
+from probelab.processing.activations import Activations, DIMS
 
 
 class TestActivationsConstruction(unittest.TestCase):
-    def test_from_tensor_4d(self):
-        # [batch, layer, seq, hidden]
+    def test_4d_blsh(self):
+        """Test [batch, layer, seq, hidden] tensor."""
         t = torch.randn(4, 2, 8, 16)
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(4, 8),
-            input_ids=torch.ones(4, 8, dtype=torch.long),
-            detection_mask=torch.ones(4, 8),
-            layer_indices=[0, 1],
-        )
+        a = Activations(data=t, dims="blsh", mask=torch.ones(4, 8), layers=(0, 1))
         self.assertEqual(a.shape, (4, 2, 8, 16))
         self.assertEqual(a.n_layers, 2)
         self.assertEqual(a.batch_size, 4)
         self.assertEqual(a.seq_len, 8)
-        self.assertEqual(a.d_model, 16)
+        self.assertEqual(a.hidden_size, 16)
 
-    def test_from_tensor_3d(self):
+    def test_3d_bsh(self):
+        """Test [batch, seq, hidden] tensor."""
         t = torch.randn(4, 8, 16)
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(4, 8),
-            input_ids=torch.ones(4, 8, dtype=torch.long),
-            detection_mask=torch.ones(4, 8),
-        )
-        self.assertEqual(a.shape, (4, 1, 8, 16))
-        self.assertEqual(a.n_layers, 1)
+        a = Activations(data=t, dims="bsh", mask=torch.ones(4, 8))
+        self.assertEqual(a.shape, (4, 8, 16))
+        self.assertIsNone(a.n_layers)
+        self.assertEqual(a.batch_size, 4)
+        self.assertEqual(a.seq_len, 8)
 
-    def test_from_tensor_2d_pooled(self):
-        """2D tensors are treated as already-pooled [batch, hidden]."""
+    def test_2d_bh(self):
+        """Test [batch, hidden] tensor (pooled)."""
         t = torch.randn(4, 16)
-        a = Activations.from_tensor(t)
-        self.assertEqual(a.axes, (Axis.BATCH, Axis.HIDDEN))
+        a = Activations(data=t, dims="bh")
         self.assertEqual(a.shape, (4, 16))
-        self.assertFalse(a.has_axis(Axis.SEQ))
-        self.assertFalse(a.has_axis(Axis.LAYER))
-        self.assertIsNone(a.layer_meta)
-        self.assertIsNone(a.sequence_meta)
+        self.assertFalse("s" in a.dims)
+        self.assertFalse("l" in a.dims)
+        self.assertIsNone(a.n_layers)
+        self.assertIsNone(a.seq_len)
 
-    def test_layer_indices_default(self):
-        # [batch, layer, seq, hidden]
-        t = torch.randn(4, 3, 8, 16)
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(4, 8),
-            input_ids=torch.ones(4, 8, dtype=torch.long),
-            detection_mask=torch.ones(4, 8),
-        )
-        self.assertEqual(a.layer_indices, [0, 1, 2])
+    def test_3d_blh(self):
+        """Test [batch, layer, hidden] tensor."""
+        t = torch.randn(4, 3, 16)
+        a = Activations(data=t, dims="blh", layers=(0, 5, 10))
+        self.assertEqual(a.shape, (4, 3, 16))
+        self.assertEqual(a.n_layers, 3)
+        self.assertIsNone(a.seq_len)
 
-    def test_layer_indices_custom(self):
-        # [batch, layer, seq, hidden]
+    def test_layers_stored(self):
         t = torch.randn(4, 2, 8, 16)
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(4, 8),
-            input_ids=torch.ones(4, 8, dtype=torch.long),
-            detection_mask=torch.ones(4, 8),
-            layer_indices=[5, 10],
-        )
-        self.assertEqual(a.layer_indices, [5, 10])
+        a = Activations(data=t, dims="blsh", mask=torch.ones(4, 8), layers=(5, 10))
+        self.assertEqual(a.layers, (5, 10))
 
-    def test_batch_indices_default(self):
-        # [batch, layer, seq, hidden]
-        t = torch.randn(4, 1, 8, 16)
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(4, 8),
-            input_ids=torch.ones(4, 8, dtype=torch.long),
-            detection_mask=torch.ones(4, 8),
-        )
-        # batch_indices is None by default when not provided
-        self.assertIsNone(a.batch_indices)
+    def test_invalid_dims_raises(self):
+        t = torch.randn(4, 8, 16)
+        with self.assertRaises(ValueError):
+            Activations(data=t, dims="xyz", mask=torch.ones(4, 8))
 
-    def test_batch_indices_custom(self):
-        # [batch, layer, seq, hidden]
-        t = torch.randn(4, 1, 8, 16)
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(4, 8),
-            input_ids=torch.ones(4, 8, dtype=torch.long),
-            detection_mask=torch.ones(4, 8),
-            batch_indices=torch.tensor([10, 20, 30, 40]),
-        )
-        self.assertEqual(a.batch_indices.tolist(), [10, 20, 30, 40])
+    def test_missing_mask_raises(self):
+        t = torch.randn(4, 8, 16)
+        with self.assertRaises(ValueError):
+            Activations(data=t, dims="bsh")  # mask required
+
+    def test_missing_layers_raises(self):
+        t = torch.randn(4, 2, 8, 16)
+        with self.assertRaises(ValueError):
+            Activations(data=t, dims="blsh", mask=torch.ones(4, 8))  # layers required
 
 
-class TestActivationsAxes(unittest.TestCase):
-    def _acts(self, n_layers=2, batch=4, seq=8, d_model=16, layer_indices=None):
-        # [batch, layer, seq, hidden]
+class TestActivationsDims(unittest.TestCase):
+    def _acts_blsh(self, n_layers=2, batch=4, seq=8, d_model=16):
         t = torch.randn(batch, n_layers, seq, d_model)
-        return Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(batch, seq),
-            input_ids=torch.ones(batch, seq, dtype=torch.long),
-            detection_mask=torch.ones(batch, seq),
-            layer_indices=layer_indices or list(range(n_layers)),
+        return Activations(
+            data=t, dims="blsh",
+            mask=torch.ones(batch, seq),
+            layers=tuple(range(n_layers)),
         )
 
-    def test_has_axis_layer(self):
-        a = self._acts(n_layers=2)
-        self.assertTrue(a.has_axis(Axis.LAYER))
+    def test_has_layer(self):
+        a = self._acts_blsh(n_layers=2)
+        self.assertTrue("l" in a.dims)
 
-    def test_has_axis_batch(self):
-        a = self._acts()
-        self.assertTrue(a.has_axis(Axis.BATCH))
+    def test_has_batch(self):
+        a = self._acts_blsh()
+        self.assertTrue("b" in a.dims)
 
-    def test_has_axis_seq(self):
-        a = self._acts()
-        self.assertTrue(a.has_axis(Axis.SEQ))
+    def test_has_seq(self):
+        a = self._acts_blsh()
+        self.assertTrue("s" in a.dims)
 
-    def test_has_axis_hidden(self):
-        a = self._acts()
-        self.assertTrue(a.has_axis(Axis.HIDDEN))
+    def test_has_hidden(self):
+        a = self._acts_blsh()
+        self.assertTrue("h" in a.dims)
 
-    def test_axis_size_layer(self):
-        a = self._acts(n_layers=3)
-        self.assertEqual(a.axis_size(Axis.LAYER), 3)
-
-    def test_axis_size_batch(self):
-        a = self._acts(batch=5)
-        self.assertEqual(a.axis_size(Axis.BATCH), 5)
-
-    def test_axis_size_seq(self):
-        a = self._acts(seq=10)
-        self.assertEqual(a.axis_size(Axis.SEQ), 10)
-
-    def test_axis_size_hidden(self):
-        a = self._acts(d_model=32)
-        self.assertEqual(a.axis_size(Axis.HIDDEN), 32)
+    def test_bh_no_seq_no_layer(self):
+        t = torch.randn(4, 16)
+        a = Activations(data=t, dims="bh")
+        self.assertFalse("s" in a.dims)
+        self.assertFalse("l" in a.dims)
 
 
 class TestActivationsSelect(unittest.TestCase):
     def _acts(self, layer_indices):
         n = len(layer_indices)
-        # [batch, layer, seq, hidden]
         t = torch.arange(4 * n * 8 * 16).reshape(4, n, 8, 16).float()
-        return Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(4, 8),
-            input_ids=torch.ones(4, 8, dtype=torch.long),
-            detection_mask=torch.ones(4, 8),
-            layer_indices=layer_indices,
+        return Activations(
+            data=t, dims="blsh",
+            mask=torch.ones(4, 8),
+            layers=tuple(layer_indices),
         )
 
     def test_select_single_layer(self):
         a = self._acts([0, 5, 10, 15])
-        s = a.select(layer=5)
-        # After selecting single layer, LAYER axis is removed
-        self.assertFalse(s.has_axis(Axis.LAYER))
-        # When LAYER axis is removed, layer_indices is empty
-        self.assertEqual(s.layer_indices, [])
-        # Shape should be [batch, seq, hidden]
-        self.assertEqual(len(s.shape), 3)
+        s = a.select_layers(5)
+        self.assertFalse("l" in s.dims)
+        self.assertIsNone(s.layers)
+        self.assertEqual(len(s.shape), 3)  # [batch, seq, hidden]
 
     def test_select_multiple_layers(self):
         a = self._acts([0, 5, 10, 15])
-        s = a.select(layers=[5, 15])
+        s = a.select_layers([5, 15])
         self.assertEqual(s.n_layers, 2)
-        self.assertEqual(s.layer_indices, [5, 15])
-        self.assertTrue(s.has_axis(Axis.LAYER))
+        self.assertEqual(s.layers, (5, 15))
+        self.assertTrue("l" in s.dims)
 
     def test_select_preserves_data(self):
         a = self._acts([0, 5, 10])
-        s = a.select(layer=5)
-        expected = a.activations[:, 1]  # layer 5 is at index 1, batch is first
-        self.assertTrue(torch.equal(s.activations, expected))
+        s = a.select_layers(5)
+        expected = a.data[:, 1]  # layer 5 is at index 1
+        self.assertTrue(torch.equal(s.data, expected))
 
     def test_select_invalid_layer_raises(self):
         a = self._acts([0, 5, 10])
         with self.assertRaises(ValueError):
-            a.select(layer=7)
+            a.select_layers(7)
 
-    def test_select_preserves_metadata(self):
+    def test_select_preserves_mask(self):
         a = self._acts([0, 5])
-        s = a.select(layer=5)
-        self.assertTrue(torch.equal(s.attention_mask, a.attention_mask))
-        self.assertTrue(torch.equal(s.detection_mask, a.detection_mask))
-        self.assertTrue(torch.equal(s.input_ids, a.input_ids))
+        s = a.select_layers(5)
+        self.assertTrue(torch.equal(s.mask, a.mask))
 
 
 class TestActivationsPool(unittest.TestCase):
     def _acts(self, det_mask=None):
-        # [batch, layer, seq, hidden]
-        t = torch.ones(2, 1, 8, 4)  # 2 batch, 1 layer, 8 seq, 4 hidden
+        t = torch.ones(2, 8, 4)  # [batch, seq, hidden]
         if det_mask is None:
             det_mask = torch.ones(2, 8)
-        return Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(2, 8),
-            input_ids=torch.ones(2, 8, dtype=torch.long),
-            detection_mask=det_mask,
-            layer_indices=[0],
-        )
+        return Activations(data=t, dims="bsh", mask=det_mask)
 
-    def test_mean_pool_removes_seq_axis(self):
+    def test_mean_pool_removes_seq(self):
         a = self._acts()
         p = a.mean_pool()
-        self.assertFalse(p.has_axis(Axis.SEQ))
-        self.assertEqual(p.shape, (2, 1, 4))
+        self.assertFalse("s" in p.dims)
+        self.assertEqual(p.shape, (2, 4))
 
-    def test_last_token_removes_seq_axis(self):
+    def test_last_pool_removes_seq(self):
         a = self._acts()
-        p = a.last_token()
-        self.assertFalse(p.has_axis(Axis.SEQ))
-        self.assertEqual(p.shape, (2, 1, 4))
+        p = a.last_pool()
+        self.assertFalse("s" in p.dims)
+        self.assertEqual(p.shape, (2, 4))
 
-    def test_mean_pool_uses_detection_mask(self):
+    def test_mean_pool_uses_mask(self):
         det = torch.tensor([[1, 1, 0, 0, 0, 0, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]]).float()
-        # [batch, layer, seq, hidden]
-        t = torch.arange(64).reshape(2, 1, 8, 4).float()
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(2, 8),
-            input_ids=torch.ones(2, 8, dtype=torch.long),
-            detection_mask=det,
-            layer_indices=[0],
-        )
+        t = torch.arange(64).reshape(2, 8, 4).float()
+        a = Activations(data=t, dims="bsh", mask=det)
         p = a.mean_pool()
         # First sample: mean of tokens 0,1
-        expected_0 = t[0, 0, :2].mean(dim=0)
-        self.assertTrue(torch.allclose(p.activations[0, 0], expected_0))
+        expected_0 = t[0, :2].mean(dim=0)
+        self.assertTrue(torch.allclose(p.data[0], expected_0))
         # Second sample: mean of tokens 0,1,2,3
-        expected_1 = t[1, 0, :4].mean(dim=0)
-        self.assertTrue(torch.allclose(p.activations[1, 0], expected_1))
+        expected_1 = t[1, :4].mean(dim=0)
+        self.assertTrue(torch.allclose(p.data[1], expected_1))
 
-    def test_last_token_uses_detection_mask(self):
+    def test_last_pool_uses_mask(self):
         det = torch.tensor([[1, 1, 1, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 0, 0, 0]]).float()
-        # [batch, layer, seq, hidden]
-        t = torch.arange(64).reshape(2, 1, 8, 4).float()
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(2, 8),
-            input_ids=torch.ones(2, 8, dtype=torch.long),
-            detection_mask=det,
-            layer_indices=[0],
-        )
-        p = a.last_token()
+        t = torch.arange(64).reshape(2, 8, 4).float()
+        a = Activations(data=t, dims="bsh", mask=det)
+        p = a.last_pool()
         # First sample: last valid at index 2
-        self.assertTrue(torch.allclose(p.activations[0, 0], t[0, 0, 2]))
+        self.assertTrue(torch.allclose(p.data[0], t[0, 2]))
         # Second sample: last valid at index 4
-        self.assertTrue(torch.allclose(p.activations[1, 0], t[1, 0, 4]))
+        self.assertTrue(torch.allclose(p.data[1], t[1, 4]))
 
     def test_mean_pool_multi_layer(self):
-        # [batch, layer, seq, hidden]
-        t = torch.randn(2, 3, 8, 4)  # 2 batch, 3 layers
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(2, 8),
-            input_ids=torch.ones(2, 8, dtype=torch.long),
-            detection_mask=torch.ones(2, 8),
-            layer_indices=[0, 5, 10],
-        )
+        t = torch.randn(2, 3, 8, 4)  # [batch, layer, seq, hidden]
+        a = Activations(data=t, dims="blsh", mask=torch.ones(2, 8), layers=(0, 5, 10))
         p = a.mean_pool()
         self.assertEqual(p.shape, (2, 3, 4))
-        self.assertTrue(p.has_axis(Axis.LAYER))
+        self.assertTrue("l" in p.dims)
 
     def test_mean_pool_empty_mask_returns_zeros(self):
         det = torch.zeros(2, 8)
         a = self._acts(det_mask=det)
         p = a.mean_pool()
-        self.assertTrue(torch.allclose(p.activations, torch.zeros(2, 1, 4)))
+        self.assertTrue(torch.allclose(p.data, torch.zeros(2, 4)))
 
 
 class TestActivationsExtractTokens(unittest.TestCase):
     def test_extract_tokens_basic(self):
-        # [batch, layer, seq, hidden]
-        t = torch.arange(64).reshape(2, 1, 8, 4).float()
+        t = torch.arange(64).reshape(2, 8, 4).float()
         det = torch.tensor([[1, 1, 1, 0, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0, 0, 0]]).float()
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(2, 8),
-            input_ids=torch.ones(2, 8, dtype=torch.long),
-            detection_mask=det,
-            layer_indices=[0],
-        )
+        a = Activations(data=t, dims="bsh", mask=det)
         features, tps = a.extract_tokens()
         self.assertEqual(features.shape, (5, 4))  # 3 + 2 = 5 tokens
         self.assertEqual(tps.tolist(), [3, 2])
 
     def test_extract_tokens_requires_single_layer(self):
-        # [batch, layer, seq, hidden]
         t = torch.randn(4, 2, 8, 16)
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(4, 8),
-            input_ids=torch.ones(4, 8, dtype=torch.long),
-            detection_mask=torch.ones(4, 8),
-            layer_indices=[0, 1],
-        )
+        a = Activations(data=t, dims="blsh", mask=torch.ones(4, 8), layers=(0, 1))
         with self.assertRaises(ValueError):
             a.extract_tokens()
 
     def test_extract_tokens_empty_mask(self):
-        # [batch, layer, seq, hidden]
-        t = torch.randn(2, 1, 8, 4)
+        t = torch.randn(2, 8, 4)
         det = torch.zeros(2, 8)
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(2, 8),
-            input_ids=torch.ones(2, 8, dtype=torch.long),
-            detection_mask=det,
-            layer_indices=[0],
-        )
+        a = Activations(data=t, dims="bsh", mask=det)
         features, tps = a.extract_tokens()
         self.assertEqual(features.shape, (0, 4))
         self.assertEqual(tps.tolist(), [0, 0])
 
     def test_extract_tokens_correct_values(self):
-        # [batch, layer, seq, hidden]
-        t = torch.arange(64).reshape(2, 1, 8, 4).float()
+        t = torch.arange(64).reshape(2, 8, 4).float()
         det = torch.tensor([[1, 1, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0]]).float()
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(2, 8),
-            input_ids=torch.ones(2, 8, dtype=torch.long),
-            detection_mask=det,
-            layer_indices=[0],
-        )
+        a = Activations(data=t, dims="bsh", mask=det)
         features, _ = a.extract_tokens()
         # First 2 from batch 0, then 1 from batch 1
-        self.assertTrue(torch.equal(features[0], t[0, 0, 0]))
-        self.assertTrue(torch.equal(features[1], t[0, 0, 1]))
-        self.assertTrue(torch.equal(features[2], t[1, 0, 0]))
+        self.assertTrue(torch.equal(features[0], t[0, 0]))
+        self.assertTrue(torch.equal(features[1], t[0, 1]))
+        self.assertTrue(torch.equal(features[2], t[1, 0]))
 
 
 class TestActivationsDevice(unittest.TestCase):
     def _acts(self):
-        # [batch, layer, seq, hidden]
-        t = torch.randn(2, 1, 4, 8)
-        return Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(2, 4),
-            input_ids=torch.ones(2, 4, dtype=torch.long),
-            detection_mask=torch.ones(2, 4),
-            layer_indices=[0],
-        )
+        t = torch.randn(2, 4, 8)
+        return Activations(data=t, dims="bsh", mask=torch.ones(2, 4))
 
     def test_to_cpu(self):
         a = self._acts()
         c = a.to("cpu")
-        self.assertEqual(c.activations.device.type, "cpu")
+        self.assertEqual(c.data.device.type, "cpu")
 
-    def test_to_dtype(self):
-        a = self._acts()
-        f16 = a.to(torch.float16)
-        self.assertEqual(f16.activations.dtype, torch.float16)
-
-    def test_to_preserves_metadata(self):
+    def test_to_preserves_mask(self):
         a = self._acts()
         c = a.to("cpu")
-        self.assertTrue(torch.equal(c.attention_mask, a.attention_mask))
-        self.assertEqual(c.layer_indices, a.layer_indices)
-        # batch_indices is None by default
-        self.assertIsNone(c.batch_indices)
-        self.assertIsNone(a.batch_indices)
+        self.assertTrue(torch.equal(c.mask, a.mask))
 
 
 class TestActivationsEdgeCases(unittest.TestCase):
     def test_single_sample(self):
-        # [batch, layer, seq, hidden]
-        t = torch.randn(1, 1, 8, 16)
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(1, 8),
-            input_ids=torch.ones(1, 8, dtype=torch.long),
-            detection_mask=torch.ones(1, 8),
-            layer_indices=[0],
-        )
+        t = torch.randn(1, 8, 16)
+        a = Activations(data=t, dims="bsh", mask=torch.ones(1, 8))
         self.assertEqual(a.batch_size, 1)
         p = a.mean_pool()
-        self.assertEqual(p.shape, (1, 1, 16))
+        self.assertEqual(p.shape, (1, 16))
 
     def test_single_token(self):
-        # [batch, layer, seq, hidden]
-        t = torch.randn(2, 1, 1, 16)
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(2, 1),
-            input_ids=torch.ones(2, 1, dtype=torch.long),
-            detection_mask=torch.ones(2, 1),
-            layer_indices=[0],
-        )
+        t = torch.randn(2, 1, 16)
+        a = Activations(data=t, dims="bsh", mask=torch.ones(2, 1))
         self.assertEqual(a.seq_len, 1)
         p = a.mean_pool()
-        self.assertEqual(p.shape, (2, 1, 16))
+        self.assertEqual(p.shape, (2, 16))
 
     def test_partial_detection_mask(self):
-        # [batch, layer, seq, hidden]
-        t = torch.ones(3, 1, 8, 4)
-        det = torch.tensor(
-            [
-                [1, 1, 1, 1, 0, 0, 0, 0],
-                [0, 0, 0, 0, 0, 0, 0, 0],
-                [1, 1, 0, 0, 0, 0, 0, 0],
-            ]
-        ).float()
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(3, 8),
-            input_ids=torch.ones(3, 8, dtype=torch.long),
-            detection_mask=det,
-            layer_indices=[0],
-        )
+        t = torch.ones(3, 8, 4)
+        det = torch.tensor([
+            [1, 1, 1, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0, 0, 0, 0],
+        ]).float()
+        a = Activations(data=t, dims="bsh", mask=det)
         p = a.mean_pool()
-        self.assertEqual(p.shape, (3, 1, 4))
+        self.assertEqual(p.shape, (3, 4))
         # Second sample should be zeros (no valid tokens)
-        self.assertTrue(torch.allclose(p.activations[1, 0], torch.zeros(4)))
+        self.assertTrue(torch.allclose(p.data[1], torch.zeros(4)))
 
 
 class TestActivationsDtypes(unittest.TestCase):
     """Test dtype handling for activation tensors."""
 
-    def _make_acts(self, tensor, **kwargs):
-        """Helper to create activations with given tensor."""
-        # [batch, layer, seq, hidden] or [batch, seq, hidden]
+    def _make_acts(self, tensor, mask=None):
         batch, seq = tensor.shape[0], tensor.shape[-2]
-        defaults = {
-            "attention_mask": torch.ones(batch, seq),
-            "input_ids": torch.ones(batch, seq, dtype=torch.long),
-            "detection_mask": torch.ones(batch, seq),
-        }
-        defaults.update(kwargs)
-        return Activations.from_tensor(tensor, **defaults)
-
-    # --- Activation tensor dtype tests ---
+        if mask is None:
+            mask = torch.ones(batch, seq)
+        return Activations(data=tensor, dims="bsh", mask=mask)
 
     def test_float32_preserved(self):
-        t = torch.randn(1, 2, 4, 8, dtype=torch.float32)
+        t = torch.randn(1, 4, 8, dtype=torch.float32)
         a = self._make_acts(t)
-        self.assertEqual(a.activations.dtype, torch.float32)
+        self.assertEqual(a.data.dtype, torch.float32)
 
     def test_float64_preserved(self):
-        t = torch.randn(1, 2, 4, 8, dtype=torch.float64)
+        t = torch.randn(1, 4, 8, dtype=torch.float64)
         a = self._make_acts(t)
-        self.assertEqual(a.activations.dtype, torch.float64)
+        self.assertEqual(a.data.dtype, torch.float64)
 
     def test_float16_preserved(self):
-        t = torch.randn(1, 2, 4, 8, dtype=torch.float16)
+        t = torch.randn(1, 4, 8, dtype=torch.float16)
         a = self._make_acts(t)
-        self.assertEqual(a.activations.dtype, torch.float16)
+        self.assertEqual(a.data.dtype, torch.float16)
 
     def test_bfloat16_preserved(self):
-        t = torch.randn(1, 2, 4, 8, dtype=torch.bfloat16)
+        t = torch.randn(1, 4, 8, dtype=torch.bfloat16)
         a = self._make_acts(t)
-        self.assertEqual(a.activations.dtype, torch.bfloat16)
+        self.assertEqual(a.data.dtype, torch.bfloat16)
 
     def test_int32_cast_to_float(self):
-        t = torch.randint(0, 100, (1, 2, 4, 8), dtype=torch.int32)
+        t = torch.randint(0, 100, (1, 4, 8), dtype=torch.int32)
         a = self._make_acts(t)
-        self.assertEqual(a.activations.dtype, torch.float32)
+        self.assertEqual(a.data.dtype, torch.float32)
 
     def test_int64_cast_to_float(self):
-        t = torch.randint(0, 100, (1, 2, 4, 8), dtype=torch.int64)
+        t = torch.randint(0, 100, (1, 4, 8), dtype=torch.int64)
         a = self._make_acts(t)
-        self.assertEqual(a.activations.dtype, torch.float32)
+        self.assertEqual(a.data.dtype, torch.float32)
 
     def test_bool_cast_to_float(self):
-        t = torch.zeros(1, 2, 4, 8, dtype=torch.bool)
+        t = torch.zeros(1, 4, 8, dtype=torch.bool)
         a = self._make_acts(t)
-        self.assertEqual(a.activations.dtype, torch.float32)
-
-    def test_int8_cast_to_float(self):
-        t = torch.randint(0, 100, (1, 2, 4, 8), dtype=torch.int8)
-        a = self._make_acts(t)
-        self.assertEqual(a.activations.dtype, torch.float32)
+        self.assertEqual(a.data.dtype, torch.float32)
 
     def test_cast_preserves_values(self):
-        t = torch.tensor([[[[1, 2], [3, 4]]]], dtype=torch.int32)
+        t = torch.tensor([[[1, 2], [3, 4]]], dtype=torch.int32)
         a = self._make_acts(t)
-        expected = torch.tensor([[[[1.0, 2.0], [3.0, 4.0]]]], dtype=torch.float32)
-        self.assertTrue(torch.equal(a.activations, expected))
-
-    # --- Mask dtype tests ---
-
-    def test_detection_mask_float32(self):
-        t = torch.randn(1, 2, 4, 8)  # [batch=1, layer=2, seq=4, hidden=8]
-        det = torch.ones(1, 4, dtype=torch.float32)  # [batch=1, seq=4]
-        a = self._make_acts(t, detection_mask=det)
-        self.assertEqual(a.detection_mask.dtype, torch.float32)
-
-    def test_detection_mask_float64(self):
-        t = torch.randn(1, 2, 4, 8)
-        det = torch.ones(1, 4, dtype=torch.float64)
-        a = self._make_acts(t, detection_mask=det)
-        self.assertEqual(a.detection_mask.dtype, torch.float64)
-
-    def test_detection_mask_bool(self):
-        t = torch.randn(1, 2, 4, 8)
-        det = torch.ones(1, 4, dtype=torch.bool)
-        a = self._make_acts(t, detection_mask=det)
-        self.assertEqual(a.detection_mask.dtype, torch.bool)
-
-    def test_detection_mask_int32(self):
-        t = torch.randn(1, 2, 4, 8)
-        det = torch.ones(1, 4, dtype=torch.int32)
-        a = self._make_acts(t, detection_mask=det)
-        self.assertEqual(a.detection_mask.dtype, torch.int32)
-
-    def test_attention_mask_float32(self):
-        t = torch.randn(1, 2, 4, 8)
-        attn = torch.ones(1, 4, dtype=torch.float32)
-        a = self._make_acts(t, attention_mask=attn)
-        self.assertEqual(a.attention_mask.dtype, torch.float32)
-
-    # --- input_ids dtype tests ---
-
-    def test_input_ids_int64(self):
-        t = torch.randn(1, 2, 4, 8)
-        ids = torch.ones(1, 4, dtype=torch.int64)
-        a = self._make_acts(t, input_ids=ids)
-        self.assertEqual(a.input_ids.dtype, torch.int64)
-
-    def test_input_ids_int32(self):
-        t = torch.randn(1, 2, 4, 8)
-        ids = torch.ones(1, 4, dtype=torch.int32)
-        a = self._make_acts(t, input_ids=ids)
-        self.assertEqual(a.input_ids.dtype, torch.int32)
-
-    def test_input_ids_float_raises(self):
-        t = torch.randn(1, 2, 4, 8)
-        ids = torch.ones(1, 4, dtype=torch.float32)
-        with self.assertRaises(ValueError):
-            self._make_acts(t, input_ids=ids)
-
-    # --- Operations preserve/handle dtypes ---
+        expected = torch.tensor([[[1.0, 2.0], [3.0, 4.0]]], dtype=torch.float32)
+        self.assertTrue(torch.equal(a.data, expected))
 
     def test_mean_pool_preserves_dtype_float16(self):
-        t = torch.randn(1, 2, 4, 8, dtype=torch.float16)
+        t = torch.randn(1, 4, 8, dtype=torch.float16)
         a = self._make_acts(t)
         p = a.mean_pool()
-        self.assertEqual(p.activations.dtype, torch.float16)
+        self.assertEqual(p.data.dtype, torch.float16)
 
     def test_mean_pool_preserves_dtype_float64(self):
-        t = torch.randn(1, 2, 4, 8, dtype=torch.float64)
+        t = torch.randn(1, 4, 8, dtype=torch.float64)
         a = self._make_acts(t)
         p = a.mean_pool()
-        self.assertEqual(p.activations.dtype, torch.float64)
+        self.assertEqual(p.data.dtype, torch.float64)
 
     def test_select_preserves_dtype(self):
         t = torch.randn(2, 2, 4, 8, dtype=torch.float16)
-        a = self._make_acts(t, layer_indices=[0, 1])
-        s = a.select(layer=0)
-        self.assertEqual(s.activations.dtype, torch.float16)
+        a = Activations(data=t, dims="blsh", mask=torch.ones(2, 4), layers=(0, 1))
+        s = a.select_layers(0)
+        self.assertEqual(s.data.dtype, torch.float16)
 
     def test_extract_tokens_preserves_dtype(self):
-        t = torch.randn(1, 1, 4, 8, dtype=torch.float64)  # [batch=1, layer=1, seq=4, hidden=8]
+        t = torch.randn(1, 4, 8, dtype=torch.float64)
         a = self._make_acts(t)
         features, _ = a.extract_tokens()
         self.assertEqual(features.dtype, torch.float64)
 
-    def test_to_dtype_conversion(self):
-        t = torch.randn(1, 2, 4, 8, dtype=torch.float32)
-        a = self._make_acts(t)
-        a16 = a.to(torch.float16)
-        self.assertEqual(a16.activations.dtype, torch.float16)
-        a64 = a.to(torch.float64)
-        self.assertEqual(a64.activations.dtype, torch.float64)
+
+class TestIterLayers(unittest.TestCase):
+    def test_iter_layers_blsh(self):
+        t = torch.randn(2, 3, 4, 8)
+        a = Activations(data=t, dims="blsh", mask=torch.ones(2, 4), layers=(5, 10, 15))
+        layers_seen = []
+        for layer_idx, acts in a.iter_layers():
+            layers_seen.append(layer_idx)
+            self.assertFalse("l" in acts.dims)
+            self.assertEqual(acts.shape, (2, 4, 8))
+        self.assertEqual(layers_seen, [5, 10, 15])
+
+    def test_iter_layers_bsh(self):
+        t = torch.randn(2, 4, 8)
+        a = Activations(data=t, dims="bsh", mask=torch.ones(2, 4))
+        layers_seen = []
+        for layer_idx, acts in a.iter_layers():
+            layers_seen.append(layer_idx)
+            self.assertEqual(acts.shape, (2, 4, 8))
+        self.assertEqual(layers_seen, [0])
 
 
-class TestLayerTensorIndices(unittest.TestCase):
-    def _acts(self, layer_indices):
-        n = len(layer_indices)
-        # [batch, layer, seq, hidden]
-        t = torch.randn(2, n, 4, 8)
-        return Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(2, 4),
-            input_ids=torch.ones(2, 4, dtype=torch.long),
-            detection_mask=torch.ones(2, 4),
-            layer_indices=layer_indices,
-        )
-
-    def test_single_layer_index(self):
-        a = self._acts([0, 5, 10, 15])
-        self.assertEqual(a.get_layer_tensor_indices(5), [1])
-
-    def test_multiple_layer_indices(self):
-        a = self._acts([0, 5, 10, 15])
-        self.assertEqual(a.get_layer_tensor_indices([0, 10]), [0, 2])
-
-    def test_invalid_layer_raises(self):
-        a = self._acts([0, 5, 10])
-        with self.assertRaises(ValueError):
-            a.get_layer_tensor_indices(7)
-
-
-class TestFromHiddenStates(unittest.TestCase):
-    """Tests for the simplified from_hidden_states method."""
-
-    def test_from_tensor_4d(self):
-        # from_hidden_states expects [layer, batch, seq, hidden] (transformer output format)
-        # and converts internally to [batch, layer, seq, hidden]
-        t = torch.randn(3, 4, 8, 16)  # [layer, batch, seq, hidden]
-        a = Activations.from_hidden_states(t, attention_mask=torch.ones(4, 8),
-                                            input_ids=torch.ones(4, 8, dtype=torch.long))
-        self.assertEqual(a.shape, (4, 3, 8, 16))  # [batch, layer, seq, hidden]
-        self.assertEqual(a.layer_indices, [0, 1, 2])
-
-    def test_from_tuple_of_tensors(self):
-        # Tuple of tensors: one per layer, each [batch, seq, hidden]
-        layers = tuple(torch.randn(4, 8, 16) for _ in range(3))
-        a = Activations.from_hidden_states(layers, attention_mask=torch.ones(4, 8),
-                                            input_ids=torch.ones(4, 8, dtype=torch.long))
-        self.assertEqual(a.shape, (4, 3, 8, 16))  # [batch, layer, seq, hidden]
-        self.assertEqual(a.layer_indices, [0, 1, 2])
-
-    def test_from_tuple_of_tensors_with_layer_selection(self):
-        layers = tuple(torch.randn(4, 8, 16) for _ in range(5))
-        a = Activations.from_hidden_states(layers, layer_indices=[1, 3],
-                                            attention_mask=torch.ones(4, 8),
-                                            input_ids=torch.ones(4, 8, dtype=torch.long))
-        self.assertEqual(a.shape, (4, 2, 8, 16))  # [batch, layer, seq, hidden]
-        self.assertEqual(a.layer_indices, [1, 3])
-
-    def test_from_nested_tuple(self):
-        # Nested tuple: (steps, layers) - e.g., from streaming
-        steps = tuple(
-            tuple(torch.randn(1, 4, 16) for _ in range(3))  # 3 layers
-            for _ in range(2)  # 2 steps
-        )
-        a = Activations.from_hidden_states(steps, attention_mask=torch.ones(1, 8),
-                                            input_ids=torch.ones(1, 8, dtype=torch.long))
-        self.assertEqual(a.shape, (1, 3, 8, 16))  # [batch, layer, seq, hidden]
-        self.assertEqual(a.layer_indices, [0, 1, 2])
-
-    def test_layer_indices_as_int(self):
-        layers = tuple(torch.randn(4, 8, 16) for _ in range(5))
-        a = Activations.from_hidden_states(layers, layer_indices=2,
-                                            attention_mask=torch.ones(4, 8),
-                                            input_ids=torch.ones(4, 8, dtype=torch.long))
-        self.assertEqual(a.shape, (4, 1, 8, 16))  # [batch, layer, seq, hidden]
-        self.assertEqual(a.layer_indices, [2])
-
-    def test_invalid_tensor_shape_raises(self):
-        t = torch.randn(4, 8, 16)  # 3D instead of 4D
-        with self.assertRaises(ValueError):
-            Activations.from_hidden_states(t)
-
-    def test_empty_tuple_raises(self):
-        with self.assertRaises(TypeError):
-            Activations.from_hidden_states(())
+class TestValidDims(unittest.TestCase):
+    def test_all_valid_dims(self):
+        self.assertEqual(DIMS, {"bh", "bsh", "blh", "blsh"})
 
 
 if __name__ == "__main__":

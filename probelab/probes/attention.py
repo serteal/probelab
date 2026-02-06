@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 
-from ..processing.activations import Activations, Axis
+from ..processing.activations import Activations
 from .base import BaseProbe
 
 
@@ -109,20 +109,21 @@ class Attention(BaseProbe):
         )
 
     def fit(self, X: Activations, y: list | torch.Tensor) -> "Attention":
-        if X.has_axis(Axis.LAYER):
+        if "l" in X.dims:
             raise ValueError(
-                f"Attention expects no LAYER axis. Add SelectLayer({X.layer_indices[0]}) to pipeline."
+                f"Attention expects no LAYER axis. "
+                f"Call select_layers() first. Current dims: {X.dims}"
             )
-        if not X.has_axis(Axis.SEQ):
+        if "s" not in X.dims:
             raise ValueError("Attention probe requires SEQ axis")
 
         # Auto-detect device from input if not specified
         if self.device is None:
-            self.device = str(X.activations.device)
+            self.device = str(X.data.device)
 
         y_tensor = self._to_labels(y)
-        sequences = X.activations.clone().to(self.device)
-        detection_mask = X.detection_mask.to(self.device)
+        sequences = X.data.clone().to(self.device)
+        mask = X.mask.to(self.device)
         labels = y_tensor.to(self.device).float()
 
         if self._network is None:
@@ -134,8 +135,8 @@ class Attention(BaseProbe):
         indices = torch.randperm(n_samples, device=self.device)
         train_idx, val_idx = indices[n_val:], indices[:n_val]
 
-        train_seq, train_mask, train_y = sequences[train_idx], detection_mask[train_idx], labels[train_idx]
-        val_seq, val_mask, val_y = sequences[val_idx], detection_mask[val_idx], labels[val_idx]
+        train_seq, train_mask, train_y = sequences[train_idx], mask[train_idx], labels[train_idx]
+        val_seq, val_mask, val_y = sequences[val_idx], mask[val_idx], labels[val_idx]
 
         best_val_loss = float("inf")
         patience_counter = 0
@@ -197,16 +198,16 @@ class Attention(BaseProbe):
         """
         self._check_fitted()
 
-        if X.has_axis(Axis.LAYER):
-            raise ValueError("Attention expects no LAYER axis")
-        if not X.has_axis(Axis.SEQ):
+        if "l" in X.dims:
+            raise ValueError(f"Attention expects no LAYER axis. Current dims: {X.dims}")
+        if "s" not in X.dims:
             raise ValueError("Attention probe requires SEQ axis")
 
-        sequences = X.activations.to(self.device)
-        detection_mask = X.detection_mask.to(self.device)
+        sequences = X.data.to(self.device)
+        mask = X.mask.to(self.device)
 
         with torch.no_grad():
-            logits, attn_weights = self(sequences, detection_mask)
+            logits, attn_weights = self(sequences, mask)
             self.attention_weights = attn_weights.detach().cpu()
             return torch.sigmoid(logits)
 

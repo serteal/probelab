@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import torch
 
 if TYPE_CHECKING:
-    from ..processing.activations import Activations, Axis
+    from ..processing.activations import Activations
 
 
 def check_activations(
@@ -51,7 +51,7 @@ def check_activations(
         >>> X = check_activations(X, forbid_layer=True, estimator_name="Logistic")
     """
     # Import here to avoid circular imports
-    from ..processing.activations import Activations, Axis
+    from ..processing.activations import Activations
 
     prefix = f"{estimator_name}: " if estimator_name else ""
 
@@ -65,45 +65,45 @@ def check_activations(
     if require_seq and forbid_seq:
         raise ValueError("Cannot both require and forbid SEQ axis")
 
-    if require_layer and not X.has_axis(Axis.LAYER):
+    if require_layer and "l" not in X.dims:
         raise ValueError(
             f"{prefix}Expected activations with LAYER axis, but it is missing.\n"
-            f"Current axes: {[ax.name for ax in X.axes]}\n"
-            f"Hint: Make sure you haven't removed the LAYER axis with select(layer=...)."
+            f"Current dims: {X.dims}\n"
+            f"Hint: Make sure you haven't removed the LAYER axis with select_layers(...)."
         )
 
-    if forbid_layer and X.has_axis(Axis.LAYER):
+    if forbid_layer and "l" in X.dims:
         raise ValueError(
             f"{prefix}Expected single-layer activations, but found LAYER axis "
             f"with {X.n_layers} layers.\n"
-            f"Available layers: {X.layer_indices}\n"
+            f"Available layers: {list(X.layers) if X.layers else []}\n"
             f"Hint: Use pre.SelectLayer(layer_idx) in your pipeline to select a single layer."
         )
 
-    if require_seq and not X.has_axis(Axis.SEQ):
+    if require_seq and "s" not in X.dims:
         raise ValueError(
             f"{prefix}Expected activations with SEQ axis, but it is missing.\n"
-            f"Current axes: {[ax.name for ax in X.axes]}\n"
+            f"Current dims: {X.dims}\n"
             f"Hint: The SEQ axis may have been removed by pool(dim='sequence'). "
             f"This estimator requires token-level activations."
         )
 
-    if forbid_seq and X.has_axis(Axis.SEQ):
+    if forbid_seq and "s" in X.dims:
         raise ValueError(
             f"{prefix}Expected pooled activations without SEQ axis, but SEQ axis is present.\n"
-            f"Current axes: {[ax.name for ax in X.axes]}\n"
+            f"Current dims: {X.dims}\n"
             f"Hint: Use pre.Pool(dim='sequence', method='mean') to aggregate tokens."
         )
 
     # Non-empty check
-    if ensure_non_empty and X.activations.numel() == 0:
+    if ensure_non_empty and X.data.numel() == 0:
         raise ValueError(f"{prefix}Received empty activations tensor")
 
     # Finite check
     if ensure_finite:
-        if not torch.isfinite(X.activations).all():
-            n_nan = torch.isnan(X.activations).sum().item()
-            n_inf = torch.isinf(X.activations).sum().item()
+        if not torch.isfinite(X.data).all():
+            n_nan = torch.isnan(X.data).sum().item()
+            n_inf = torch.isinf(X.data).sum().item()
             raise ValueError(
                 f"{prefix}Activations contain non-finite values: "
                 f"{n_nan} NaN, {n_inf} Inf"

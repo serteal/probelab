@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 
-from ..processing.activations import Activations, Axis
+from ..processing.activations import Activations
 from .base import BaseProbe
 
 
@@ -116,20 +116,21 @@ class GatedBipolar(BaseProbe):
         )
 
     def fit(self, X: Activations, y: list | torch.Tensor) -> "GatedBipolar":
-        if X.has_axis(Axis.LAYER):
+        if "l" in X.dims:
             raise ValueError(
-                f"GatedBipolar expects no LAYER axis. Add SelectLayer({X.layer_indices[0]}) to pipeline."
+                f"GatedBipolar expects no LAYER axis. "
+                f"Call select_layers() first. Current dims: {X.dims}"
             )
-        if not X.has_axis(Axis.SEQ):
+        if "s" not in X.dims:
             raise ValueError("GatedBipolar probe requires SEQ axis")
 
         # Auto-detect device from input if not specified
         if self.device is None:
-            self.device = str(X.activations.device)
+            self.device = str(X.data.device)
 
         y_tensor = self._to_labels(y)
-        sequences = X.activations.detach()
-        detection_mask = X.detection_mask.detach()
+        sequences = X.data.detach()
+        mask = X.mask.detach()
         labels = y_tensor.float()
 
         if self._network is None:
@@ -153,7 +154,7 @@ class GatedBipolar(BaseProbe):
             for i in range(0, len(shuffled), batch_size):
                 batch_idx = shuffled[i : i + batch_size]
                 batch_seq = sequences[batch_idx].to(self.device)
-                batch_mask = detection_mask[batch_idx].to(self.device)
+                batch_mask = mask[batch_idx].to(self.device)
                 batch_y = labels[batch_idx].to(self.device)
 
                 self._optimizer.zero_grad()
@@ -167,7 +168,7 @@ class GatedBipolar(BaseProbe):
             self._network.eval()
             with torch.no_grad():
                 val_loss = F.binary_cross_entropy_with_logits(
-                    self._network(sequences[val_idx].to(self.device), detection_mask[val_idx].to(self.device)),
+                    self._network(sequences[val_idx].to(self.device), mask[val_idx].to(self.device)),
                     labels[val_idx].to(self.device)
                 )
             self._network.train()
@@ -212,16 +213,16 @@ class GatedBipolar(BaseProbe):
         """
         self._check_fitted()
 
-        if X.has_axis(Axis.LAYER):
-            raise ValueError("GatedBipolar expects no LAYER axis")
-        if not X.has_axis(Axis.SEQ):
+        if "l" in X.dims:
+            raise ValueError(f"GatedBipolar expects no LAYER axis. Current dims: {X.dims}")
+        if "s" not in X.dims:
             raise ValueError("GatedBipolar probe requires SEQ axis")
 
-        sequences = X.activations.to(self.device)
-        detection_mask = X.detection_mask.to(self.device)
+        sequences = X.data.to(self.device)
+        mask = X.mask.to(self.device)
 
         with torch.no_grad():
-            return torch.sigmoid(self(sequences, detection_mask))
+            return torch.sigmoid(self(sequences, mask))
 
     def save(self, path: Path | str) -> None:
         self._check_fitted()

@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..processing.activations import Activations, Axis
+from ..processing.activations import Activations
 from .base import BaseProbe
 
 
@@ -43,25 +43,25 @@ class Logistic(BaseProbe):
         self._tokens_per_sample = None
 
     def fit(self, X: Activations, y: list | torch.Tensor) -> "Logistic":
-        if X.has_axis(Axis.LAYER):
+        if "l" in X.dims:
             raise ValueError(
                 f"Logistic expects no LAYER axis. "
-                f"Add SelectLayer({X.layer_indices[0]}) to pipeline."
+                f"Call select_layers() first. Current dims: {X.dims}"
             )
 
         # Auto-detect device from input if not specified
         if self.device is None:
-            self.device = str(X.activations.device)
+            self.device = str(X.data.device)
 
         y_tensor = self._to_labels(y).to(self.device)
 
         # Get features based on shape
-        if X.has_axis(Axis.SEQ):
+        if "s" in X.dims:
             features, self._tokens_per_sample = X.extract_tokens()
             labels = torch.repeat_interleave(y_tensor, self._tokens_per_sample.to(y_tensor.device))
             self._trained_on_tokens = True
         else:
-            features = X.activations
+            features = X.data
             labels = y_tensor
             self._trained_on_tokens = False
             self._tokens_per_sample = None
@@ -129,21 +129,21 @@ class Logistic(BaseProbe):
         """
         self._check_fitted()
 
-        if X.has_axis(Axis.LAYER):
-            raise ValueError("Logistic expects no LAYER axis")
+        if "l" in X.dims:
+            raise ValueError(f"Logistic expects no LAYER axis. Current dims: {X.dims}")
 
         with torch.no_grad():
-            if X.has_axis(Axis.SEQ):
+            if "s" in X.dims:
                 features, _ = X.extract_tokens()
                 flat_probs = torch.sigmoid(self(features))
 
                 # Scatter back to [batch, seq]
-                mask = X.detection_mask.bool()
+                mask = X.mask.bool()
                 probs = torch.zeros_like(mask, dtype=flat_probs.dtype)
                 probs[mask] = flat_probs
                 return probs
             else:
-                return torch.sigmoid(self(X.activations))
+                return torch.sigmoid(self(X.data))
 
     def save(self, path: Path | str) -> None:
         self._check_fitted()

@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from probelab.processing.activations import Activations, Axis
+from probelab.processing.activations import Activations
 from probelab.utils.validation import check_activations
 
 
@@ -13,28 +13,33 @@ class TestCheckActivations:
     @pytest.fixture
     def activations_4d(self):
         """Create 4D activations [batch, layer, seq, hidden]."""
-        return Activations.from_tensor(
-            torch.randn(4, 2, 10, 32),  # [batch, layer, seq, hidden]
-            layer_indices=[0, 1],
+        return Activations(
+            data=torch.randn(4, 2, 10, 32),
+            dims="blsh",
+            mask=torch.ones(4, 10),
+            layers=(0, 1),
         )
 
     @pytest.fixture
     def activations_3d(self):
         """Create 3D activations [batch, seq, hidden] (single layer, axis removed)."""
-        acts_4d = Activations.from_tensor(
-            torch.randn(4, 1, 10, 32),  # [batch, layer, seq, hidden]
-            layer_indices=[0],
+        acts_4d = Activations(
+            data=torch.randn(4, 1, 10, 32),
+            dims="blsh",
+            mask=torch.ones(4, 10),
+            layers=(0,),
         )
-        return acts_4d.select(layer=0)  # Remove LAYER axis
+        return acts_4d.select_layers(0)  # Remove LAYER axis
 
     @pytest.fixture
     def activations_no_seq(self):
         """Create activations without SEQ axis."""
-        acts = Activations.from_tensor(
-            torch.randn(4, 1, 10, 32),  # [batch, layer, seq, hidden]
-            layer_indices=[0],
+        acts = Activations(
+            data=torch.randn(4, 10, 32),
+            dims="bsh",
+            mask=torch.ones(4, 10),
         )
-        return acts.select(layer=0).mean_pool()
+        return acts.mean_pool()
 
     def test_valid_activations_passes(self, activations_4d):
         """Basic validation passes for valid activations."""
@@ -108,17 +113,17 @@ class TestCheckActivations:
 
     def test_ensure_finite_fails_nan(self):
         """ensure_finite=True fails when NaN present."""
-        tensor = torch.randn(4, 1, 10, 32)  # [batch, layer, seq, hidden]
+        tensor = torch.randn(4, 2, 10, 32)
         tensor[0, 0, 0, 0] = float("nan")
-        acts = Activations.from_tensor(tensor, layer_indices=[0])
+        acts = Activations(data=tensor, dims="blsh", mask=torch.ones(4, 10), layers=(0, 1))
         with pytest.raises(ValueError, match="non-finite values"):
             check_activations(acts, ensure_finite=True)
 
     def test_ensure_finite_fails_inf(self):
         """ensure_finite=True fails when Inf present."""
-        tensor = torch.randn(4, 1, 10, 32)  # [batch, layer, seq, hidden]
+        tensor = torch.randn(4, 2, 10, 32)
         tensor[0, 0, 0, 0] = float("inf")
-        acts = Activations.from_tensor(tensor, layer_indices=[0])
+        acts = Activations(data=tensor, dims="blsh", mask=torch.ones(4, 10), layers=(0, 1))
         with pytest.raises(ValueError, match="non-finite values"):
             check_activations(acts, ensure_finite=True)
 
