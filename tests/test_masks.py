@@ -255,5 +255,33 @@ class TestMaskEdgeCases(unittest.TestCase):
     result = m([None], meta)
     self.assertEqual(result.shape, (1, 5))
 
+# =============================================================================
+# Thinking Mask
+# =============================================================================
+
+class TestThinkingMask(unittest.TestCase):
+  def test_returns_mask(self):
+    m = masks.thinking()
+    self.assertIsInstance(m, Mask)
+
+  def test_correct_key_default(self):
+    m = masks.thinking()
+    self.assertEqual(m.key, ("between", "<think>", "</think>", True))
+
+  def test_custom_delimiters(self):
+    m = masks.thinking(start="<thinking>", end="</thinking>")
+    self.assertEqual(m.key, ("between", "<thinking>", "</thinking>", True))
+
+  def test_exclusive_mode(self):
+    m = masks.thinking(inclusive=False)
+    self.assertEqual(m.key, ("between", "<think>", "</think>", False))
+
+  def test_composable_with_assistant(self):
+    m = masks.assistant() & ~masks.thinking()
+    self.assertIsInstance(m, Mask)
+
+  def test_in_all(self):
+    self.assertIn("thinking", masks.__all__)
+
 if __name__ == '__main__':
   unittest.main()

@@ -260,6 +260,7 @@ def tokenize_dialogues(
     mask: Mask,
     device: torch.device | str = "cpu",
     add_generation_prompt: bool = False,
+    template_kwargs: dict[str, Any] | None = None,
     **tokenize_kwargs: Any,
 ) -> Tokens:
     """Tokenize dialogues with explicit mask for detection control.
@@ -271,6 +272,9 @@ def tokenize_dialogues(
             Use ``masks.all()`` to detect all non-padding tokens.
         device: Device to place tensors on.
         add_generation_prompt: Whether to append the model's generation prompt.
+        template_kwargs: Extra keyword arguments forwarded to
+            ``tokenizer.apply_chat_template()`` (e.g. ``{"enable_thinking": True}``
+            for Qwen3).
         **tokenize_kwargs: Additional tokenizer arguments forwarded verbatim.
 
     Returns:
@@ -293,10 +297,15 @@ def tokenize_dialogues(
 
     # Apply chat template if available, otherwise use simple formatting
     if hasattr(tokenizer, 'chat_template') and tokenizer.chat_template is not None:
+        apply_kwargs: dict[str, Any] = {
+            "tokenize": False,
+            "add_generation_prompt": add_generation_prompt,
+        }
+        if template_kwargs:
+            apply_kwargs.update(template_kwargs)
         formatted_dialogues = tokenizer.apply_chat_template(
             dialogue_dicts,
-            tokenize=False,
-            add_generation_prompt=add_generation_prompt,
+            **apply_kwargs,
         )
     else:
         # Fallback for models without chat templates (e.g., LLAMA-2)
@@ -359,6 +368,7 @@ def tokenize_dataset(
     tokenizer: "PreTrainedTokenizerBase",
     mask: Mask,
     device: torch.device | str = "cpu",
+    template_kwargs: dict[str, Any] | None = None,
     **tokenize_kwargs: Any,
 ) -> Tokens:
     """Tokenize a dataset with explicit mask for detection control.
@@ -369,6 +379,9 @@ def tokenize_dataset(
         mask: Mask function determining which tokens to detect. Required.
             Use ``masks.all()`` to detect all non-padding tokens.
         device: Device to place tensors on.
+        template_kwargs: Extra keyword arguments forwarded to
+            ``tokenizer.apply_chat_template()`` (e.g. ``{"enable_thinking": True}``
+            for Qwen3).
         **tokenize_kwargs: Additional tokenizer arguments.
 
     Returns:
@@ -379,5 +392,6 @@ def tokenize_dataset(
         dialogues=dataset.dialogues,
         mask=mask,
         device=device,
+        template_kwargs=template_kwargs,
         **tokenize_kwargs,
     )

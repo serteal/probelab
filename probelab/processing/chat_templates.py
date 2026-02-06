@@ -27,6 +27,12 @@ _GEMMA_PREFIX = re.compile(
     r"(<end_of_turn>\n)?<start_of_turn>(user|model)\n|(\n\n)?"
 )
 
+# Qwen-style ChatML template pattern (Qwen2.5, Qwen3)
+_QWEN_PREFIX = re.compile(
+    r"(<\|im_start\|>(system|user|assistant)\n(<think>\n\n</think>\n\n)?)?"
+    r"(<\|im_end\|>\n<\|im_start\|>(system|user|assistant)\n(<think>\n\n</think>\n\n)?)?(\n\n)?"
+)
+
 # Default pattern for unknown templates
 _DEFAULT_PREFIX = re.compile(r"(\n\n)?")
 
@@ -41,6 +47,16 @@ TEMPLATES: dict[str, dict] = {
         "prefix_pattern": _GEMMA_PREFIX,
         "fold_system": True,
         "token_padding": (3, 2),
+    },
+    "qwen": {
+        "prefix_pattern": _QWEN_PREFIX,
+        "fold_system": False,
+        "token_padding": (3, 2),
+    },
+    "qwen3": {
+        "prefix_pattern": _QWEN_PREFIX,
+        "fold_system": False,
+        "token_padding": (7, 2),
     },
 }
 
@@ -61,6 +77,10 @@ def detect_template(tokenizer: "PreTrainedTokenizerBase") -> str:
         return "llama"
     if "gemma" in name_lower:
         return "gemma"
+    if "qwen3" in name_lower:
+        return "qwen3"
+    if "qwen" in name_lower:
+        return "qwen"
 
     return "unknown"
 

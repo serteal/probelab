@@ -394,6 +394,24 @@ def before(string: str, inclusive: bool = False) -> Mask:
     return Mask(_impl, ("before", string, inclusive))
 
 
+def thinking(
+    start: str = "<think>",
+    end: str = "</think>",
+    inclusive: bool = True,
+) -> Mask:
+    """Select tokens within thinking/reasoning blocks.
+
+    Works with Qwen3, DeepSeek R1, QwQ, and other reasoning models.
+    Default delimiters ``<think>``/``</think>`` cover the most common format.
+
+    Args:
+        start: Opening delimiter token/string.
+        end: Closing delimiter token/string.
+        inclusive: Whether to include the delimiter tokens themselves.
+    """
+    return between(start, end, inclusive=inclusive)
+
+
 def padding(base_mask: Mask, before: int = 2, after: int = 2) -> Mask:
     """Expand a mask by adding surrounding context tokens."""
 
@@ -576,6 +594,7 @@ __all__ = [
     "last_n_tokens",
     "first_n_tokens",
     "between",
+    "thinking",
     "after",
     "before",
     "padding",
