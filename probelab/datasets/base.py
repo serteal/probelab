@@ -29,10 +29,10 @@ class Dataset:
         return Dataset([self.dialogues[i] for i in idx], [self.labels[i] for i in idx], self.name, meta)
 
     def __add__(self, other: "Dataset") -> "Dataset":
-        if self.metadata and other.metadata:
-            meta = {k: self.metadata[k] + other.metadata[k] for k in self.metadata}
-        else:
-            meta = None
+        def _src(ds): return (ds.metadata or {}).get("source") or [ds.name] * len(ds)
+        def _get(ds, k): return (ds.metadata or {}).get(k) or [None] * len(ds)
+        keys = (set(self.metadata or {}) | set(other.metadata or {})) | {"source"}
+        meta = {k: (_src(self) + _src(other) if k == "source" else _get(self, k) + _get(other, k)) for k in keys}
         return Dataset(self.dialogues + other.dialogues, self.labels + other.labels, f"{self.name}+{other.name}", meta)
 
     def shuffle(self, seed: int = 42) -> "Dataset":

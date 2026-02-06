@@ -261,3 +261,51 @@ class TestDataset:
         assert len(sampled) == 10
         assert sampled.metadata is not None
         assert len(sampled.metadata["source"]) == 10
+
+    def test_add_creates_source_metadata(self):
+        """Test __add__ creates source metadata from dataset names."""
+        ds1 = Dataset([[Message("user", "1")]], [Label.POSITIVE], "truthful_qa")
+        ds2 = Dataset([[Message("user", "2")]], [Label.NEGATIVE], "circuit_breakers")
+
+        combined = ds1 + ds2
+        assert combined.metadata["source"] == ["truthful_qa", "circuit_breakers"]
+
+    def test_add_preserves_existing_source(self):
+        """Test __add__ preserves existing source metadata."""
+        ds1 = Dataset([[Message("user", "1")], [Message("user", "2")]], [Label.POSITIVE] * 2, "mix",
+                      metadata={"source": ["dataset_a", "dataset_b"]})
+        ds2 = Dataset([[Message("user", "3")]], [Label.NEGATIVE], "circuit_breakers")
+
+        combined = ds1 + ds2
+        assert combined.metadata["source"] == ["dataset_a", "dataset_b", "circuit_breakers"]
+
+    def test_add_merges_different_keys(self):
+        """Test __add__ merges metadata with different keys."""
+        ds1 = Dataset([[Message("user", "1")]], [Label.POSITIVE], "ds1", metadata={"difficulty": ["easy"]})
+        ds2 = Dataset([[Message("user", "2")]], [Label.NEGATIVE], "ds2", metadata={"category": ["safety"]})
+
+        combined = ds1 + ds2
+        assert "source" in combined.metadata
+        assert "difficulty" in combined.metadata
+        assert "category" in combined.metadata
+        assert combined.metadata["difficulty"] == ["easy", None]
+        assert combined.metadata["category"] == [None, "safety"]
+
+    def test_add_fills_missing_with_none(self):
+        """Test __add__ fills missing metadata keys with None."""
+        ds1 = Dataset([[Message("user", "1")]], [Label.POSITIVE], "ds1", metadata={"key1": ["val1"]})
+        ds2 = Dataset([[Message("user", "2")]], [Label.NEGATIVE], "ds2")
+
+        combined = ds1 + ds2
+        assert combined.metadata["key1"] == ["val1", None]
+        assert combined.metadata["source"] == ["ds1", "ds2"]
+
+    def test_add_chained(self):
+        """Test chaining multiple __add__ operations."""
+        ds1 = Dataset([[Message("user", "1")]], [Label.POSITIVE], "ds1")
+        ds2 = Dataset([[Message("user", "2")]], [Label.NEGATIVE], "ds2")
+        ds3 = Dataset([[Message("user", "3")]], [Label.POSITIVE], "ds3")
+
+        combined = ds1 + ds2 + ds3
+        assert len(combined) == 3
+        assert combined.metadata["source"] == ["ds1", "ds2", "ds3"]
