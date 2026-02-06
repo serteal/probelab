@@ -1,4 +1,4 @@
-"""Shared pooling utilities for activations and scores."""
+"""Shared pooling utilities for activations."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def masked_pool(
 ) -> torch.Tensor:
     """Pool tensor over sequence dimension using only masked positions.
 
-    This is the shared implementation used by Activations, Scores, and
+    This is the shared implementation used by Activations and
     batch_activations_pooled to avoid code duplication.
 
     Args:
@@ -202,3 +202,60 @@ def _slice_dim(tensor: torch.Tensor, dim: int, start: int | None, end: int | Non
     idx = [slice(None)] * tensor.ndim
     idx[dim] = slice(start, end)
     return tensor[tuple(idx)]
+
+
+# Convenience functions for common pooling patterns
+
+
+def pool(
+    scores: torch.Tensor,
+    mask: torch.Tensor,
+    method: str = "mean",
+) -> torch.Tensor:
+    """Pool token-level scores to sequence-level.
+
+    Args:
+        scores: Token scores [batch, seq] or [batch, seq, n_classes]
+        mask: Boolean mask [batch, seq] indicating valid tokens
+        method: "mean", "max", or "last_token"
+
+    Returns:
+        Pooled scores [batch] or [batch, n_classes]
+    """
+    return masked_pool(scores, mask, method, seq_dim=1, batch_dim=0)
+
+
+def ema(
+    scores: torch.Tensor,
+    mask: torch.Tensor,
+    alpha: float = 0.5,
+) -> torch.Tensor:
+    """EMA pooling: compute EMA over sequence, then take max.
+
+    Args:
+        scores: Token scores [batch, seq] or [batch, seq, n_classes]
+        mask: Boolean mask [batch, seq] indicating valid tokens
+        alpha: Smoothing factor in (0, 1]. Higher = more weight on current token.
+
+    Returns:
+        Pooled scores [batch] or [batch, n_classes]
+    """
+    return masked_pool(scores, mask, "ema", seq_dim=1, batch_dim=0, alpha=alpha)
+
+
+def rolling(
+    scores: torch.Tensor,
+    mask: torch.Tensor,
+    window_size: int = 10,
+) -> torch.Tensor:
+    """Rolling window mean pooling, then max across windows.
+
+    Args:
+        scores: Token scores [batch, seq] or [batch, seq, n_classes]
+        mask: Boolean mask [batch, seq] indicating valid tokens
+        window_size: Size of rolling window (>= 1)
+
+    Returns:
+        Pooled scores [batch] or [batch, n_classes]
+    """
+    return masked_pool(scores, mask, "rolling", seq_dim=1, batch_dim=0, window_size=window_size)
