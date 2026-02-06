@@ -172,7 +172,7 @@ len(tokens)             # Batch size
 ```python
 # collect_activations behavior:
 # - Single layer (layers=[16]): returns [batch, seq, hidden] - no LAYER axis
-# - Multiple layers (layers=[8, 16, 20]): returns [layer, batch, seq, hidden]
+# - Multiple layers (layers=[8, 16, 20]): returns [batch, layer, seq, hidden]
 
 # Methods
 acts.select(layer=16)           # Select single layer from multi-layer, removes LAYER axis
@@ -279,7 +279,7 @@ prepared = acts.pool("sequence", "mean")
 tokens = pl.processing.tokenize_dataset(large_dataset, tokenizer, mask=pl.masks.all())
 
 for acts_batch, indices, seq_len in pl.processing.stream_activations(model, tokens, layers=[16]):
-    # Process each batch incrementally (stream returns raw [layer, batch, seq, hidden])
+    # Process each batch incrementally (stream returns raw tensor)
     # ... accumulate results
 ```
 

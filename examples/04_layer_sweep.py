@@ -59,12 +59,8 @@ for layer in all_layers:
     train_prepared = train_acts.select(layer=layer).pool("sequence", "mean")
     test_prepared = test_acts.select(layer=layer).pool("sequence", "mean")
 
-    # Train probe
-    probe = pl.probes.Logistic(C=1.0)
-    probe.fit(train_prepared, train_ds.labels)
-
-    # Evaluate
-    probs = probe.predict(test_prepared)
+    # Train probe and evaluate
+    probs = pl.probes.Logistic(C=1.0).fit(train_prepared, train_ds.labels).predict(test_prepared)
     auroc = pl.metrics.auroc(test_ds.labels, probs)
     recall = pl.metrics.recall_at_fpr(test_ds.labels, probs, fpr=0.05)
 
