@@ -86,27 +86,12 @@ class Attention(BaseProbe):
         self.weight_decay = weight_decay
         self.n_epochs = n_epochs
         self.patience = patience
-        self._network = None
-        self._optimizer = None
-        self._d_model = None
+        self.net = None
         self.attention_weights = None
 
-    def _init_network(self, d_model: int, dtype: torch.dtype | None = None):
-        self._d_model = d_model
-        self._network = _AttentionNetwork(
-            d_model=d_model,
-            hidden_dim=self.hidden_dim,
-            dropout=self.dropout,
-            temperature=self.temperature,
-        ).to(self.device)
-        if dtype is not None:
-            self._network = self._network.to(dtype)
-        self._optimizer = AdamW(
-            self._network.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay,
-            fused=self.device.startswith("cuda"),
-        )
+    @property
+    def fitted(self) -> bool:
+        return self.net is not None
 
     def fit(self, X: Activations, y: list | torch.Tensor) -> "Attention":
         if "l" in X.dims:
@@ -125,9 +110,24 @@ class Attention(BaseProbe):
         sequences = X.data.clone().to(self.device)
         mask = X.mask.to(self.device)
         labels = y_tensor.to(self.device).float()
+        d_model = sequences.shape[-1]
 
-        if self._network is None:
-            self._init_network(sequences.shape[-1], dtype=sequences.dtype)
+        # Fresh state every fit()
+        self.net = _AttentionNetwork(
+            d_model=d_model,
+            hidden_dim=self.hidden_dim,
+            dropout=self.dropout,
+            temperature=self.temperature,
+        ).to(self.device)
+        if sequences.dtype != torch.float32:
+            self.net = self.net.to(sequences.dtype)
+
+        optimizer = AdamW(
+            self.net.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+            fused=self.device.startswith("cuda") if isinstance(self.device, str) else False,
+        )
 
         # Train/validation split
         n_samples = len(sequences)
@@ -141,20 +141,20 @@ class Attention(BaseProbe):
         best_val_loss = float("inf")
         patience_counter = 0
 
-        self._network.train()
+        self.net.train()
         for epoch in range(self.n_epochs):
-            self._optimizer.zero_grad()
-            logits, _ = self._network(train_seq, train_mask)
+            optimizer.zero_grad()
+            logits, _ = self.net(train_seq, train_mask)
             F.binary_cross_entropy_with_logits(logits, train_y).backward()
-            self._optimizer.step()
+            optimizer.step()
 
             if epoch % 10 == 0:
-                self._network.eval()
+                self.net.eval()
                 with torch.no_grad():
                     val_loss = F.binary_cross_entropy_with_logits(
-                        self._network(val_seq, val_mask)[0], val_y
+                        self.net(val_seq, val_mask)[0], val_y
                     )
-                self._network.train()
+                self.net.train()
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
@@ -166,8 +166,7 @@ class Attention(BaseProbe):
                 if val_loss < 0.001:
                     break
 
-        self._network.eval()
-        self._fitted = True
+        self.net.eval()
         return self
 
     def __call__(
@@ -185,7 +184,7 @@ class Attention(BaseProbe):
         self._check_fitted()
         sequences = sequences.to(self.device)
         mask = mask.to(self.device)
-        return self._network(sequences, mask)
+        return self.net(sequences, mask)
 
     def predict(self, X: Activations) -> torch.Tensor:
         """Evaluate on activations.
@@ -224,8 +223,7 @@ class Attention(BaseProbe):
             "n_epochs": self.n_epochs,
             "patience": self.patience,
             "device": self.device,
-            "d_model": self._d_model,
-            "network_state_dict": self._network.state_dict(),
+            "network_state_dict": self.net.state_dict(),
         }, path)
 
     @classmethod
@@ -241,12 +239,17 @@ class Attention(BaseProbe):
             patience=state["patience"],
             device=device,
         )
-        probe._d_model = state["d_model"]
-        probe._init_network(probe._d_model)
-        probe._network.load_state_dict(state["network_state_dict"])
-        probe._network.eval()
-        probe._fitted = True
+        # Infer d_model from saved weights
+        d_model = state["network_state_dict"]["attention_norm.weight"].shape[0]
+        probe.net = _AttentionNetwork(
+            d_model=d_model,
+            hidden_dim=probe.hidden_dim,
+            dropout=probe.dropout,
+            temperature=probe.temperature,
+        ).to(probe.device)
+        probe.net.load_state_dict(state["network_state_dict"])
+        probe.net.eval()
         return probe
 
     def __repr__(self) -> str:
-        return f"Attention(hidden_dim={self.hidden_dim}, fitted={self._fitted})"
+        return f"Attention(hidden_dim={self.hidden_dim}, fitted={self.fitted})"

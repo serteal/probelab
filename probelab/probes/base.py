@@ -25,36 +25,37 @@ class BaseProbe(ABC):
     """
 
     def __init__(self, device: str | None = None):
-        self.device = device  # None = auto-detect from input
-        self._fitted = False
+        self.device = device
+
+    @property
+    @abstractmethod
+    def fitted(self) -> bool:
+        """Whether the probe has been fitted. Each probe defines its own check."""
+        ...
 
     @abstractmethod
     def fit(self, X: Activations, y: list | torch.Tensor) -> "BaseProbe":
         """Fit probe on activations and labels."""
-        pass
+        ...
 
     @abstractmethod
     def predict(self, X: Activations) -> torch.Tensor:
-        """Predict probabilities from Activations.
-
-        Returns:
-            Tensor of shape [batch, 2] or [n_tokens, 2] with probabilities.
-        """
-        pass
+        """Predict probabilities from Activations."""
+        ...
 
     @abstractmethod
     def save(self, path: Path | str) -> None:
         """Save probe to disk."""
-        pass
+        ...
 
     @classmethod
     @abstractmethod
     def load(cls, path: Path | str, device: str = "cpu") -> "BaseProbe":
         """Load probe from disk."""
-        pass
+        ...
 
     def _check_fitted(self):
-        if not self._fitted:
+        if not self.fitted:
             raise RuntimeError(f"{self.__class__.__name__} must be fit before predict")
 
     def _to_labels(self, y) -> torch.Tensor:
@@ -64,4 +65,4 @@ class BaseProbe(ABC):
         return torch.tensor([l.value if hasattr(l, "value") else l for l in y])
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(fitted={self._fitted})"
+        return f"{self.__class__.__name__}(fitted={self.fitted})"

@@ -41,7 +41,7 @@ class TestLogisticInit(unittest.TestCase):
         p = Logistic()
         self.assertEqual(p.C, 1.0)
         self.assertEqual(p.max_iter, 100)
-        self.assertFalse(p._fitted)
+        self.assertFalse(p.fitted)
 
     def test_custom_params(self):
         p = Logistic(C=10.0, max_iter=50, device="cpu")
@@ -54,15 +54,14 @@ class TestLogisticFit(unittest.TestCase):
         acts, labels = _separable_acts()
         prepared = acts.mean_pool()
         p = Logistic(device="cpu").fit(prepared, labels)
-        self.assertTrue(p._fitted)
-        self.assertIsNotNone(p._network)
+        self.assertTrue(p.fitted)
+        self.assertIsNotNone(p.net)
 
     def test_fit_token_level(self):
         acts, labels = _separable_acts(n_samples=10, seq=5)
         # Keep SEQ axis for token-level training
         p = Logistic(device="cpu").fit(acts, labels)
-        self.assertTrue(p._fitted)
-        self.assertTrue(p._trained_on_tokens)
+        self.assertTrue(p.fitted)
 
     def test_fit_returns_self(self):
         acts, labels = _separable_acts()
@@ -116,7 +115,7 @@ class TestLogisticSaveLoad(unittest.TestCase):
             loaded = Logistic.load(path)
 
         self.assertEqual(loaded.C, 2.0)
-        self.assertTrue(loaded._fitted)
+        self.assertTrue(loaded.fitted)
         probs_after = loaded.predict(prepared)
         self.assertTrue(torch.allclose(probs_before, probs_after, atol=1e-5))
 
@@ -137,7 +136,7 @@ class TestMLPInit(unittest.TestCase):
         self.assertEqual(p.hidden_dim, 128)
         self.assertEqual(p.n_epochs, 100)
         self.assertIsNone(p.dropout)
-        self.assertFalse(p._fitted)
+        self.assertFalse(p.fitted)
 
     def test_custom_params(self):
         p = MLP(hidden_dim=64, dropout=0.1, n_epochs=50, device="cpu")
@@ -150,27 +149,26 @@ class TestMLPFit(unittest.TestCase):
         acts, labels = _separable_acts()
         prepared = acts.mean_pool()
         p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
-        self.assertTrue(p._fitted)
-        self.assertIsNotNone(p._network)
+        self.assertTrue(p.fitted)
+        self.assertIsNotNone(p.net)
 
     def test_fit_token_level(self):
         acts, labels = _separable_acts(n_samples=10, seq=5)
         # Keep SEQ axis for token-level training
         p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(acts, labels)
-        self.assertTrue(p._fitted)
-        self.assertTrue(p._trained_on_tokens)
+        self.assertTrue(p.fitted)
 
     def test_fit_with_dropout(self):
         acts, labels = _separable_acts()
         prepared = acts.mean_pool()
         p = MLP(hidden_dim=32, dropout=0.2, n_epochs=10, device="cpu").fit(prepared, labels)
-        self.assertTrue(p._fitted)
+        self.assertTrue(p.fitted)
 
     def test_fit_gelu_activation(self):
         acts, labels = _separable_acts()
         prepared = acts.mean_pool()
         p = MLP(hidden_dim=32, activation="gelu", n_epochs=10, device="cpu").fit(prepared, labels)
-        self.assertTrue(p._fitted)
+        self.assertTrue(p.fitted)
 
 class TestMLPPredict(unittest.TestCase):
     def test_predict_returns_scores(self):
@@ -208,7 +206,7 @@ class TestMLPSaveLoad(unittest.TestCase):
             loaded = MLP.load(path)
 
         self.assertEqual(loaded.hidden_dim, 32)
-        self.assertTrue(loaded._fitted)
+        self.assertTrue(loaded.fitted)
         probs_after = loaded.predict(prepared)
         self.assertTrue(torch.allclose(probs_before, probs_after, atol=1e-5))
 
@@ -234,7 +232,7 @@ class TestProbeInterface(unittest.TestCase):
         p = ProbeClass(device="cpu", **init_kwargs)
         result = p.fit(prepared, labels)
         self.assertIs(result, p)
-        self.assertTrue(p._fitted)
+        self.assertTrue(p.fitted)
 
         # Test predict returns tensor with batch dimension
         probs = p.predict(prepared)
@@ -246,7 +244,7 @@ class TestProbeInterface(unittest.TestCase):
             path = Path(tmpdir) / "probe.pt"
             p.save(path)
             loaded = ProbeClass.load(path, device="cpu")
-            self.assertTrue(loaded._fitted)
+            self.assertTrue(loaded.fitted)
             probs_loaded = loaded.predict(prepared)
             probs_orig = p.predict(prepared)
             self.assertTrue(torch.allclose(probs_orig, probs_loaded, atol=1e-5))
@@ -308,14 +306,14 @@ class TestProbeEdgeCases(unittest.TestCase):
         prepared = acts.mean_pool()
         labels = [1, 1, 1, 1, 1, 0, 0, 0, 0, 0]  # int labels
         p = Logistic(device="cpu").fit(prepared, labels)
-        self.assertTrue(p._fitted)
+        self.assertTrue(p.fitted)
 
     def test_tensor_labels(self):
         acts, _ = _separable_acts(n_samples=10)
         prepared = acts.mean_pool()
         labels = torch.tensor([1, 1, 1, 1, 1, 0, 0, 0, 0, 0])
         p = Logistic(device="cpu").fit(prepared, labels)
-        self.assertTrue(p._fitted)
+        self.assertTrue(p.fitted)
 
 class TestProbeDeviceHandling(unittest.TestCase):
     """Test device handling edge cases for probes."""
@@ -327,8 +325,7 @@ class TestProbeDeviceHandling(unittest.TestCase):
 
         # Train on CPU - should work without device mismatch
         p = Logistic(device="cpu").fit(acts, labels)
-        self.assertTrue(p._fitted)
-        self.assertTrue(p._trained_on_tokens)
+        self.assertTrue(p.fitted)
 
         # Verify prediction works - returns [batch, seq] for token-level
         probs = p.predict(acts)
@@ -339,8 +336,7 @@ class TestProbeDeviceHandling(unittest.TestCase):
         acts, labels = _separable_acts(n_samples=10, seq=5)
 
         p = MLP(hidden_dim=16, n_epochs=5, device="cpu").fit(acts, labels)
-        self.assertTrue(p._fitted)
-        self.assertTrue(p._trained_on_tokens)
+        self.assertTrue(p.fitted)
 
         # Returns [batch, seq] for token-level
         probs = p.predict(acts)
@@ -355,7 +351,7 @@ class TestProbeDeviceHandling(unittest.TestCase):
         p.fit(acts, labels)
 
         # If device handling is wrong, this would fail during fit
-        self.assertTrue(p._fitted)
+        self.assertTrue(p.fitted)
 
 if __name__ == '__main__':
     unittest.main()

@@ -35,12 +35,13 @@ class Logistic(BaseProbe):
         super().__init__(device=device)
         self.C = C
         self.max_iter = max_iter
-        self._network = None
-        self._scaler_mean = None
-        self._scaler_std = None
-        self._d_model = None
-        self._trained_on_tokens = False
-        self._tokens_per_sample = None
+        self.net = None
+        self.scaler_mean = None
+        self.scaler_std = None
+
+    @property
+    def fitted(self) -> bool:
+        return self.net is not None and self.scaler_mean is not None
 
     def fit(self, X: Activations, y: list | torch.Tensor) -> "Logistic":
         if "l" in X.dims:
@@ -57,49 +58,45 @@ class Logistic(BaseProbe):
 
         # Get features based on shape
         if "s" in X.dims:
-            features, self._tokens_per_sample = X.extract_tokens()
-            labels = torch.repeat_interleave(y_tensor, self._tokens_per_sample.to(y_tensor.device))
-            self._trained_on_tokens = True
+            features, tokens_per_sample = X.extract_tokens()
+            labels = torch.repeat_interleave(y_tensor, tokens_per_sample.to(y_tensor.device))
         else:
             features = X.data
             labels = y_tensor
-            self._trained_on_tokens = False
-            self._tokens_per_sample = None
 
         if features.shape[0] == 0:
             return self
 
         features = features.to(self.device)
         labels = labels.to(self.device).float()
+        d_model = features.shape[1]
 
-        # Initialize network
-        self._d_model = features.shape[1]
-        self._network = _LogisticNetwork(self._d_model).to(self.device)
+        # Fresh state every fit()
+        self.net = _LogisticNetwork(d_model).to(self.device)
         if features.dtype != torch.float32:
-            self._network = self._network.to(features.dtype)
+            self.net = self.net.to(features.dtype)
 
         # Standardize
-        self._scaler_mean = features.mean(0)
-        self._scaler_std = features.std(0).clamp(min=1e-8)
-        features_scaled = (features - self._scaler_mean) / self._scaler_std
+        self.scaler_mean = features.mean(0)
+        self.scaler_std = features.std(0).clamp(min=1e-8)
+        features_scaled = (features - self.scaler_mean) / self.scaler_std
 
         # Train with LBFGS
         optimizer = torch.optim.LBFGS(
-            self._network.parameters(), max_iter=self.max_iter, line_search_fn="strong_wolfe"
+            self.net.parameters(), max_iter=self.max_iter, line_search_fn="strong_wolfe"
         )
         l2_weight = 1.0 / (2.0 * self.C * len(labels)) if self.C > 0 else 0.0
-        weight_param = self._network.linear.weight
+        weight_param = self.net.linear.weight
 
         def closure():
             optimizer.zero_grad()
-            loss = F.binary_cross_entropy_with_logits(self._network(features_scaled), labels)
+            loss = F.binary_cross_entropy_with_logits(self.net(features_scaled), labels)
             if l2_weight > 0:
                 loss = loss + l2_weight * weight_param.pow(2).sum()
             loss.backward()
             return loss
 
         optimizer.step(closure)
-        self._fitted = True
         return self
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
@@ -113,8 +110,8 @@ class Logistic(BaseProbe):
         """
         self._check_fitted()
         x = x.to(self.device)
-        x_scaled = (x - self._scaler_mean) / self._scaler_std
-        return self._network(x_scaled.to(self._network.linear.weight.dtype))
+        x_scaled = (x - self.scaler_mean) / self.scaler_std
+        return self.net(x_scaled.to(self.net.linear.weight.dtype))
 
     def predict(self, X: Activations) -> torch.Tensor:
         """Evaluate on activations.
@@ -153,27 +150,22 @@ class Logistic(BaseProbe):
             "C": self.C,
             "max_iter": self.max_iter,
             "device": self.device,
-            "network_state": self._network.state_dict(),
-            "scaler_mean": self._scaler_mean,
-            "scaler_std": self._scaler_std,
-            "d_model": self._d_model,
-            "trained_on_tokens": self._trained_on_tokens,
+            "network_state": self.net.state_dict(),
+            "scaler_mean": self.scaler_mean,
+            "scaler_std": self.scaler_std,
         }, path)
 
     @classmethod
     def load(cls, path: Path | str, device: str = "cpu") -> "Logistic":
         state = torch.load(Path(path), map_location="cpu")
         probe = cls(C=state["C"], max_iter=state["max_iter"], device=device)
-        probe._d_model = state["d_model"]
-        probe._network = _LogisticNetwork(probe._d_model).to(probe.device)
-        probe._network.load_state_dict(state["network_state"])
-        probe._network.eval()
-        probe._scaler_mean = state["scaler_mean"].to(probe.device)
-        probe._scaler_std = state["scaler_std"].to(probe.device)
-        probe._trained_on_tokens = state.get("trained_on_tokens", False)
-        probe._fitted = True
+        d_model = state["scaler_mean"].shape[0]
+        probe.net = _LogisticNetwork(d_model).to(probe.device)
+        probe.net.load_state_dict(state["network_state"])
+        probe.net.eval()
+        probe.scaler_mean = state["scaler_mean"].to(probe.device)
+        probe.scaler_std = state["scaler_std"].to(probe.device)
         return probe
 
     def __repr__(self) -> str:
-        token_str = ", token-level" if self._trained_on_tokens else ""
-        return f"Logistic(C={self.C}, fitted={self._fitted}{token_str})"
+        return f"Logistic(C={self.C}, fitted={self.fitted})"

@@ -64,24 +64,11 @@ class MLP(BaseProbe):
         self.weight_decay = weight_decay
         self.n_epochs = n_epochs
         self.batch_size = batch_size
-        self._network = None
-        self._optimizer = None
-        self._d_model = None
-        self._trained_on_tokens = False
+        self.net = None
 
-    def _init_network(self, d_model: int):
-        self._d_model = d_model
-        self._network = _MLPNetwork(
-            d_model=d_model,
-            hidden_dim=self.hidden_dim,
-            dropout=self.dropout,
-            activation=self.activation,
-        ).to(self.device).to(torch.float32)
-        self._optimizer = AdamW(
-            self._network.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay,
-        )
+    @property
+    def fitted(self) -> bool:
+        return self.net is not None
 
     def fit(self, X: Activations, y: list | torch.Tensor) -> "MLP":
         if "l" in X.dims:
@@ -104,40 +91,47 @@ class MLP(BaseProbe):
                 labels = y_tensor[X.mask.cpu().bool()]
             else:
                 raise ValueError(f"Invalid label shape: {y_tensor.shape}")
-            self._trained_on_tokens = True
-            self._tokens_per_sample = tokens_per_sample
         else:
             features = X.data
             labels = y_tensor
-            self._trained_on_tokens = False
-            self._tokens_per_sample = None
 
         if features.shape[0] == 0:
             return self
 
         features = features.to(self.device, dtype=torch.float32)
         labels = labels.to(self.device).float()
+        d_model = features.shape[1]
 
-        if self._network is None:
-            self._init_network(features.shape[1])
+        # Fresh state every fit()
+        self.net = _MLPNetwork(
+            d_model=d_model,
+            hidden_dim=self.hidden_dim,
+            dropout=self.dropout,
+            activation=self.activation,
+        ).to(self.device).to(torch.float32)
+
+        optimizer = AdamW(
+            self.net.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+        )
 
         dataset = torch.utils.data.TensorDataset(features, labels)
         dataloader = torch.utils.data.DataLoader(
             dataset, batch_size=self.batch_size, shuffle=True
         )
 
-        self._network.train()
+        self.net.train()
         for _ in range(self.n_epochs):
             for batch_features, batch_labels in dataloader:
-                self._optimizer.zero_grad()
+                optimizer.zero_grad()
                 loss = F.binary_cross_entropy_with_logits(
-                    self._network(batch_features), batch_labels
+                    self.net(batch_features), batch_labels
                 )
                 loss.backward()
-                self._optimizer.step()
+                optimizer.step()
 
-        self._network.eval()
-        self._fitted = True
+        self.net.eval()
         return self
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
@@ -151,7 +145,7 @@ class MLP(BaseProbe):
         """
         self._check_fitted()
         x = x.to(self.device, dtype=torch.float32)
-        return self._network(x)
+        return self.net(x)
 
     def predict(self, X: Activations) -> torch.Tensor:
         """Evaluate on activations.
@@ -195,9 +189,7 @@ class MLP(BaseProbe):
             "n_epochs": self.n_epochs,
             "batch_size": self.batch_size,
             "device": self.device,
-            "d_model": self._d_model,
-            "network_state": self._network.state_dict(),
-            "trained_on_tokens": self._trained_on_tokens,
+            "network_state": self.net.state_dict(),
         }, path)
 
     @classmethod
@@ -213,14 +205,17 @@ class MLP(BaseProbe):
             batch_size=state["batch_size"],
             device=device,
         )
-        probe._d_model = state["d_model"]
-        probe._init_network(probe._d_model)
-        probe._network.load_state_dict(state["network_state"])
-        probe._network.eval()
-        probe._trained_on_tokens = state.get("trained_on_tokens", False)
-        probe._fitted = True
+        # Infer d_model from saved weights
+        d_model = state["network_state"]["fc1.weight"].shape[1]
+        probe.net = _MLPNetwork(
+            d_model=d_model,
+            hidden_dim=probe.hidden_dim,
+            dropout=probe.dropout,
+            activation=probe.activation,
+        ).to(probe.device).to(torch.float32)
+        probe.net.load_state_dict(state["network_state"])
+        probe.net.eval()
         return probe
 
     def __repr__(self) -> str:
-        token_str = ", token-level" if self._trained_on_tokens else ""
-        return f"MLP(hidden_dim={self.hidden_dim}, fitted={self._fitted}{token_str})"
+        return f"MLP(hidden_dim={self.hidden_dim}, fitted={self.fitted})"
