@@ -540,69 +540,33 @@ class Activations:
         return Activations(activations=subset, axes=self.axes, layer_meta=LayerMeta(tuple(layers)),
                          sequence_meta=self.sequence_meta, batch_indices=self.batch_indices)
 
-    def pool(
-        self,
-        dim: Axis | Literal["sequence", "seq", "layer"] = Axis.SEQ,
-        method: str = "mean",
-        **kwargs,
-    ) -> "Activations":
-        """Pool over a dimension, removing that axis.
-
-        Dispatches to pl.pool.<method> functions. See pl.pool for available methods.
-
-        Args:
-            dim: Dimension to pool over - Axis.SEQ, Axis.LAYER, or string
-            method: Pooling method name (mean, max, last_token, ema, rolling)
-            **kwargs: Method-specific arguments (e.g., alpha=0.5 for ema)
+    def mean_pool(self) -> "Activations":
+        """Pool sequence dimension by mean over valid tokens.
 
         Returns:
-            Activations with pooled dimension removed
+            Activations with SEQ axis removed
         """
-        # Convert string to Axis
-        if isinstance(dim, str):
-            if dim in ("sequence", "seq"):
-                axis = Axis.SEQ
-            elif dim == "layer":
-                axis = Axis.LAYER
-            else:
-                raise ValueError(f"Unknown dimension: {dim}. Use Axis.SEQ, Axis.LAYER, or 'sequence'/'layer'")
-        else:
-            axis = dim
+        seq_meta = self._require_sequence_meta()
+        seq_dim = self._axis_positions[Axis.SEQ]
+        with torch.no_grad():
+            reduced = P.mean(self.activations, seq_meta.detection_mask, dim=seq_dim)
+        new_axes = tuple(ax for ax in self.axes if ax != Axis.SEQ)
+        return Activations(activations=reduced, axes=new_axes, layer_meta=self.layer_meta,
+                           sequence_meta=None, batch_indices=self.batch_indices)
 
-        if axis == Axis.SEQ:
-            # Get the pool function
-            try:
-                pool_fn = getattr(P, method)
-            except AttributeError:
-                available = [name for name in dir(P) if not name.startswith("_")]
-                raise ValueError(f"Unknown pooling method: {method}. Available: {available}")
+    def last_token(self) -> "Activations":
+        """Pool sequence dimension by taking last valid token.
 
-            seq_meta = self._require_sequence_meta()
-            seq_dim = self._axis_positions[Axis.SEQ]
-
-            with torch.no_grad():
-                reduced = pool_fn(self.activations, seq_meta.detection_mask, dim=seq_dim, **kwargs)
-
-            new_axes = tuple(ax for ax in self.axes if ax != Axis.SEQ)
-            return Activations(activations=reduced, axes=new_axes, layer_meta=self.layer_meta,
-                             sequence_meta=None, batch_indices=self.batch_indices)
-
-        elif axis == Axis.LAYER:
-            if method not in ("mean", "max"):
-                raise ValueError(f"'{method}' pooling is only supported for sequence dimension")
-
-            dim_idx = self._axis_positions[Axis.LAYER]
-            if method == "mean":
-                reduced = self.activations.mean(dim=dim_idx)
-            else:  # max
-                reduced = self.activations.max(dim=dim_idx).values
-
-            new_axes = tuple(ax for ax in self.axes if ax != Axis.LAYER)
-            return Activations(activations=reduced, axes=new_axes, layer_meta=None,
-                             sequence_meta=self.sequence_meta, batch_indices=self.batch_indices)
-
-        else:
-            raise ValueError(f"Unsupported axis for pooling: {axis}")
+        Returns:
+            Activations with SEQ axis removed
+        """
+        seq_meta = self._require_sequence_meta()
+        seq_dim = self._axis_positions[Axis.SEQ]
+        with torch.no_grad():
+            reduced = P.last_token(self.activations, seq_meta.detection_mask, dim=seq_dim)
+        new_axes = tuple(ax for ax in self.axes if ax != Axis.SEQ)
+        return Activations(activations=reduced, axes=new_axes, layer_meta=self.layer_meta,
+                           sequence_meta=None, batch_indices=self.batch_indices)
 
     def extract_tokens(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Extract detected tokens for token-level training."""

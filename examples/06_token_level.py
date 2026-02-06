@@ -114,8 +114,8 @@ print(f"Best aggregation: {best} (AUROC: {results[best]['auroc']:.4f})")
 
 # Compare with sequence-level baseline (pool before training)
 print("\n--- Baseline: Pool before training ---")
-train_pooled = train_acts.pool("sequence", "mean")
-test_pooled = test_acts.pool("sequence", "mean")
+train_pooled = train_acts.mean_pool()
+test_pooled = test_acts.mean_pool()
 
 baseline_probs = pl.probes.Logistic().fit(train_pooled, train_ds.labels).predict(test_pooled)
 baseline_auroc = pl.metrics.auroc(test_ds.labels, baseline_probs)

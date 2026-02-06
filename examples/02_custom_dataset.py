@@ -108,7 +108,7 @@ print(f"Padding side: {tokens.padding_side}")
 
 # Collect activations (single layer returns no LAYER axis)
 acts = pl.processing.collect_activations(model, tokens, layers=[LAYER], batch_size=2)
-prepared = acts.pool("sequence", "mean")
+prepared = acts.mean_pool()
 
 print(f"Activations shape: {prepared.shape}")
 

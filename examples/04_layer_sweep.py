@@ -56,8 +56,8 @@ print("=" * 50)
 
 for layer in all_layers:
     # Select single layer and pool
-    train_prepared = train_acts.select(layer=layer).pool("sequence", "mean")
-    test_prepared = test_acts.select(layer=layer).pool("sequence", "mean")
+    train_prepared = train_acts.select(layer=layer).mean_pool()
+    test_prepared = test_acts.select(layer=layer).mean_pool()
 
     # Train probe and evaluate
     probs = pl.probes.Logistic(C=1.0).fit(train_prepared, train_ds.labels).predict(test_prepared)

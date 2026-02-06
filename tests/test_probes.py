@@ -58,7 +58,7 @@ class TestLogisticInit(unittest.TestCase):
 class TestLogisticFit(unittest.TestCase):
   def test_fit_sequence_level(self):
     acts, labels = _separable_acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = Logistic(device="cpu").fit(prepared, labels)
     self.assertTrue(p._fitted)
     self.assertIsNotNone(p._network)
@@ -72,7 +72,7 @@ class TestLogisticFit(unittest.TestCase):
 
   def test_fit_returns_self(self):
     acts, labels = _separable_acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = Logistic(device="cpu")
     result = p.fit(prepared, labels)
     self.assertIs(result, p)
@@ -80,14 +80,14 @@ class TestLogisticFit(unittest.TestCase):
 class TestLogisticPredict(unittest.TestCase):
   def test_predict_returns_scores(self):
     acts, labels = _separable_acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = Logistic(device="cpu").fit(prepared, labels)
     scores = p.predict(prepared)
     self.assertEqual(scores.shape, (20,))  # [batch] for sequence-level
 
   def test_predict_valid_probabilities(self):
     acts, labels = _separable_acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = Logistic(device="cpu").fit(prepared, labels)
     probs = p.predict(prepared)
     self.assertTrue(torch.all(probs >= 0))
@@ -95,7 +95,7 @@ class TestLogisticPredict(unittest.TestCase):
 
   def test_predict_separable_accuracy(self):
     acts, labels = _separable_acts(n_samples=20, gap=3.0)
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = Logistic(device="cpu").fit(prepared, labels)
     probs = p.predict(prepared)
     pos_correct = (probs[:10] > 0.5).sum()  # Positive class should have high prob
@@ -104,7 +104,7 @@ class TestLogisticPredict(unittest.TestCase):
 
   def test_predict_before_fit_raises(self):
     acts = _acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = Logistic(device="cpu")
     with self.assertRaises(RuntimeError):
       p.predict(prepared)
@@ -112,7 +112,7 @@ class TestLogisticPredict(unittest.TestCase):
 class TestLogisticSaveLoad(unittest.TestCase):
   def test_save_load_roundtrip(self):
     acts, labels = _separable_acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = Logistic(C=2.0, device="cpu").fit(prepared, labels)
     probs_before = p.predict(prepared)
 
@@ -154,7 +154,7 @@ class TestMLPInit(unittest.TestCase):
 class TestMLPFit(unittest.TestCase):
   def test_fit_sequence_level(self):
     acts, labels = _separable_acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
     self.assertTrue(p._fitted)
     self.assertIsNotNone(p._network)
@@ -168,27 +168,27 @@ class TestMLPFit(unittest.TestCase):
 
   def test_fit_with_dropout(self):
     acts, labels = _separable_acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = MLP(hidden_dim=32, dropout=0.2, n_epochs=10, device="cpu").fit(prepared, labels)
     self.assertTrue(p._fitted)
 
   def test_fit_gelu_activation(self):
     acts, labels = _separable_acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = MLP(hidden_dim=32, activation="gelu", n_epochs=10, device="cpu").fit(prepared, labels)
     self.assertTrue(p._fitted)
 
 class TestMLPPredict(unittest.TestCase):
   def test_predict_returns_scores(self):
     acts, labels = _separable_acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
     scores = p.predict(prepared)
     self.assertEqual(scores.shape, (20,))  # [batch] for sequence-level
 
   def test_predict_valid_probabilities(self):
     acts, labels = _separable_acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
     probs = p.predict(prepared)
     self.assertTrue(torch.all(probs >= 0))
@@ -196,7 +196,7 @@ class TestMLPPredict(unittest.TestCase):
 
   def test_predict_before_fit_raises(self):
     acts = _acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = MLP(device="cpu")
     with self.assertRaises(RuntimeError):
       p.predict(prepared)
@@ -204,7 +204,7 @@ class TestMLPPredict(unittest.TestCase):
 class TestMLPSaveLoad(unittest.TestCase):
   def test_save_load_roundtrip(self):
     acts, labels = _separable_acts()
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
     probs_before = p.predict(prepared)
 
@@ -234,7 +234,7 @@ class TestProbeInterface(unittest.TestCase):
 
   def _test_probe_interface(self, ProbeClass, **init_kwargs):
     acts, labels = _separable_acts(n_samples=20)
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
 
     # Test fit returns self
     p = ProbeClass(device="cpu", **init_kwargs)
@@ -308,7 +308,7 @@ class TestProbeEdgeCases(unittest.TestCase):
       detection_mask=torch.ones(4, 8), layer_indices=[0]
     )
     labels = [Label.POSITIVE, Label.POSITIVE, Label.NEGATIVE, Label.NEGATIVE]
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
 
     p = Logistic(device="cpu").fit(prepared, labels)
     scores = p.predict(prepared)
@@ -316,14 +316,14 @@ class TestProbeEdgeCases(unittest.TestCase):
 
   def test_integer_labels(self):
     acts, _ = _separable_acts(n_samples=10)
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     labels = [1, 1, 1, 1, 1, 0, 0, 0, 0, 0]  # int labels
     p = Logistic(device="cpu").fit(prepared, labels)
     self.assertTrue(p._fitted)
 
   def test_tensor_labels(self):
     acts, _ = _separable_acts(n_samples=10)
-    prepared = acts.select(layer=0).pool("sequence", "mean")
+    prepared = acts.select(layer=0).mean_pool()
     labels = torch.tensor([1, 1, 1, 1, 1, 0, 0, 0, 0, 0])
     p = Logistic(device="cpu").fit(prepared, labels)
     self.assertTrue(p._fitted)

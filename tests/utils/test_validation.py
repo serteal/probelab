@@ -34,7 +34,7 @@ class TestCheckActivations:
             torch.randn(4, 1, 10, 32),  # [batch, layer, seq, hidden]
             layer_indices=[0],
         )
-        return acts.select(layer=0).pool(dim="sequence", method="mean")
+        return acts.select(layer=0).mean_pool()
 
     def test_valid_activations_passes(self, activations_4d):
         """Basic validation passes for valid activations."""

@@ -34,7 +34,7 @@ tokens = pl.processing.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assist
 acts = pl.processing.collect_activations(model, tokens, layers=[16])
 
 # Train probe (auto-detects device from input)
-probe = pl.probes.Logistic().fit(acts.pool("sequence", "mean"), labels)
+probe = pl.probes.Logistic().fit(acts.mean_pool(), labels)
 
 # Evaluate - predict() returns tensor directly
 probs = probe.predict(test_acts)  # [batch]
@@ -143,7 +143,7 @@ tokens = pl.processing.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assist
 acts = pl.processing.collect_activations(model, tokens, layers=[16])
 
 # 3. Pool sequence dimension
-prepared = acts.pool("sequence", "mean")
+prepared = acts.mean_pool()
 
 # 4. Train probe and predict (chained)
 probs = pl.probes.Logistic().fit(prepared, labels).predict(test_prepared)
@@ -177,8 +177,8 @@ len(tokens)             # Batch size
 # Methods
 acts.select(layer=16)           # Select single layer from multi-layer, removes LAYER axis
 acts.select(layers=[8, 16])     # Select multiple layers, keeps LAYER axis
-acts.pool("sequence", "mean")   # Pool over sequence dimension
-acts.pool("layer", "mean")      # Pool over layer dimension
+acts.mean_pool()                # Pool sequence dimension by mean
+acts.last_token()               # Pool sequence dimension by last token
 acts.to("cuda")                 # Move to device
 
 # Properties
@@ -200,12 +200,14 @@ probe.save("probe.pt")
 probe = pl.probes.Logistic.load("probe.pt", device="cuda")
 ```
 
-**Utils** - Standalone pooling functions for token-level aggregation:
+**Pool** - Functions for aggregating token-level predictions:
 ```python
 # Pool token-level predictions to sequence-level
-probs = pl.utils.pool(token_probs, mask, "mean")  # or "max", "last_token"
-probs = pl.utils.ema(token_probs, mask, alpha=0.5)  # EMA + max
-probs = pl.utils.rolling(token_probs, mask, window_size=10)  # rolling mean + max
+probs = pl.pool.mean(token_probs, mask)       # mean over valid tokens
+probs = pl.pool.max(token_probs, mask)        # max over valid tokens
+probs = pl.pool.last_token(token_probs, mask) # last valid token
+probs = pl.pool.ema(token_probs, mask, alpha=0.5)  # EMA, then max
+probs = pl.pool.rolling(token_probs, mask, window_size=10)  # rolling mean, then max
 ```
 
 ### Common Workflows
@@ -226,8 +228,8 @@ train_acts = pl.processing.collect_activations(model, train_tokens, layers=[16])
 test_acts = pl.processing.collect_activations(model, test_tokens, layers=[16])
 
 # Pool and train
-train_prepared = train_acts.pool("sequence", "mean")
-test_prepared = test_acts.pool("sequence", "mean")
+train_prepared = train_acts.mean_pool()
+test_prepared = test_acts.mean_pool()
 probe = pl.probes.Logistic().fit(train_prepared, train_ds.labels)
 
 # Evaluate
@@ -244,7 +246,7 @@ acts = pl.processing.collect_activations(model, tokens, layers=[8, 12, 16, 20])
 # Train probe on each layer
 results = {}
 for layer in [8, 12, 16, 20]:
-    prepared = acts.select(layer=layer).pool("sequence", "mean")
+    prepared = acts.select(layer=layer).mean_pool()
     probe = pl.probes.Logistic().fit(prepared, labels)
     probs = probe.predict(test_prepared)
     results[layer] = pl.metrics.auroc(test_labels, probs)
@@ -260,7 +262,7 @@ probe = pl.probes.Logistic().fit(acts, labels)
 
 # Predict token-level [batch, seq], then aggregate
 token_probs = probe.predict(test_acts)
-pooled = pl.utils.pool(token_probs, mask, "mean")  # [batch]
+pooled = pl.pool.mean(token_probs, mask)  # [batch]
 ```
 
 **4. Using Masks**
@@ -270,7 +272,7 @@ mask = pl.masks.assistant() & pl.masks.nth_message(-1)
 
 tokens = pl.processing.tokenize_dataset(dataset, tokenizer, mask=mask)
 acts = pl.processing.collect_activations(model, tokens, layers=[16])
-prepared = acts.pool("sequence", "mean")
+prepared = acts.mean_pool()
 ```
 
 **5. Streaming for Large Datasets**

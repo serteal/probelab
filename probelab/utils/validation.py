@@ -69,8 +69,7 @@ def check_activations(
         raise ValueError(
             f"{prefix}Expected activations with LAYER axis, but it is missing.\n"
             f"Current axes: {[ax.name for ax in X.axes]}\n"
-            f"Hint: Make sure you haven't removed the LAYER axis with select(layer=...) "
-            f"or pool(dim='layer')."
+            f"Hint: Make sure you haven't removed the LAYER axis with select(layer=...)."
         )
 
     if forbid_layer and X.has_axis(Axis.LAYER):

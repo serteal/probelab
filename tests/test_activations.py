@@ -202,25 +202,19 @@ class TestActivationsPool(unittest.TestCase):
             layer_indices=[0],
         )
 
-    def test_pool_mean_removes_seq_axis(self):
+    def test_mean_pool_removes_seq_axis(self):
         a = self._acts()
-        p = a.pool(dim="sequence", method="mean")
+        p = a.mean_pool()
         self.assertFalse(p.has_axis(Axis.SEQ))
         self.assertEqual(p.shape, (2, 1, 4))
 
-    def test_pool_max_removes_seq_axis(self):
+    def test_last_token_removes_seq_axis(self):
         a = self._acts()
-        p = a.pool(dim="sequence", method="max")
+        p = a.last_token()
         self.assertFalse(p.has_axis(Axis.SEQ))
         self.assertEqual(p.shape, (2, 1, 4))
 
-    def test_pool_last_token_removes_seq_axis(self):
-        a = self._acts()
-        p = a.pool(dim="sequence", method="last_token")
-        self.assertFalse(p.has_axis(Axis.SEQ))
-        self.assertEqual(p.shape, (2, 1, 4))
-
-    def test_pool_mean_uses_detection_mask(self):
+    def test_mean_pool_uses_detection_mask(self):
         det = torch.tensor([[1, 1, 0, 0, 0, 0, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]]).float()
         # [batch, layer, seq, hidden]
         t = torch.arange(64).reshape(2, 1, 8, 4).float()
@@ -231,7 +225,7 @@ class TestActivationsPool(unittest.TestCase):
             detection_mask=det,
             layer_indices=[0],
         )
-        p = a.pool(dim="sequence", method="mean")
+        p = a.mean_pool()
         # First sample: mean of tokens 0,1
         expected_0 = t[0, 0, :2].mean(dim=0)
         self.assertTrue(torch.allclose(p.activations[0, 0], expected_0))
@@ -239,7 +233,7 @@ class TestActivationsPool(unittest.TestCase):
         expected_1 = t[1, 0, :4].mean(dim=0)
         self.assertTrue(torch.allclose(p.activations[1, 0], expected_1))
 
-    def test_pool_last_token_uses_detection_mask(self):
+    def test_last_token_uses_detection_mask(self):
         det = torch.tensor([[1, 1, 1, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 0, 0, 0]]).float()
         # [batch, layer, seq, hidden]
         t = torch.arange(64).reshape(2, 1, 8, 4).float()
@@ -250,13 +244,13 @@ class TestActivationsPool(unittest.TestCase):
             detection_mask=det,
             layer_indices=[0],
         )
-        p = a.pool(dim="sequence", method="last_token")
+        p = a.last_token()
         # First sample: last valid at index 2
         self.assertTrue(torch.allclose(p.activations[0, 0], t[0, 0, 2]))
         # Second sample: last valid at index 4
         self.assertTrue(torch.allclose(p.activations[1, 0], t[1, 0, 4]))
 
-    def test_pool_multi_layer(self):
+    def test_mean_pool_multi_layer(self):
         # [batch, layer, seq, hidden]
         t = torch.randn(2, 3, 8, 4)  # 2 batch, 3 layers
         a = Activations.from_tensor(
@@ -266,30 +260,15 @@ class TestActivationsPool(unittest.TestCase):
             detection_mask=torch.ones(2, 8),
             layer_indices=[0, 5, 10],
         )
-        p = a.pool(dim="sequence", method="mean")
+        p = a.mean_pool()
         self.assertEqual(p.shape, (2, 3, 4))
         self.assertTrue(p.has_axis(Axis.LAYER))
 
-    def test_pool_empty_mask_returns_zeros(self):
+    def test_mean_pool_empty_mask_returns_zeros(self):
         det = torch.zeros(2, 8)
         a = self._acts(det_mask=det)
-        p = a.pool(dim="sequence", method="mean")
+        p = a.mean_pool()
         self.assertTrue(torch.allclose(p.activations, torch.zeros(2, 1, 4)))
-
-    def test_pool_layer_mean(self):
-        # [batch, layer, seq, hidden]
-        t = torch.randn(2, 3, 8, 4)
-        a = Activations.from_tensor(
-            t,
-            attention_mask=torch.ones(2, 8),
-            input_ids=torch.ones(2, 8, dtype=torch.long),
-            detection_mask=torch.ones(2, 8),
-            layer_indices=[0, 1, 2],
-        )
-        p = a.pool(dim="layer", method="mean")
-        self.assertFalse(p.has_axis(Axis.LAYER))
-        expected = t.mean(dim=1)  # layer is now at dim 1
-        self.assertTrue(torch.allclose(p.activations, expected))
 
 
 class TestActivationsExtractTokens(unittest.TestCase):
@@ -398,7 +377,7 @@ class TestActivationsEdgeCases(unittest.TestCase):
             layer_indices=[0],
         )
         self.assertEqual(a.batch_size, 1)
-        p = a.pool(dim="sequence", method="mean")
+        p = a.mean_pool()
         self.assertEqual(p.shape, (1, 1, 16))
 
     def test_single_token(self):
@@ -412,7 +391,7 @@ class TestActivationsEdgeCases(unittest.TestCase):
             layer_indices=[0],
         )
         self.assertEqual(a.seq_len, 1)
-        p = a.pool(dim="sequence", method="max")
+        p = a.mean_pool()
         self.assertEqual(p.shape, (2, 1, 16))
 
     def test_partial_detection_mask(self):
@@ -432,7 +411,7 @@ class TestActivationsEdgeCases(unittest.TestCase):
             detection_mask=det,
             layer_indices=[0],
         )
-        p = a.pool(dim="sequence", method="mean")
+        p = a.mean_pool()
         self.assertEqual(p.shape, (3, 1, 4))
         # Second sample should be zeros (no valid tokens)
         self.assertTrue(torch.allclose(p.activations[1, 0], torch.zeros(4)))
@@ -555,16 +534,16 @@ class TestActivationsDtypes(unittest.TestCase):
 
     # --- Operations preserve/handle dtypes ---
 
-    def test_pool_preserves_dtype_float16(self):
+    def test_mean_pool_preserves_dtype_float16(self):
         t = torch.randn(1, 2, 4, 8, dtype=torch.float16)
         a = self._make_acts(t)
-        p = a.pool(dim="sequence", method="mean")
+        p = a.mean_pool()
         self.assertEqual(p.activations.dtype, torch.float16)
 
-    def test_pool_preserves_dtype_float64(self):
+    def test_mean_pool_preserves_dtype_float64(self):
         t = torch.randn(1, 2, 4, 8, dtype=torch.float64)
         a = self._make_acts(t)
-        p = a.pool(dim="sequence", method="max")
+        p = a.mean_pool()
         self.assertEqual(p.activations.dtype, torch.float64)
 
     def test_select_preserves_dtype(self):
