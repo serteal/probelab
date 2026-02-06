@@ -106,15 +106,14 @@ tokens = pl.processing.tokenize_dataset(custom_dataset, tokenizer, mask=pl.masks
 print(f"Tokenized shape: {tokens.shape}")
 print(f"Padding side: {tokens.padding_side}")
 
-# Collect activations
+# Collect activations (single layer returns no LAYER axis)
 acts = pl.processing.collect_activations(model, tokens, layers=[LAYER], batch_size=2)
-prepared = acts.select(layer=LAYER).pool("sequence", "mean")
+prepared = acts.pool("sequence", "mean")
 
 print(f"Activations shape: {prepared.shape}")
 
-# Train probe (small dataset, but demonstrates the workflow)
-probe = pl.probes.Logistic()
-probe.fit(prepared, custom_dataset.labels)
+# Train probe and evaluate (small dataset, but demonstrates the workflow)
+probe = pl.probes.Logistic().fit(prepared, custom_dataset.labels)
 print(f"\nProbe fitted: {probe}")
 
 # Quick evaluation on training data (just to show it works)

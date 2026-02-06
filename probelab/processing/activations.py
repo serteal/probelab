@@ -13,9 +13,8 @@ from typing import TYPE_CHECKING, Generator, Iterable
 
 import torch
 
+from .. import pool as P
 from ..models import HookedModel
-from ..types import AggregationMethod
-from ..utils.pooling import _masked_pool
 
 if TYPE_CHECKING:
     from transformers import PreTrainedModel
@@ -42,14 +41,14 @@ class SequenceMeta:
     input_ids: torch.Tensor
 
 
-_DEFAULT_AXES: tuple[Axis, ...] = (Axis.LAYER, Axis.BATCH, Axis.SEQ, Axis.HIDDEN)
+_DEFAULT_AXES: tuple[Axis, ...] = (Axis.BATCH, Axis.LAYER, Axis.SEQ, Axis.HIDDEN)
 
 
 def _ensure_canonical_axes(axes: tuple[Axis, ...]) -> tuple[Axis, ...]:
     allowed = tuple(axis for axis in _DEFAULT_AXES if axis in axes)
     if allowed != axes:
         raise ValueError(
-            "axes must be an ordered subset of (Axis.LAYER, Axis.BATCH, Axis.SEQ, Axis.HIDDEN)"
+            "axes must be an ordered subset of (Axis.BATCH, Axis.LAYER, Axis.SEQ, Axis.HIDDEN)"
         )
     return axes
 
@@ -154,7 +153,7 @@ class Activations:
         Supports:
         - 2D [batch, hidden]: Already pooled (no SEQ axis)
         - 3D [batch, seq, hidden]: Single layer with sequence
-        - 4D [layer, batch, seq, hidden]: Multiple layers with sequence
+        - 4D [batch, layer, seq, hidden]: Multiple layers with sequence
         """
         if activations.ndim == 2:
             # [batch, hidden] - already pooled, no SEQ or LAYER axis
@@ -167,19 +166,19 @@ class Activations:
             )
         elif activations.ndim == 3:
             batch_size, seq_len, hidden_size = activations.shape
-            activations = activations.unsqueeze(0)
-            axes = (Axis.LAYER, Axis.BATCH, Axis.SEQ, Axis.HIDDEN)
+            activations = activations.unsqueeze(1)  # [batch, 1, seq, hidden]
+            axes = (Axis.BATCH, Axis.LAYER, Axis.SEQ, Axis.HIDDEN)
             if layer_indices is None:
                 layer_indices = [0]
         elif activations.ndim == 4:
-            n_layers, batch_size, seq_len, hidden_size = activations.shape
-            axes = (Axis.LAYER, Axis.BATCH, Axis.SEQ, Axis.HIDDEN)
+            batch_size, n_layers, seq_len, hidden_size = activations.shape
+            axes = (Axis.BATCH, Axis.LAYER, Axis.SEQ, Axis.HIDDEN)
             if layer_indices is None:
                 layer_indices = list(range(n_layers))
         else:
             raise ValueError(
                 f"Expected 2D [batch, hidden], 3D [batch, seq, hidden], "
-                f"or 4D [layer, batch, seq, hidden] tensor, got shape {activations.shape}"
+                f"or 4D [batch, layer, seq, hidden] tensor, got shape {activations.shape}"
             )
 
         if attention_mask is None:
@@ -217,12 +216,16 @@ class Activations:
         layer_indices: list[int] | int | None = None,
         batch_indices: torch.Tensor | None = None,
     ) -> "Activations":
-        """Create Activations from hidden states (tensor, tuple of tensors, or nested tuple)."""
+        """Create Activations from hidden states (tensor, tuple of tensors, or nested tuple).
+
+        Input format follows transformer convention: [layer, batch, seq, hidden].
+        Output is normalized to [batch, layer, seq, hidden].
+        """
         # Normalize layer_indices to list
         if isinstance(layer_indices, int):
             layer_indices = [layer_indices]
 
-        # Convert to 4D tensor [layer, batch, seq, hidden]
+        # Convert to 4D tensor [layer, batch, seq, hidden] (transformer convention)
         if isinstance(hidden_states, torch.Tensor):
             if hidden_states.ndim != 4:
                 raise ValueError(f"Expected 4D tensor [layer, batch, seq, hidden], got {hidden_states.shape}")
@@ -246,6 +249,9 @@ class Activations:
                 raise TypeError(f"Expected tuple of Tensors or tuples, got tuple of {type(first)}")
         else:
             raise TypeError(f"hidden_states must be tensor or non-empty tuple, got {type(hidden_states)}")
+
+        # Transpose from [layer, batch, seq, hidden] to [batch, layer, seq, hidden]
+        tensor = tensor.transpose(0, 1)
 
         return cls.from_tensor(
             activations=tensor,
@@ -538,22 +544,16 @@ class Activations:
         self,
         dim: Axis | Literal["sequence", "seq", "layer"] = Axis.SEQ,
         method: str = "mean",
-        *,
-        alpha: float = 0.5,
-        window_size: int = 10,
+        **kwargs,
     ) -> "Activations":
         """Pool over a dimension, removing that axis.
 
+        Dispatches to pl.pool.<method> functions. See pl.pool for available methods.
+
         Args:
             dim: Dimension to pool over - Axis.SEQ, Axis.LAYER, or string
-            method: Pooling method:
-                - "mean": Average over valid positions
-                - "max": Maximum over valid positions
-                - "last_token": Last valid position only
-                - "ema": Exponential moving average, then max
-                - "rolling": Rolling window mean, then max
-            alpha: EMA smoothing factor in (0, 1]
-            window_size: Rolling window size (>= 1)
+            method: Pooling method name (mean, max, last_token, ema, rolling)
+            **kwargs: Method-specific arguments (e.g., alpha=0.5 for ema)
 
         Returns:
             Activations with pooled dimension removed
@@ -569,32 +569,33 @@ class Activations:
         else:
             axis = dim
 
-        # Convert method string to enum
-        if isinstance(method, str):
-            try:
-                method_enum = AggregationMethod(method)
-            except ValueError:
-                raise ValueError(f"Unknown pooling method: {method}. Supported: {[m.value for m in AggregationMethod]}")
-        else:
-            method_enum = method
-
         if axis == Axis.SEQ:
-            reduced = self._reduce_sequence(method_enum, alpha=alpha, window_size=window_size)
+            # Get the pool function
+            try:
+                pool_fn = getattr(P, method)
+            except AttributeError:
+                available = [name for name in dir(P) if not name.startswith("_")]
+                raise ValueError(f"Unknown pooling method: {method}. Available: {available}")
+
+            seq_meta = self._require_sequence_meta()
+            seq_dim = self._axis_positions[Axis.SEQ]
+
+            with torch.no_grad():
+                reduced = pool_fn(self.activations, seq_meta.detection_mask, dim=seq_dim, **kwargs)
+
             new_axes = tuple(ax for ax in self.axes if ax != Axis.SEQ)
             return Activations(activations=reduced, axes=new_axes, layer_meta=self.layer_meta,
                              sequence_meta=None, batch_indices=self.batch_indices)
 
         elif axis == Axis.LAYER:
-            if method_enum in (AggregationMethod.LAST_TOKEN, AggregationMethod.EMA, AggregationMethod.ROLLING):
+            if method not in ("mean", "max"):
                 raise ValueError(f"'{method}' pooling is only supported for sequence dimension")
 
             dim_idx = self._axis_positions[Axis.LAYER]
-            if method_enum == AggregationMethod.MEAN:
+            if method == "mean":
                 reduced = self.activations.mean(dim=dim_idx)
-            elif method_enum == AggregationMethod.MAX:
+            else:  # max
                 reduced = self.activations.max(dim=dim_idx).values
-            else:
-                raise ValueError(f"Unknown pooling method: {method}")
 
             new_axes = tuple(ax for ax in self.axes if ax != Axis.LAYER)
             return Activations(activations=reduced, axes=new_axes, layer_meta=None,
@@ -625,17 +626,6 @@ class Activations:
 
         return features, tokens_per_sample.to(device=acts.device)
 
-    def _reduce_sequence(self, method: AggregationMethod | str, alpha: float = 0.5, window_size: int = 10) -> torch.Tensor:
-        """Reduce sequence dimension using specified method."""
-        with torch.no_grad():
-            seq_meta = self._require_sequence_meta()
-            detection_mask = seq_meta.detection_mask
-            batch_dim = self._axis_positions[Axis.BATCH]
-            seq_dim = self._axis_positions[Axis.SEQ]
-            return _masked_pool(
-                tensor=self.activations, mask=detection_mask, method=method,
-                seq_dim=seq_dim, batch_dim=batch_dim, alpha=alpha, window_size=window_size
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -729,45 +719,75 @@ def collect_activations(
         pool: Optional pooling over sequence ("mean", "max", "last_token").
 
     Returns:
-        Activations with shape [layers, batch, seq, hidden] or
-        [layers, batch, hidden] if pooled.
+        Activations with shape:
+        - Single layer: [batch, seq, hidden] or [batch, hidden] if pooled
+        - Multiple layers: [batch, layer, seq, hidden] or [batch, layer, hidden] if pooled
     """
     layers = [layers] if isinstance(layers, int) else list(layers)
+    single_layer = len(layers) == 1
     n, max_seq, d = len(tokens), tokens.seq_len, _hidden_dim(model)
 
     if pool:
-        method = AggregationMethod(pool)
-        out = torch.zeros(len(layers), n, d, dtype=model.dtype)
+        pool_fn = getattr(P, pool, None)
+        if pool_fn is None:
+            available = [name for name in dir(P) if not name.startswith("_")]
+            raise ValueError(f"Unknown pooling method: {pool}. Available: {available}")
+        # Collect as [batch, layer, hidden]
+        out = torch.zeros(n, len(layers), d, dtype=model.dtype)
         for acts, idx, sl in stream_activations(model, tokens, layers, batch_size):
+            # acts is [layer, batch_chunk, seq, hidden], transpose to [batch_chunk, layer, seq, hidden]
+            acts_t = acts.transpose(0, 1)
             if tokens.padding_side == "right":
                 mask = tokens.detection_mask[idx, :sl]
             else:
                 mask = tokens.detection_mask[idx, -sl:]
-            out[:, idx] = masked_pool(acts, mask, method, seq_dim=2, batch_dim=1)
+            # Pool over seq (dim=2), batch is at dim=0
+            out[idx] = pool_fn(acts_t, mask, dim=2)
 
+        if single_layer:
+            return Activations(
+                activations=out.squeeze(1),
+                axes=(Axis.BATCH, Axis.HIDDEN),
+                layer_meta=None,
+                sequence_meta=None,
+                batch_indices=torch.arange(n, dtype=torch.long),
+            )
         return Activations(
             activations=out,
-            axes=(Axis.LAYER, Axis.BATCH, Axis.HIDDEN),
+            axes=(Axis.BATCH, Axis.LAYER, Axis.HIDDEN),
             layer_meta=LayerMeta(tuple(layers)),
             sequence_meta=None,
             batch_indices=torch.arange(n, dtype=torch.long),
         )
 
-    out = torch.zeros(len(layers), n, max_seq, d, dtype=model.dtype)
+    # Collect as [batch, layer, seq, hidden]
+    out = torch.zeros(n, len(layers), max_seq, d, dtype=model.dtype)
     for acts, idx, sl in stream_activations(model, tokens, layers, batch_size):
+        # acts is [layer, batch_chunk, seq, hidden], transpose to [batch_chunk, layer, seq, hidden]
+        acts_t = acts.transpose(0, 1)
         if tokens.padding_side == "right":
-            out[:, idx, :sl] = acts
+            out[idx, :, :sl] = acts_t
         else:
-            out[:, idx, -sl:] = acts
+            out[idx, :, -sl:] = acts_t
 
+    seq_meta = SequenceMeta(
+        attention_mask=tokens.attention_mask,
+        detection_mask=tokens.detection_mask,
+        input_ids=tokens.input_ids,
+    )
+
+    if single_layer:
+        return Activations(
+            activations=out.squeeze(1),
+            axes=(Axis.BATCH, Axis.SEQ, Axis.HIDDEN),
+            layer_meta=None,
+            sequence_meta=seq_meta,
+            batch_indices=torch.arange(n, dtype=torch.long),
+        )
     return Activations(
         activations=out,
         axes=_DEFAULT_AXES,
         layer_meta=LayerMeta(tuple(layers)),
-        sequence_meta=SequenceMeta(
-            attention_mask=tokens.attention_mask,
-            detection_mask=tokens.detection_mask,
-            input_ids=tokens.input_ids,
-        ),
+        sequence_meta=seq_meta,
         batch_indices=torch.arange(n, dtype=torch.long),
     )

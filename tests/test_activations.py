@@ -9,7 +9,8 @@ from probelab.processing.activations import Activations, Axis
 
 class TestActivationsConstruction(unittest.TestCase):
     def test_from_tensor_4d(self):
-        t = torch.randn(2, 4, 8, 16)
+        # [batch, layer, seq, hidden]
+        t = torch.randn(4, 2, 8, 16)
         a = Activations.from_tensor(
             t,
             attention_mask=torch.ones(4, 8),
@@ -17,7 +18,7 @@ class TestActivationsConstruction(unittest.TestCase):
             detection_mask=torch.ones(4, 8),
             layer_indices=[0, 1],
         )
-        self.assertEqual(a.shape, (2, 4, 8, 16))
+        self.assertEqual(a.shape, (4, 2, 8, 16))
         self.assertEqual(a.n_layers, 2)
         self.assertEqual(a.batch_size, 4)
         self.assertEqual(a.seq_len, 8)
@@ -31,7 +32,7 @@ class TestActivationsConstruction(unittest.TestCase):
             input_ids=torch.ones(4, 8, dtype=torch.long),
             detection_mask=torch.ones(4, 8),
         )
-        self.assertEqual(a.shape, (1, 4, 8, 16))
+        self.assertEqual(a.shape, (4, 1, 8, 16))
         self.assertEqual(a.n_layers, 1)
 
     def test_from_tensor_2d_pooled(self):
@@ -46,7 +47,8 @@ class TestActivationsConstruction(unittest.TestCase):
         self.assertIsNone(a.sequence_meta)
 
     def test_layer_indices_default(self):
-        t = torch.randn(3, 4, 8, 16)
+        # [batch, layer, seq, hidden]
+        t = torch.randn(4, 3, 8, 16)
         a = Activations.from_tensor(
             t,
             attention_mask=torch.ones(4, 8),
@@ -56,7 +58,8 @@ class TestActivationsConstruction(unittest.TestCase):
         self.assertEqual(a.layer_indices, [0, 1, 2])
 
     def test_layer_indices_custom(self):
-        t = torch.randn(2, 4, 8, 16)
+        # [batch, layer, seq, hidden]
+        t = torch.randn(4, 2, 8, 16)
         a = Activations.from_tensor(
             t,
             attention_mask=torch.ones(4, 8),
@@ -67,7 +70,8 @@ class TestActivationsConstruction(unittest.TestCase):
         self.assertEqual(a.layer_indices, [5, 10])
 
     def test_batch_indices_default(self):
-        t = torch.randn(1, 4, 8, 16)
+        # [batch, layer, seq, hidden]
+        t = torch.randn(4, 1, 8, 16)
         a = Activations.from_tensor(
             t,
             attention_mask=torch.ones(4, 8),
@@ -78,7 +82,8 @@ class TestActivationsConstruction(unittest.TestCase):
         self.assertIsNone(a.batch_indices)
 
     def test_batch_indices_custom(self):
-        t = torch.randn(1, 4, 8, 16)
+        # [batch, layer, seq, hidden]
+        t = torch.randn(4, 1, 8, 16)
         a = Activations.from_tensor(
             t,
             attention_mask=torch.ones(4, 8),
@@ -91,7 +96,8 @@ class TestActivationsConstruction(unittest.TestCase):
 
 class TestActivationsAxes(unittest.TestCase):
     def _acts(self, n_layers=2, batch=4, seq=8, d_model=16, layer_indices=None):
-        t = torch.randn(n_layers, batch, seq, d_model)
+        # [batch, layer, seq, hidden]
+        t = torch.randn(batch, n_layers, seq, d_model)
         return Activations.from_tensor(
             t,
             attention_mask=torch.ones(batch, seq),
@@ -136,7 +142,8 @@ class TestActivationsAxes(unittest.TestCase):
 class TestActivationsSelect(unittest.TestCase):
     def _acts(self, layer_indices):
         n = len(layer_indices)
-        t = torch.arange(n * 4 * 8 * 16).reshape(n, 4, 8, 16).float()
+        # [batch, layer, seq, hidden]
+        t = torch.arange(4 * n * 8 * 16).reshape(4, n, 8, 16).float()
         return Activations.from_tensor(
             t,
             attention_mask=torch.ones(4, 8),
@@ -152,7 +159,7 @@ class TestActivationsSelect(unittest.TestCase):
         self.assertFalse(s.has_axis(Axis.LAYER))
         # When LAYER axis is removed, layer_indices is empty
         self.assertEqual(s.layer_indices, [])
-        # Shape should be [batch, seq, hidden] instead of [layer, batch, seq, hidden]
+        # Shape should be [batch, seq, hidden]
         self.assertEqual(len(s.shape), 3)
 
     def test_select_multiple_layers(self):
@@ -165,7 +172,7 @@ class TestActivationsSelect(unittest.TestCase):
     def test_select_preserves_data(self):
         a = self._acts([0, 5, 10])
         s = a.select(layer=5)
-        expected = a.activations[1]  # layer 5 is at index 1
+        expected = a.activations[:, 1]  # layer 5 is at index 1, batch is first
         self.assertTrue(torch.equal(s.activations, expected))
 
     def test_select_invalid_layer_raises(self):
@@ -183,7 +190,8 @@ class TestActivationsSelect(unittest.TestCase):
 
 class TestActivationsPool(unittest.TestCase):
     def _acts(self, det_mask=None):
-        t = torch.ones(1, 2, 8, 4)  # 1 layer, 2 batch, 8 seq, 4 hidden
+        # [batch, layer, seq, hidden]
+        t = torch.ones(2, 1, 8, 4)  # 2 batch, 1 layer, 8 seq, 4 hidden
         if det_mask is None:
             det_mask = torch.ones(2, 8)
         return Activations.from_tensor(
@@ -198,23 +206,24 @@ class TestActivationsPool(unittest.TestCase):
         a = self._acts()
         p = a.pool(dim="sequence", method="mean")
         self.assertFalse(p.has_axis(Axis.SEQ))
-        self.assertEqual(p.shape, (1, 2, 4))
+        self.assertEqual(p.shape, (2, 1, 4))
 
     def test_pool_max_removes_seq_axis(self):
         a = self._acts()
         p = a.pool(dim="sequence", method="max")
         self.assertFalse(p.has_axis(Axis.SEQ))
-        self.assertEqual(p.shape, (1, 2, 4))
+        self.assertEqual(p.shape, (2, 1, 4))
 
     def test_pool_last_token_removes_seq_axis(self):
         a = self._acts()
         p = a.pool(dim="sequence", method="last_token")
         self.assertFalse(p.has_axis(Axis.SEQ))
-        self.assertEqual(p.shape, (1, 2, 4))
+        self.assertEqual(p.shape, (2, 1, 4))
 
     def test_pool_mean_uses_detection_mask(self):
         det = torch.tensor([[1, 1, 0, 0, 0, 0, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]]).float()
-        t = torch.arange(64).reshape(1, 2, 8, 4).float()
+        # [batch, layer, seq, hidden]
+        t = torch.arange(64).reshape(2, 1, 8, 4).float()
         a = Activations.from_tensor(
             t,
             attention_mask=torch.ones(2, 8),
@@ -227,12 +236,13 @@ class TestActivationsPool(unittest.TestCase):
         expected_0 = t[0, 0, :2].mean(dim=0)
         self.assertTrue(torch.allclose(p.activations[0, 0], expected_0))
         # Second sample: mean of tokens 0,1,2,3
-        expected_1 = t[0, 1, :4].mean(dim=0)
-        self.assertTrue(torch.allclose(p.activations[0, 1], expected_1))
+        expected_1 = t[1, 0, :4].mean(dim=0)
+        self.assertTrue(torch.allclose(p.activations[1, 0], expected_1))
 
     def test_pool_last_token_uses_detection_mask(self):
         det = torch.tensor([[1, 1, 1, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 0, 0, 0]]).float()
-        t = torch.arange(64).reshape(1, 2, 8, 4).float()
+        # [batch, layer, seq, hidden]
+        t = torch.arange(64).reshape(2, 1, 8, 4).float()
         a = Activations.from_tensor(
             t,
             attention_mask=torch.ones(2, 8),
@@ -244,10 +254,11 @@ class TestActivationsPool(unittest.TestCase):
         # First sample: last valid at index 2
         self.assertTrue(torch.allclose(p.activations[0, 0], t[0, 0, 2]))
         # Second sample: last valid at index 4
-        self.assertTrue(torch.allclose(p.activations[0, 1], t[0, 1, 4]))
+        self.assertTrue(torch.allclose(p.activations[1, 0], t[1, 0, 4]))
 
     def test_pool_multi_layer(self):
-        t = torch.randn(3, 2, 8, 4)  # 3 layers
+        # [batch, layer, seq, hidden]
+        t = torch.randn(2, 3, 8, 4)  # 2 batch, 3 layers
         a = Activations.from_tensor(
             t,
             attention_mask=torch.ones(2, 8),
@@ -256,17 +267,18 @@ class TestActivationsPool(unittest.TestCase):
             layer_indices=[0, 5, 10],
         )
         p = a.pool(dim="sequence", method="mean")
-        self.assertEqual(p.shape, (3, 2, 4))
+        self.assertEqual(p.shape, (2, 3, 4))
         self.assertTrue(p.has_axis(Axis.LAYER))
 
     def test_pool_empty_mask_returns_zeros(self):
         det = torch.zeros(2, 8)
         a = self._acts(det_mask=det)
         p = a.pool(dim="sequence", method="mean")
-        self.assertTrue(torch.allclose(p.activations, torch.zeros(1, 2, 4)))
+        self.assertTrue(torch.allclose(p.activations, torch.zeros(2, 1, 4)))
 
     def test_pool_layer_mean(self):
-        t = torch.randn(3, 2, 8, 4)
+        # [batch, layer, seq, hidden]
+        t = torch.randn(2, 3, 8, 4)
         a = Activations.from_tensor(
             t,
             attention_mask=torch.ones(2, 8),
@@ -276,13 +288,14 @@ class TestActivationsPool(unittest.TestCase):
         )
         p = a.pool(dim="layer", method="mean")
         self.assertFalse(p.has_axis(Axis.LAYER))
-        expected = t.mean(dim=0)
+        expected = t.mean(dim=1)  # layer is now at dim 1
         self.assertTrue(torch.allclose(p.activations, expected))
 
 
 class TestActivationsExtractTokens(unittest.TestCase):
     def test_extract_tokens_basic(self):
-        t = torch.arange(64).reshape(1, 2, 8, 4).float()
+        # [batch, layer, seq, hidden]
+        t = torch.arange(64).reshape(2, 1, 8, 4).float()
         det = torch.tensor([[1, 1, 1, 0, 0, 0, 0, 0], [1, 1, 0, 0, 0, 0, 0, 0]]).float()
         a = Activations.from_tensor(
             t,
@@ -296,7 +309,8 @@ class TestActivationsExtractTokens(unittest.TestCase):
         self.assertEqual(tps.tolist(), [3, 2])
 
     def test_extract_tokens_requires_single_layer(self):
-        t = torch.randn(2, 4, 8, 16)
+        # [batch, layer, seq, hidden]
+        t = torch.randn(4, 2, 8, 16)
         a = Activations.from_tensor(
             t,
             attention_mask=torch.ones(4, 8),
@@ -308,7 +322,8 @@ class TestActivationsExtractTokens(unittest.TestCase):
             a.extract_tokens()
 
     def test_extract_tokens_empty_mask(self):
-        t = torch.randn(1, 2, 8, 4)
+        # [batch, layer, seq, hidden]
+        t = torch.randn(2, 1, 8, 4)
         det = torch.zeros(2, 8)
         a = Activations.from_tensor(
             t,
@@ -322,7 +337,8 @@ class TestActivationsExtractTokens(unittest.TestCase):
         self.assertEqual(tps.tolist(), [0, 0])
 
     def test_extract_tokens_correct_values(self):
-        t = torch.arange(64).reshape(1, 2, 8, 4).float()
+        # [batch, layer, seq, hidden]
+        t = torch.arange(64).reshape(2, 1, 8, 4).float()
         det = torch.tensor([[1, 1, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0]]).float()
         a = Activations.from_tensor(
             t,
@@ -335,12 +351,13 @@ class TestActivationsExtractTokens(unittest.TestCase):
         # First 2 from batch 0, then 1 from batch 1
         self.assertTrue(torch.equal(features[0], t[0, 0, 0]))
         self.assertTrue(torch.equal(features[1], t[0, 0, 1]))
-        self.assertTrue(torch.equal(features[2], t[0, 1, 0]))
+        self.assertTrue(torch.equal(features[2], t[1, 0, 0]))
 
 
 class TestActivationsDevice(unittest.TestCase):
     def _acts(self):
-        t = torch.randn(1, 2, 4, 8)
+        # [batch, layer, seq, hidden]
+        t = torch.randn(2, 1, 4, 8)
         return Activations.from_tensor(
             t,
             attention_mask=torch.ones(2, 4),
@@ -371,6 +388,7 @@ class TestActivationsDevice(unittest.TestCase):
 
 class TestActivationsEdgeCases(unittest.TestCase):
     def test_single_sample(self):
+        # [batch, layer, seq, hidden]
         t = torch.randn(1, 1, 8, 16)
         a = Activations.from_tensor(
             t,
@@ -384,7 +402,8 @@ class TestActivationsEdgeCases(unittest.TestCase):
         self.assertEqual(p.shape, (1, 1, 16))
 
     def test_single_token(self):
-        t = torch.randn(1, 2, 1, 16)
+        # [batch, layer, seq, hidden]
+        t = torch.randn(2, 1, 1, 16)
         a = Activations.from_tensor(
             t,
             attention_mask=torch.ones(2, 1),
@@ -394,10 +413,11 @@ class TestActivationsEdgeCases(unittest.TestCase):
         )
         self.assertEqual(a.seq_len, 1)
         p = a.pool(dim="sequence", method="max")
-        self.assertEqual(p.shape, (1, 2, 16))
+        self.assertEqual(p.shape, (2, 1, 16))
 
     def test_partial_detection_mask(self):
-        t = torch.ones(1, 3, 8, 4)
+        # [batch, layer, seq, hidden]
+        t = torch.ones(3, 1, 8, 4)
         det = torch.tensor(
             [
                 [1, 1, 1, 1, 0, 0, 0, 0],
@@ -413,9 +433,9 @@ class TestActivationsEdgeCases(unittest.TestCase):
             layer_indices=[0],
         )
         p = a.pool(dim="sequence", method="mean")
-        self.assertEqual(p.shape, (1, 3, 4))
+        self.assertEqual(p.shape, (3, 1, 4))
         # Second sample should be zeros (no valid tokens)
-        self.assertTrue(torch.allclose(p.activations[0, 1], torch.zeros(4)))
+        self.assertTrue(torch.allclose(p.activations[1, 0], torch.zeros(4)))
 
 
 class TestActivationsDtypes(unittest.TestCase):
@@ -423,7 +443,8 @@ class TestActivationsDtypes(unittest.TestCase):
 
     def _make_acts(self, tensor, **kwargs):
         """Helper to create activations with given tensor."""
-        batch, seq = tensor.shape[1] if tensor.ndim == 4 else tensor.shape[0], tensor.shape[-2]
+        # [batch, layer, seq, hidden] or [batch, seq, hidden]
+        batch, seq = tensor.shape[0], tensor.shape[-2]
         defaults = {
             "attention_mask": torch.ones(batch, seq),
             "input_ids": torch.ones(batch, seq, dtype=torch.long),
@@ -483,32 +504,32 @@ class TestActivationsDtypes(unittest.TestCase):
     # --- Mask dtype tests ---
 
     def test_detection_mask_float32(self):
-        t = torch.randn(1, 2, 4, 8)
-        det = torch.ones(2, 4, dtype=torch.float32)
+        t = torch.randn(1, 2, 4, 8)  # [batch=1, layer=2, seq=4, hidden=8]
+        det = torch.ones(1, 4, dtype=torch.float32)  # [batch=1, seq=4]
         a = self._make_acts(t, detection_mask=det)
         self.assertEqual(a.detection_mask.dtype, torch.float32)
 
     def test_detection_mask_float64(self):
         t = torch.randn(1, 2, 4, 8)
-        det = torch.ones(2, 4, dtype=torch.float64)
+        det = torch.ones(1, 4, dtype=torch.float64)
         a = self._make_acts(t, detection_mask=det)
         self.assertEqual(a.detection_mask.dtype, torch.float64)
 
     def test_detection_mask_bool(self):
         t = torch.randn(1, 2, 4, 8)
-        det = torch.ones(2, 4, dtype=torch.bool)
+        det = torch.ones(1, 4, dtype=torch.bool)
         a = self._make_acts(t, detection_mask=det)
         self.assertEqual(a.detection_mask.dtype, torch.bool)
 
     def test_detection_mask_int32(self):
         t = torch.randn(1, 2, 4, 8)
-        det = torch.ones(2, 4, dtype=torch.int32)
+        det = torch.ones(1, 4, dtype=torch.int32)
         a = self._make_acts(t, detection_mask=det)
         self.assertEqual(a.detection_mask.dtype, torch.int32)
 
     def test_attention_mask_float32(self):
         t = torch.randn(1, 2, 4, 8)
-        attn = torch.ones(2, 4, dtype=torch.float32)
+        attn = torch.ones(1, 4, dtype=torch.float32)
         a = self._make_acts(t, attention_mask=attn)
         self.assertEqual(a.attention_mask.dtype, torch.float32)
 
@@ -516,19 +537,19 @@ class TestActivationsDtypes(unittest.TestCase):
 
     def test_input_ids_int64(self):
         t = torch.randn(1, 2, 4, 8)
-        ids = torch.ones(2, 4, dtype=torch.int64)
+        ids = torch.ones(1, 4, dtype=torch.int64)
         a = self._make_acts(t, input_ids=ids)
         self.assertEqual(a.input_ids.dtype, torch.int64)
 
     def test_input_ids_int32(self):
         t = torch.randn(1, 2, 4, 8)
-        ids = torch.ones(2, 4, dtype=torch.int32)
+        ids = torch.ones(1, 4, dtype=torch.int32)
         a = self._make_acts(t, input_ids=ids)
         self.assertEqual(a.input_ids.dtype, torch.int32)
 
     def test_input_ids_float_raises(self):
         t = torch.randn(1, 2, 4, 8)
-        ids = torch.ones(2, 4, dtype=torch.float32)
+        ids = torch.ones(1, 4, dtype=torch.float32)
         with self.assertRaises(ValueError):
             self._make_acts(t, input_ids=ids)
 
@@ -553,7 +574,7 @@ class TestActivationsDtypes(unittest.TestCase):
         self.assertEqual(s.activations.dtype, torch.float16)
 
     def test_extract_tokens_preserves_dtype(self):
-        t = torch.randn(1, 2, 4, 8, dtype=torch.float64)
+        t = torch.randn(1, 1, 4, 8, dtype=torch.float64)  # [batch=1, layer=1, seq=4, hidden=8]
         a = self._make_acts(t)
         features, _ = a.extract_tokens()
         self.assertEqual(features.dtype, torch.float64)
@@ -570,7 +591,8 @@ class TestActivationsDtypes(unittest.TestCase):
 class TestLayerTensorIndices(unittest.TestCase):
     def _acts(self, layer_indices):
         n = len(layer_indices)
-        t = torch.randn(n, 2, 4, 8)
+        # [batch, layer, seq, hidden]
+        t = torch.randn(2, n, 4, 8)
         return Activations.from_tensor(
             t,
             attention_mask=torch.ones(2, 4),
@@ -597,18 +619,20 @@ class TestFromHiddenStates(unittest.TestCase):
     """Tests for the simplified from_hidden_states method."""
 
     def test_from_tensor_4d(self):
+        # from_hidden_states expects [layer, batch, seq, hidden] (transformer output format)
+        # and converts internally to [batch, layer, seq, hidden]
         t = torch.randn(3, 4, 8, 16)  # [layer, batch, seq, hidden]
         a = Activations.from_hidden_states(t, attention_mask=torch.ones(4, 8),
                                             input_ids=torch.ones(4, 8, dtype=torch.long))
-        self.assertEqual(a.shape, (3, 4, 8, 16))
+        self.assertEqual(a.shape, (4, 3, 8, 16))  # [batch, layer, seq, hidden]
         self.assertEqual(a.layer_indices, [0, 1, 2])
 
     def test_from_tuple_of_tensors(self):
-        # Tuple of tensors: one per layer
+        # Tuple of tensors: one per layer, each [batch, seq, hidden]
         layers = tuple(torch.randn(4, 8, 16) for _ in range(3))
         a = Activations.from_hidden_states(layers, attention_mask=torch.ones(4, 8),
                                             input_ids=torch.ones(4, 8, dtype=torch.long))
-        self.assertEqual(a.shape, (3, 4, 8, 16))
+        self.assertEqual(a.shape, (4, 3, 8, 16))  # [batch, layer, seq, hidden]
         self.assertEqual(a.layer_indices, [0, 1, 2])
 
     def test_from_tuple_of_tensors_with_layer_selection(self):
@@ -616,7 +640,7 @@ class TestFromHiddenStates(unittest.TestCase):
         a = Activations.from_hidden_states(layers, layer_indices=[1, 3],
                                             attention_mask=torch.ones(4, 8),
                                             input_ids=torch.ones(4, 8, dtype=torch.long))
-        self.assertEqual(a.shape, (2, 4, 8, 16))
+        self.assertEqual(a.shape, (4, 2, 8, 16))  # [batch, layer, seq, hidden]
         self.assertEqual(a.layer_indices, [1, 3])
 
     def test_from_nested_tuple(self):
@@ -627,7 +651,7 @@ class TestFromHiddenStates(unittest.TestCase):
         )
         a = Activations.from_hidden_states(steps, attention_mask=torch.ones(1, 8),
                                             input_ids=torch.ones(1, 8, dtype=torch.long))
-        self.assertEqual(a.shape, (3, 1, 8, 16))  # Concatenated along seq dim
+        self.assertEqual(a.shape, (1, 3, 8, 16))  # [batch, layer, seq, hidden]
         self.assertEqual(a.layer_indices, [0, 1, 2])
 
     def test_layer_indices_as_int(self):
@@ -635,7 +659,7 @@ class TestFromHiddenStates(unittest.TestCase):
         a = Activations.from_hidden_states(layers, layer_indices=2,
                                             attention_mask=torch.ones(4, 8),
                                             input_ids=torch.ones(4, 8, dtype=torch.long))
-        self.assertEqual(a.shape, (1, 4, 8, 16))
+        self.assertEqual(a.shape, (4, 1, 8, 16))  # [batch, layer, seq, hidden]
         self.assertEqual(a.layer_indices, [2])
 
     def test_invalid_tensor_shape_raises(self):

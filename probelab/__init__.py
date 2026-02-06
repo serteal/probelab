@@ -1,7 +1,7 @@
 """probelab: A library for training classifiers on LLM activations."""
 
 # Submodules (for pl.submodule.X access)
-from . import datasets, masks, metrics, probes, processing, types, utils
+from . import datasets, masks, metrics, pool, probes, processing, types, utils
 
 # Primary API
 from .processing import Activations
@@ -17,6 +17,7 @@ __all__ = [
     "masks",
     "datasets",
     "metrics",
+    "pool",
     "utils",
     "types",
 ]

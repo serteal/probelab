@@ -53,11 +53,10 @@ test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.a
 train_acts = pl.processing.collect_activations(model, train_tokens, layers=[LAYER])
 test_acts = pl.processing.collect_activations(model, test_tokens, layers=[LAYER])
 
-train_prepared = train_acts.select(layer=LAYER).pool("sequence", "mean")
-test_prepared = test_acts.select(layer=LAYER).pool("sequence", "mean")
+train_prepared = train_acts.pool("sequence", "mean")
+test_prepared = test_acts.pool("sequence", "mean")
 
-probe = pl.probes.Logistic()
-probe.fit(train_prepared, train_ds.labels)
+probe = pl.probes.Logistic().fit(train_prepared, train_ds.labels)
 
 probs = probe.predict(test_prepared)
 pre_auroc = pl.metrics.auroc(test_ds.labels, probs)
@@ -174,9 +173,9 @@ print("\n--- Step 5: Evaluation ---")
 
 peft_model.eval()
 
-# Collect new activations from fine-tuned model
+# Collect new activations from fine-tuned model (single layer, no LAYER axis)
 test_acts_new = pl.processing.collect_activations(peft_model, test_tokens, layers=[LAYER])
-test_prepared_new = test_acts_new.select(layer=LAYER).pool("sequence", "mean")
+test_prepared_new = test_acts_new.pool("sequence", "mean")
 
 # Evaluate with same probe
 probs_new = probe.predict(test_prepared_new)

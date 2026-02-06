@@ -44,18 +44,15 @@ print(f"\nCollecting activations from layer {LAYER}...")
 train_acts = pl.processing.collect_activations(model, train_tokens, layers=[LAYER], batch_size=8)
 test_acts = pl.processing.collect_activations(model, test_tokens, layers=[LAYER], batch_size=8)
 
-# Prepare: select layer, pool sequence dimension
-train_prepared = train_acts.select(layer=LAYER).pool("sequence", "mean")
-test_prepared = test_acts.select(layer=LAYER).pool("sequence", "mean")
+# Pool sequence dimension (single layer already has no LAYER axis)
+train_prepared = train_acts.pool("sequence", "mean")
+test_prepared = test_acts.pool("sequence", "mean")
 
 print(f"Prepared shapes: train={train_prepared.shape}, test={test_prepared.shape}")
 
-# Train probe
+# Train probe and evaluate
 print("\nTraining Logistic probe...")
-probe = pl.probes.Logistic(C=1.0)
-probe.fit(train_prepared, train_ds.labels)
-
-# Evaluate
+probe = pl.probes.Logistic(C=1.0).fit(train_prepared, train_ds.labels)
 scores = probe.predict(test_prepared)
 auroc = pl.metrics.auroc(test_ds.labels, scores)
 accuracy = pl.metrics.accuracy(test_ds.labels, scores)

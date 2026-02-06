@@ -12,9 +12,9 @@ class TestCheckActivations:
 
     @pytest.fixture
     def activations_4d(self):
-        """Create 4D activations [layer, batch, seq, hidden]."""
+        """Create 4D activations [batch, layer, seq, hidden]."""
         return Activations.from_tensor(
-            torch.randn(2, 4, 10, 32),  # [layer, batch, seq, hidden]
+            torch.randn(4, 2, 10, 32),  # [batch, layer, seq, hidden]
             layer_indices=[0, 1],
         )
 
@@ -22,7 +22,7 @@ class TestCheckActivations:
     def activations_3d(self):
         """Create 3D activations [batch, seq, hidden] (single layer, axis removed)."""
         acts_4d = Activations.from_tensor(
-            torch.randn(1, 4, 10, 32),
+            torch.randn(4, 1, 10, 32),  # [batch, layer, seq, hidden]
             layer_indices=[0],
         )
         return acts_4d.select(layer=0)  # Remove LAYER axis
@@ -31,7 +31,7 @@ class TestCheckActivations:
     def activations_no_seq(self):
         """Create activations without SEQ axis."""
         acts = Activations.from_tensor(
-            torch.randn(1, 4, 10, 32),
+            torch.randn(4, 1, 10, 32),  # [batch, layer, seq, hidden]
             layer_indices=[0],
         )
         return acts.select(layer=0).pool(dim="sequence", method="mean")
@@ -108,7 +108,7 @@ class TestCheckActivations:
 
     def test_ensure_finite_fails_nan(self):
         """ensure_finite=True fails when NaN present."""
-        tensor = torch.randn(1, 4, 10, 32)
+        tensor = torch.randn(4, 1, 10, 32)  # [batch, layer, seq, hidden]
         tensor[0, 0, 0, 0] = float("nan")
         acts = Activations.from_tensor(tensor, layer_indices=[0])
         with pytest.raises(ValueError, match="non-finite values"):
@@ -116,7 +116,7 @@ class TestCheckActivations:
 
     def test_ensure_finite_fails_inf(self):
         """ensure_finite=True fails when Inf present."""
-        tensor = torch.randn(1, 4, 10, 32)
+        tensor = torch.randn(4, 1, 10, 32)  # [batch, layer, seq, hidden]
         tensor[0, 0, 0, 0] = float("inf")
         acts = Activations.from_tensor(tensor, layer_indices=[0])
         with pytest.raises(ValueError, match="non-finite values"):

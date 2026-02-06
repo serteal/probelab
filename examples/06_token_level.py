@@ -4,12 +4,12 @@ Instead of pooling activations before training, this example trains
 on individual tokens and aggregates predictions afterward. Useful
 for understanding when harmful content appears in responses.
 
-Score aggregation methods (via pl.utils.pool):
-- pool(x, mask, "mean"): Simple average over tokens
-- pool(x, mask, "max"): Maximum score (any token triggers)
-- pool(x, mask, "last_token"): Last token only
-- pool(x, mask, "ema", alpha=0.5): Exponential moving average, then max
-- pool(x, mask, "rolling", window_size=10): Rolling window mean, then max
+Score aggregation methods (via pl.pool):
+- pl.pool.mean(x, mask): Simple average over tokens
+- pl.pool.max(x, mask): Maximum score (any token triggers)
+- pl.pool.last_token(x, mask): Last token only
+- pl.pool.ema(x, mask, alpha=0.5): Exponential moving average, then max
+- pl.pool.rolling(x, mask, window_size=10): Rolling window mean, then max
 """
 
 import torch
@@ -42,30 +42,25 @@ print(f"Test: {test_ds}")
 train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
 test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
-# Collect activations (keep SEQ axis)
+# Collect activations (single layer returns no LAYER axis, keeps SEQ)
 print(f"\nCollecting activations from layer {LAYER}...")
 train_acts = pl.processing.collect_activations(model, train_tokens, layers=[LAYER])
 test_acts = pl.processing.collect_activations(model, test_tokens, layers=[LAYER])
 
-# Select layer but DON'T pool - keep token dimension
-train_tokens_acts = train_acts.select(layer=LAYER)  # [batch, seq, hidden]
-test_tokens_acts = test_acts.select(layer=LAYER)
-
-print(f"Token-level activations shape: {train_tokens_acts.shape}")
+print(f"Token-level activations shape: {train_acts.shape}")
 
 # Train probe on tokens (Logistic handles this automatically)
 # Each token gets the sample's label during training
-probe = pl.probes.Logistic()
-probe.fit(train_tokens_acts, train_ds.labels)
+probe = pl.probes.Logistic().fit(train_acts, train_ds.labels)
 
 print(f"Probe: {probe}")
 
 # Predict on test tokens - returns [batch, seq] directly!
-token_probs = probe.predict(test_tokens_acts)
+token_probs = probe.predict(test_acts)
 print(f"Token-level probs shape: {token_probs.shape}")
 
 # Get mask from activations
-mask = test_tokens_acts.detection_mask.bool()
+mask = test_acts.detection_mask.bool()
 
 print("\n" + "=" * 55)
 print(f"{'Aggregation':<15} {'AUROC':<12} {'Recall@5%':<12}")
@@ -74,21 +69,21 @@ print("=" * 55)
 results = {}
 
 # Mean pooling
-pooled = pl.utils.pool(token_probs, mask, "mean")
+pooled = pl.pool.mean(token_probs, mask)
 auroc = pl.metrics.auroc(test_ds.labels, pooled)
 recall = pl.metrics.recall_at_fpr(test_ds.labels, pooled, fpr=0.05)
 results["mean"] = {"auroc": auroc, "recall@5%": recall}
 print(f"{'mean':<15} {auroc:<12.4f} {recall:<12.4f}")
 
 # Max pooling
-pooled = pl.utils.pool(token_probs, mask, "max")
+pooled = pl.pool.max(token_probs, mask)
 auroc = pl.metrics.auroc(test_ds.labels, pooled)
 recall = pl.metrics.recall_at_fpr(test_ds.labels, pooled, fpr=0.05)
 results["max"] = {"auroc": auroc, "recall@5%": recall}
 print(f"{'max':<15} {auroc:<12.4f} {recall:<12.4f}")
 
 # Last token
-pooled = pl.utils.pool(token_probs, mask, "last_token")
+pooled = pl.pool.last_token(token_probs, mask)
 auroc = pl.metrics.auroc(test_ds.labels, pooled)
 recall = pl.metrics.recall_at_fpr(test_ds.labels, pooled, fpr=0.05)
 results["last_token"] = {"auroc": auroc, "recall@5%": recall}
@@ -96,7 +91,7 @@ print(f"{'last_token':<15} {auroc:<12.4f} {recall:<12.4f}")
 
 # EMA with different alphas
 for alpha in [0.3, 0.5, 0.7]:
-    pooled = pl.utils.pool(token_probs, mask, "ema", alpha=alpha)
+    pooled = pl.pool.ema(token_probs, mask, alpha=alpha)
     auroc = pl.metrics.auroc(test_ds.labels, pooled)
     recall = pl.metrics.recall_at_fpr(test_ds.labels, pooled, fpr=0.05)
     name = f"ema_{alpha}"
@@ -105,7 +100,7 @@ for alpha in [0.3, 0.5, 0.7]:
 
 # Rolling window with different sizes
 for window in [5, 10, 20]:
-    pooled = pl.utils.pool(token_probs, mask, "rolling", window_size=window)
+    pooled = pl.pool.rolling(token_probs, mask, window_size=window)
     auroc = pl.metrics.auroc(test_ds.labels, pooled)
     recall = pl.metrics.recall_at_fpr(test_ds.labels, pooled, fpr=0.05)
     name = f"rolling_{window}"
@@ -119,12 +114,10 @@ print(f"Best aggregation: {best} (AUROC: {results[best]['auroc']:.4f})")
 
 # Compare with sequence-level baseline (pool before training)
 print("\n--- Baseline: Pool before training ---")
-train_pooled = train_tokens_acts.pool("sequence", "mean")
-test_pooled = test_tokens_acts.pool("sequence", "mean")
+train_pooled = train_acts.pool("sequence", "mean")
+test_pooled = test_acts.pool("sequence", "mean")
 
-baseline_probe = pl.probes.Logistic()
-baseline_probe.fit(train_pooled, train_ds.labels)
-baseline_probs = baseline_probe.predict(test_pooled)
+baseline_probs = pl.probes.Logistic().fit(train_pooled, train_ds.labels).predict(test_pooled)
 baseline_auroc = pl.metrics.auroc(test_ds.labels, baseline_probs)
 print(f"Baseline AUROC (pool before training): {baseline_auroc:.4f}")
 

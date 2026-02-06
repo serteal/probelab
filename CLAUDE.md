@@ -29,15 +29,15 @@ import probelab as pl
 dataset = pl.datasets.load("circuit_breakers")
 pl.datasets.list_datasets(category="deception")
 
-# Tokenize and collect activations
+# Tokenize and collect activations (single layer returns no LAYER axis)
 tokens = pl.processing.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
 acts = pl.processing.collect_activations(model, tokens, layers=[16])
 
 # Train probe (auto-detects device from input)
-probe = pl.probes.Logistic().fit(acts.select(layer=16).pool("sequence", "mean"), labels)
+probe = pl.probes.Logistic().fit(acts.pool("sequence", "mean"), labels)
 
 # Evaluate - predict() returns tensor directly
-probs = probe.predict(test_acts)  # [batch, 2]
+probs = probe.predict(test_acts)  # [batch]
 score = pl.metrics.auroc(labels, probs)
 ```
 
@@ -139,17 +139,14 @@ import probelab as pl
 # 1. Tokenize with mask (determines which tokens to extract)
 tokens = pl.processing.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
 
-# 2. Collect activations
+# 2. Collect activations (single layer has no LAYER axis, multiple layers keep it)
 acts = pl.processing.collect_activations(model, tokens, layers=[16])
 
-# 3. Transform activations (method chaining)
-prepared = acts.select(layer=16).pool("sequence", "mean")
+# 3. Pool sequence dimension
+prepared = acts.pool("sequence", "mean")
 
-# 4. Train probe (auto-detects device from input)
-probe = pl.probes.Logistic().fit(prepared, labels)
-
-# 5. Predict - returns tensor directly [batch, 2]
-probs = probe.predict(test_prepared)
+# 4. Train probe and predict (chained)
+probs = pl.probes.Logistic().fit(prepared, labels).predict(test_prepared)
 ```
 
 ### Key Classes
@@ -173,8 +170,12 @@ len(tokens)             # Batch size
 
 **Activations** - Axis-aware container for hidden states:
 ```python
+# collect_activations behavior:
+# - Single layer (layers=[16]): returns [batch, seq, hidden] - no LAYER axis
+# - Multiple layers (layers=[8, 16, 20]): returns [layer, batch, seq, hidden]
+
 # Methods
-acts.select(layer=16)           # Select single layer, removes LAYER axis
+acts.select(layer=16)           # Select single layer from multi-layer, removes LAYER axis
 acts.select(layers=[8, 16])     # Select multiple layers, keeps LAYER axis
 acts.pool("sequence", "mean")   # Pool over sequence dimension
 acts.pool("layer", "mean")      # Pool over layer dimension
@@ -220,13 +221,13 @@ train_ds, test_ds = pl.datasets.load("circuit_breakers").split(0.8)
 train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
 test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
-# Collect activations
+# Collect activations (single layer, no LAYER axis)
 train_acts = pl.processing.collect_activations(model, train_tokens, layers=[16])
 test_acts = pl.processing.collect_activations(model, test_tokens, layers=[16])
 
-# Prepare and train
-train_prepared = train_acts.select(layer=16).pool("sequence", "mean")
-test_prepared = test_acts.select(layer=16).pool("sequence", "mean")
+# Pool and train
+train_prepared = train_acts.pool("sequence", "mean")
+test_prepared = test_acts.pool("sequence", "mean")
 probe = pl.probes.Logistic().fit(train_prepared, train_ds.labels)
 
 # Evaluate
@@ -251,16 +252,15 @@ for layer in [8, 12, 16, 20]:
 
 **3. Token-Level with Aggregation**
 ```python
-# Train on tokens (keep SEQ axis)
-prepared = acts.select(layer=16)
-probe = pl.probes.Logistic().fit(prepared, labels)
+# Collect single layer (no LAYER axis, keeps SEQ)
+acts = pl.processing.collect_activations(model, tokens, layers=[16])
 
-# Predict token-level, then aggregate
-token_probs = probe.predict(test_acts.select(layer=16))  # [n_tokens, 2]
+# Train on tokens (don't pool - keep SEQ axis)
+probe = pl.probes.Logistic().fit(acts, labels)
 
-# Reshape to [batch, seq, 2] and aggregate
-# Use pl.utils.pool/ema/rolling for aggregation
-pooled = pl.utils.pool(token_probs[:, 1].reshape(batch, seq), mask, "mean")
+# Predict token-level [batch, seq], then aggregate
+token_probs = probe.predict(test_acts)
+pooled = pl.utils.pool(token_probs, mask, "mean")  # [batch]
 ```
 
 **4. Using Masks**
@@ -270,6 +270,7 @@ mask = pl.masks.assistant() & pl.masks.nth_message(-1)
 
 tokens = pl.processing.tokenize_dataset(dataset, tokenizer, mask=mask)
 acts = pl.processing.collect_activations(model, tokens, layers=[16])
+prepared = acts.pool("sequence", "mean")
 ```
 
 **5. Streaming for Large Datasets**
@@ -278,8 +279,7 @@ acts = pl.processing.collect_activations(model, tokens, layers=[16])
 tokens = pl.processing.tokenize_dataset(large_dataset, tokenizer, mask=pl.masks.all())
 
 for acts_batch, indices, seq_len in pl.processing.stream_activations(model, tokens, layers=[16]):
-    # Process each batch incrementally
-    prepared = acts_batch.select(layer=16).pool("sequence", "mean")
+    # Process each batch incrementally (stream returns raw [layer, batch, seq, hidden])
     # ... accumulate results
 ```
 

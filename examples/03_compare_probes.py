@@ -38,21 +38,17 @@ print(f"Test: {test_ds}")
 train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
 test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
-# Collect activations (keep sequence dimension for attention-based probes)
+# Collect activations (single layer returns no LAYER axis, keeps SEQ for attention-based probes)
 print(f"\nCollecting activations from layer {LAYER}...")
 train_acts = pl.processing.collect_activations(model, train_tokens, layers=[LAYER])
 test_acts = pl.processing.collect_activations(model, test_tokens, layers=[LAYER])
 
-# Select layer (removes LAYER axis, keeps SEQ)
-train_seq = train_acts.select(layer=LAYER)
-test_seq = test_acts.select(layer=LAYER)
-
 # Pool for probes that don't need sequence dimension
-train_pooled = train_seq.pool("sequence", "mean")
-test_pooled = test_seq.pool("sequence", "mean")
+train_pooled = train_acts.pool("sequence", "mean")
+test_pooled = test_acts.pool("sequence", "mean")
 
 print("Activation shapes:")
-print(f"  With SEQ axis: {train_seq.shape}")
+print(f"  With SEQ axis: {train_acts.shape}")
 print(f"  Pooled (no SEQ): {train_pooled.shape}")
 
 # Define probes to compare
@@ -77,7 +73,7 @@ for name, probe in probes.items():
     # Select appropriate data based on probe requirements
     if name in ["Attention", "MultiMax", "GatedBipolar"]:
         # These need SEQ axis
-        train_data, test_data = train_seq, test_seq
+        train_data, test_data = train_acts, test_acts
         print(f"  Using SEQ axis: {train_data.shape}")
     else:
         # These work on pooled data

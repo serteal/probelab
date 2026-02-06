@@ -61,18 +61,17 @@ mask = pl.masks.assistant() & pl.masks.nth_message(-1)
 train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=mask)
 test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=mask)
 
-# Collect activations
+# Collect activations (single layer returns no LAYER axis)
 print(f"\nCollecting activations from layer {LAYER}...")
 train_acts = pl.processing.collect_activations(model, train_tokens, layers=[LAYER])
 test_acts = pl.processing.collect_activations(model, test_tokens, layers=[LAYER])
 
 # Prepare
-train_prepared = train_acts.select(layer=LAYER).pool("sequence", "mean")
-test_prepared = test_acts.select(layer=LAYER).pool("sequence", "mean")
+train_prepared = train_acts.pool("sequence", "mean")
+test_prepared = test_acts.pool("sequence", "mean")
 
 # Train probe
-probe = pl.probes.Logistic()
-probe.fit(train_prepared, train_ds.labels)
+probe = pl.probes.Logistic().fit(train_prepared, train_ds.labels)
 
 # Evaluate on combined test set
 probs = probe.predict(test_prepared)
@@ -94,7 +93,7 @@ for name, ds in datasets_to_eval:
     test_sample = ds.sample(30, stratified=True, seed=123)
     tokens = pl.processing.tokenize_dataset(test_sample, tokenizer, mask=mask)
     acts = pl.processing.collect_activations(model, tokens, layers=[LAYER])
-    prepared = acts.select(layer=LAYER).pool("sequence", "mean")
+    prepared = acts.pool("sequence", "mean")
     probs = probe.predict(prepared)
     auroc = pl.metrics.auroc(test_sample.labels, probs)
     print(f"  {name}: AUROC = {auroc:.4f}")

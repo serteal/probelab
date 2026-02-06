@@ -17,10 +17,11 @@ from probelab.types import Label
 def _separable_acts(n_samples=20, seq=8, d_model=8, gap=2.0):
   """Create linearly separable activations."""
   half = n_samples // 2
-  t = torch.zeros(1, n_samples, seq, d_model)
-  t[0, :half, :, 0] = gap
-  t[0, half:, :, 0] = -gap
-  t[:, :, :, 1:] = torch.randn(1, n_samples, seq, d_model - 1) * 0.1
+  # [batch, layer, seq, hidden]
+  t = torch.zeros(n_samples, 1, seq, d_model)
+  t[:half, 0, :, 0] = gap
+  t[half:, 0, :, 0] = -gap
+  t[:, :, :, 1:] = torch.randn(n_samples, 1, seq, d_model - 1) * 0.1
   return Activations.from_tensor(
     t, attention_mask=torch.ones(n_samples, seq),
     input_ids=torch.ones(n_samples, seq, dtype=torch.long),
@@ -29,7 +30,8 @@ def _separable_acts(n_samples=20, seq=8, d_model=8, gap=2.0):
 
 def _acts(n_samples=10, seq=8, d_model=16):
   """Create random activations."""
-  t = torch.randn(1, n_samples, seq, d_model)
+  # [batch, layer, seq, hidden]
+  t = torch.randn(n_samples, 1, seq, d_model)
   return Activations.from_tensor(
     t, attention_mask=torch.ones(n_samples, seq),
     input_ids=torch.ones(n_samples, seq, dtype=torch.long),
@@ -267,7 +269,8 @@ class TestProbeInterface(unittest.TestCase):
 
 class TestProbeErrors(unittest.TestCase):
   def test_logistic_rejects_multi_layer(self):
-    t = torch.randn(2, 10, 8, 16)  # 2 layers
+    # [batch, layer, seq, hidden] - 2 layers
+    t = torch.randn(10, 2, 8, 16)
     acts = Activations.from_tensor(
       t, attention_mask=torch.ones(10, 8),
       input_ids=torch.ones(10, 8, dtype=torch.long),
@@ -279,7 +282,8 @@ class TestProbeErrors(unittest.TestCase):
       p.fit(acts, labels)
 
   def test_mlp_rejects_multi_layer(self):
-    t = torch.randn(2, 10, 8, 16)
+    # [batch, layer, seq, hidden] - 2 layers
+    t = torch.randn(10, 2, 8, 16)
     acts = Activations.from_tensor(
       t, attention_mask=torch.ones(10, 8),
       input_ids=torch.ones(10, 8, dtype=torch.long),
@@ -296,7 +300,8 @@ class TestProbeErrors(unittest.TestCase):
 
 class TestProbeEdgeCases(unittest.TestCase):
   def test_small_batch(self):
-    t = torch.randn(1, 4, 8, 8)
+    # [batch, layer, seq, hidden]
+    t = torch.randn(4, 1, 8, 8)
     acts = Activations.from_tensor(
       t, attention_mask=torch.ones(4, 8),
       input_ids=torch.ones(4, 8, dtype=torch.long),

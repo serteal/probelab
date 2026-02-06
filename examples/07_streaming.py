@@ -112,16 +112,11 @@ test_acts_pooled = pl.processing.collect_activations(
 
 print(f"Pooled activations shape: {train_acts_pooled.shape}")
 
-# Select layer (no SEQ axis since we pooled)
-train_prepared = train_acts_pooled.select(layer=LAYER)
-test_prepared = test_acts_pooled.select(layer=LAYER)
-
-# Train with probelab probe
-probe = pl.probes.Logistic()
-probe.fit(train_prepared, train_ds.labels)
+# Train with probelab probe (single layer already has no LAYER axis)
+probe = pl.probes.Logistic().fit(train_acts_pooled, train_ds.labels)
 
 # Evaluate
-scores = probe.predict(test_prepared)
+scores = probe.predict(test_acts_pooled)
 auroc = pl.metrics.auroc(test_ds.labels, scores)
 print(f"\nAUROC: {auroc:.4f}")
 
