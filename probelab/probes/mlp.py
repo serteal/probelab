@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 
+from ..processing.acts import Acts
 from ..processing.activations import Activations, Axis
 from .base import BaseProbe
 
@@ -83,7 +84,8 @@ class MLP(BaseProbe):
             weight_decay=self.weight_decay,
         )
 
-    def fit(self, X: Activations, y: list | torch.Tensor) -> "MLP":
+    def fit(self, X: Activations | Acts | torch.Tensor, y: list | torch.Tensor) -> "MLP":
+        X = self._to_activations(X)
         if X.has_axis(Axis.LAYER):
             raise ValueError(
                 f"MLP expects no LAYER axis. Add SelectLayer({X.layer_indices[0]}) to pipeline."
@@ -152,7 +154,7 @@ class MLP(BaseProbe):
         x = x.to(self.device, dtype=torch.float32)
         return self._network(x)
 
-    def predict(self, X: Activations) -> torch.Tensor:
+    def predict(self, X: Activations | Acts | torch.Tensor) -> torch.Tensor:
         """Evaluate on activations.
 
         Args:
@@ -164,6 +166,7 @@ class MLP(BaseProbe):
             - [batch] if X has no SEQ axis (sequence-level)
         """
         self._check_fitted()
+        X = self._to_activations(X)
 
         if X.has_axis(Axis.LAYER):
             raise ValueError("MLP expects no LAYER axis")

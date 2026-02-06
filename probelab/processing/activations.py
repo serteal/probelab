@@ -687,71 +687,16 @@ def collect_activations(
         - Single layer: [batch, seq, hidden] or [batch, hidden] if pooled
         - Multiple layers: [batch, layer, seq, hidden] or [batch, layer, hidden] if pooled
     """
-    layers = [layers] if isinstance(layers, int) else list(layers)
-    single_layer = len(layers) == 1
-    n, max_seq, d = len(tokens), tokens.seq_len, _hidden_dim(model)
+    from .acts import collect
 
-    if pool:
-        pool_fn = getattr(P, pool, None)
-        if pool_fn is None:
-            available = [name for name in dir(P) if not name.startswith("_")]
-            raise ValueError(f"Unknown pooling method: {pool}. Available: {available}")
-        # Collect as [batch, layer, hidden]
-        out = torch.zeros(n, len(layers), d, dtype=model.dtype)
-        for acts, idx, sl in stream_activations(model, tokens, layers, batch_size):
-            # acts is [layer, batch_chunk, seq, hidden], transpose to [batch_chunk, layer, seq, hidden]
-            acts_t = acts.transpose(0, 1)
-            if tokens.padding_side == "right":
-                mask = tokens.detection_mask[idx, :sl]
-            else:
-                mask = tokens.detection_mask[idx, -sl:]
-            # Pool over seq (dim=2), batch is at dim=0
-            out[idx] = pool_fn(acts_t, mask, dim=2)
-
-        if single_layer:
-            return Activations(
-                activations=out.squeeze(1),
-                axes=(Axis.BATCH, Axis.HIDDEN),
-                layer_meta=None,
-                sequence_meta=None,
-                batch_indices=torch.arange(n, dtype=torch.long),
-            )
-        return Activations(
-            activations=out,
-            axes=(Axis.BATCH, Axis.LAYER, Axis.HIDDEN),
-            layer_meta=LayerMeta(tuple(layers)),
-            sequence_meta=None,
-            batch_indices=torch.arange(n, dtype=torch.long),
-        )
-
-    # Collect as [batch, layer, seq, hidden]
-    out = torch.zeros(n, len(layers), max_seq, d, dtype=model.dtype)
-    for acts, idx, sl in stream_activations(model, tokens, layers, batch_size):
-        # acts is [layer, batch_chunk, seq, hidden], transpose to [batch_chunk, layer, seq, hidden]
-        acts_t = acts.transpose(0, 1)
-        if tokens.padding_side == "right":
-            out[idx, :, :sl] = acts_t
-        else:
-            out[idx, :, -sl:] = acts_t
-
-    seq_meta = SequenceMeta(
-        attention_mask=tokens.attention_mask,
-        detection_mask=tokens.detection_mask,
-        input_ids=tokens.input_ids,
+    layer_list = [layers] if isinstance(layers, int) else list(layers)
+    acts = collect(
+        model,
+        tokens,
+        layers=layer_list,
+        batch_size=batch_size,
+        dtype=getattr(model, "dtype", torch.float32),
+        pool=pool,
+        pool_dim="s",
     )
-
-    if single_layer:
-        return Activations(
-            activations=out.squeeze(1),
-            axes=(Axis.BATCH, Axis.SEQ, Axis.HIDDEN),
-            layer_meta=None,
-            sequence_meta=seq_meta,
-            batch_indices=torch.arange(n, dtype=torch.long),
-        )
-    return Activations(
-        activations=out,
-        axes=_DEFAULT_AXES,
-        layer_meta=LayerMeta(tuple(layers)),
-        sequence_meta=seq_meta,
-        batch_indices=torch.arange(n, dtype=torch.long),
-    )
+    return acts.to_activations()

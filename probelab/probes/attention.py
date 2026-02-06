@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
 
+from ..processing.acts import Acts
 from ..processing.activations import Activations, Axis
 from .base import BaseProbe
 
@@ -108,7 +109,8 @@ class Attention(BaseProbe):
             fused=self.device.startswith("cuda"),
         )
 
-    def fit(self, X: Activations, y: list | torch.Tensor) -> "Attention":
+    def fit(self, X: Activations | Acts | torch.Tensor, y: list | torch.Tensor) -> "Attention":
+        X = self._to_activations(X)
         if X.has_axis(Axis.LAYER):
             raise ValueError(
                 f"Attention expects no LAYER axis. Add SelectLayer({X.layer_indices[0]}) to pipeline."
@@ -186,7 +188,7 @@ class Attention(BaseProbe):
         mask = mask.to(self.device)
         return self._network(sequences, mask)
 
-    def predict(self, X: Activations) -> torch.Tensor:
+    def predict(self, X: Activations | Acts | torch.Tensor) -> torch.Tensor:
         """Evaluate on activations.
 
         Args:
@@ -196,6 +198,7 @@ class Attention(BaseProbe):
             Probability of positive class [batch]
         """
         self._check_fitted()
+        X = self._to_activations(X)
 
         if X.has_axis(Axis.LAYER):
             raise ValueError("Attention expects no LAYER axis")
