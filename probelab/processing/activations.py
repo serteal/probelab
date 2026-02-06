@@ -149,8 +149,23 @@ class Activations:
         input_ids: torch.Tensor | None = None,
         batch_indices: torch.Tensor | None = None,
     ) -> "Activations":
-        """Create Activations from a tensor with sensible defaults."""
-        if activations.ndim == 3:
+        """Create Activations from a tensor with sensible defaults.
+
+        Supports:
+        - 2D [batch, hidden]: Already pooled (no SEQ axis)
+        - 3D [batch, seq, hidden]: Single layer with sequence
+        - 4D [layer, batch, seq, hidden]: Multiple layers with sequence
+        """
+        if activations.ndim == 2:
+            # [batch, hidden] - already pooled, no SEQ or LAYER axis
+            return cls(
+                activations=activations,
+                axes=(Axis.BATCH, Axis.HIDDEN),
+                layer_meta=None,
+                sequence_meta=None,
+                batch_indices=batch_indices,
+            )
+        elif activations.ndim == 3:
             batch_size, seq_len, hidden_size = activations.shape
             activations = activations.unsqueeze(0)
             axes = (Axis.LAYER, Axis.BATCH, Axis.SEQ, Axis.HIDDEN)
@@ -163,8 +178,8 @@ class Activations:
                 layer_indices = list(range(n_layers))
         else:
             raise ValueError(
-                f"Expected 3D [batch, seq, hidden] or 4D [layer, batch, seq, hidden] tensor, "
-                f"got shape {activations.shape}"
+                f"Expected 2D [batch, hidden], 3D [batch, seq, hidden], "
+                f"or 4D [layer, batch, seq, hidden] tensor, got shape {activations.shape}"
             )
 
         if attention_mask is None:

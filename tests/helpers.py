@@ -1,7 +1,6 @@
 """Simple test utilities for probelab tests."""
 import torch
 from probelab.processing.activations import Activations
-from probelab.processing.scores import Scores
 from probelab.types import Label
 
 # =============================================================================
@@ -32,21 +31,18 @@ def separable_acts(n_samples=20, seq=8, d_model=8, gap=2.0):
   return Activations.from_tensor(activations=t, attention_mask=attn, input_ids=ids, detection_mask=det, layer_indices=[0]), labels
 
 # =============================================================================
-# Scores Helpers
+# Probability Tensor Helpers
 # =============================================================================
 
-def seq_scores(batch=4, n_classes=2):
-  """Create sequence-level scores [batch, 2]."""
+def seq_probs(batch=4, n_classes=2):
+  """Create sequence-level probabilities [batch, 2]."""
   raw = torch.rand(batch, n_classes)
-  raw = raw / raw.sum(dim=-1, keepdim=True)  # normalize
-  return Scores.from_sequence_scores(raw)
+  return raw / raw.sum(dim=-1, keepdim=True)  # normalize
 
-def token_scores(batch=4, seq=8, n_classes=2):
-  """Create token-level scores [batch, seq, 2]."""
+def token_probs(batch=4, seq=8, n_classes=2):
+  """Create token-level probabilities [batch, seq, 2]."""
   raw = torch.rand(batch, seq, n_classes)
-  raw = raw / raw.sum(dim=-1, keepdim=True)
-  tokens_per = torch.full((batch,), seq, dtype=torch.long)
-  return Scores.from_token_scores(raw, tokens_per)
+  return raw / raw.sum(dim=-1, keepdim=True)
 
 # =============================================================================
 # Labels Helpers

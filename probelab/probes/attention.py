@@ -8,7 +8,6 @@ import torch.nn.functional as F
 from torch.optim import AdamW
 
 from ..processing.activations import Activations, Axis
-from ..processing.scores import Scores
 from .base import BaseProbe
 
 
@@ -170,7 +169,32 @@ class Attention(BaseProbe):
         self._fitted = True
         return self
 
-    def predict(self, X: Activations) -> Scores:
+    def __call__(
+        self, sequences: torch.Tensor, mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Differentiable forward pass.
+
+        Args:
+            sequences: Sequence tensor [batch, seq, hidden]
+            mask: Detection mask [batch, seq]
+
+        Returns:
+            Tuple of (logits [batch], attention_weights [batch, seq])
+        """
+        self._check_fitted()
+        sequences = sequences.to(self.device)
+        mask = mask.to(self.device)
+        return self._network(sequences, mask)
+
+    def predict(self, X: Activations) -> torch.Tensor:
+        """Evaluate on activations.
+
+        Args:
+            X: Activations with SEQ axis, without LAYER axis
+
+        Returns:
+            Probabilities tensor [batch, 2] (no gradients)
+        """
         self._check_fitted()
 
         if X.has_axis(Axis.LAYER):
@@ -181,14 +205,11 @@ class Attention(BaseProbe):
         sequences = X.activations.to(self.device)
         detection_mask = X.detection_mask.to(self.device)
 
-        self._network.eval()
         with torch.no_grad():
-            logits, attn_weights = self._network(sequences, detection_mask)
+            logits, attn_weights = self(sequences, detection_mask)
             self.attention_weights = attn_weights.detach().cpu()
             probs_pos = torch.sigmoid(logits)
-            probs = torch.stack([1 - probs_pos, probs_pos], dim=-1)
-
-        return Scores.from_sequence_scores(probs, X.batch_indices)
+            return torch.stack([1 - probs_pos, probs_pos], dim=-1)
 
     def save(self, path: Path | str) -> None:
         self._check_fitted()

@@ -7,7 +7,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..processing.activations import Activations, Axis
-from ..processing.scores import Scores
 from .base import BaseProbe
 
 
@@ -103,33 +102,43 @@ class Logistic(BaseProbe):
         self._fitted = True
         return self
 
-    def predict(self, X: Activations) -> Scores:
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        """Differentiable forward pass.
+
+        Args:
+            x: Features tensor [batch, hidden] or [n_tokens, hidden]
+
+        Returns:
+            Logits tensor [batch] or [n_tokens] (not probabilities)
+        """
+        self._check_fitted()
+        x = x.to(self.device)
+        x_scaled = (x - self._scaler_mean) / self._scaler_std
+        return self._network(x_scaled.to(self._network.linear.weight.dtype))
+
+    def predict(self, X: Activations) -> torch.Tensor:
+        """Evaluate on activations.
+
+        Args:
+            X: Activations without LAYER axis
+
+        Returns:
+            Probabilities tensor [batch, 2] or [n_tokens, 2] (no gradients)
+        """
         self._check_fitted()
 
         if X.has_axis(Axis.LAYER):
             raise ValueError("Logistic expects no LAYER axis")
 
         if X.has_axis(Axis.SEQ):
-            features, tokens_per_sample = X.extract_tokens()
-            is_token_level = True
+            features, _ = X.extract_tokens()
         else:
             features = X.activations
-            tokens_per_sample = None
-            is_token_level = False
 
-        features = features.to(self.device)
-        features_scaled = (features - self._scaler_mean.to(features.dtype)) / self._scaler_std.to(features.dtype)
-
-        self._network.eval()
         with torch.no_grad():
-            network_dtype = next(self._network.parameters()).dtype
-            features_scaled = features_scaled.to(network_dtype)
-            probs_pos = torch.sigmoid(self._network(features_scaled))
-            probs = torch.stack([1 - probs_pos, probs_pos], dim=-1)
-
-        if is_token_level:
-            return Scores.from_token_scores(probs, tokens_per_sample, X.batch_indices)
-        return Scores.from_sequence_scores(probs, X.batch_indices)
+            logits = self(features)
+            probs_pos = torch.sigmoid(logits)
+            return torch.stack([1 - probs_pos, probs_pos], dim=-1)
 
     def save(self, path: Path | str) -> None:
         self._check_fitted()

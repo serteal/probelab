@@ -87,7 +87,7 @@ class TestLogisticPredict(unittest.TestCase):
     acts, labels = _separable_acts()
     prepared = acts.select(layer=0).pool("sequence", "mean")
     p = Logistic(device="cpu").fit(prepared, labels)
-    probs = p.predict(prepared).scores
+    probs = p.predict(prepared)
     self.assertTrue(torch.all(probs >= 0))
     self.assertTrue(torch.all(probs <= 1))
     self.assertTrue(torch.allclose(probs.sum(dim=1), torch.ones(20)))
@@ -96,7 +96,7 @@ class TestLogisticPredict(unittest.TestCase):
     acts, labels = _separable_acts(n_samples=20, gap=3.0)
     prepared = acts.select(layer=0).pool("sequence", "mean")
     p = Logistic(device="cpu").fit(prepared, labels)
-    probs = p.predict(prepared).scores
+    probs = p.predict(prepared)
     pos_correct = (probs[:10, 1] > 0.5).sum()
     neg_correct = (probs[10:, 0] > 0.5).sum()
     self.assertGreater(pos_correct + neg_correct, 14)  # >70% accuracy
@@ -113,7 +113,7 @@ class TestLogisticSaveLoad(unittest.TestCase):
     acts, labels = _separable_acts()
     prepared = acts.select(layer=0).pool("sequence", "mean")
     p = Logistic(C=2.0, device="cpu").fit(prepared, labels)
-    probs_before = p.predict(prepared).scores
+    probs_before = p.predict(prepared)
 
     with tempfile.TemporaryDirectory() as tmpdir:
       path = Path(tmpdir) / "probe.pt"
@@ -122,7 +122,7 @@ class TestLogisticSaveLoad(unittest.TestCase):
 
     self.assertEqual(loaded.C, 2.0)
     self.assertTrue(loaded._fitted)
-    probs_after = loaded.predict(prepared).scores
+    probs_after = loaded.predict(prepared)
     self.assertTrue(torch.allclose(probs_before, probs_after, atol=1e-5))
 
   def test_save_unfitted_raises(self):
@@ -189,7 +189,7 @@ class TestMLPPredict(unittest.TestCase):
     acts, labels = _separable_acts()
     prepared = acts.select(layer=0).pool("sequence", "mean")
     p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
-    probs = p.predict(prepared).scores
+    probs = p.predict(prepared)
     self.assertTrue(torch.all(probs >= 0))
     self.assertTrue(torch.all(probs <= 1))
     self.assertTrue(torch.allclose(probs.sum(dim=1), torch.ones(20)))
@@ -206,7 +206,7 @@ class TestMLPSaveLoad(unittest.TestCase):
     acts, labels = _separable_acts()
     prepared = acts.select(layer=0).pool("sequence", "mean")
     p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
-    probs_before = p.predict(prepared).scores
+    probs_before = p.predict(prepared)
 
     with tempfile.TemporaryDirectory() as tmpdir:
       path = Path(tmpdir) / "probe.pt"
@@ -215,7 +215,7 @@ class TestMLPSaveLoad(unittest.TestCase):
 
     self.assertEqual(loaded.hidden_dim, 32)
     self.assertTrue(loaded._fitted)
-    probs_after = loaded.predict(prepared).scores
+    probs_after = loaded.predict(prepared)
     self.assertTrue(torch.allclose(probs_before, probs_after, atol=1e-5))
 
   def test_save_unfitted_raises(self):
@@ -242,10 +242,10 @@ class TestProbeInterface(unittest.TestCase):
     self.assertIs(result, p)
     self.assertTrue(p._fitted)
 
-    # Test predict returns Scores
-    scores = p.predict(prepared)
-    self.assertEqual(scores.shape[0], 20)
-    self.assertEqual(scores.shape[-1], 2)
+    # Test predict returns tensor
+    probs = p.predict(prepared)
+    self.assertEqual(probs.shape[0], 20)
+    self.assertEqual(probs.shape[-1], 2)
 
     # Test save/load
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -253,8 +253,8 @@ class TestProbeInterface(unittest.TestCase):
       p.save(path)
       loaded = ProbeClass.load(path, device="cpu")
       self.assertTrue(loaded._fitted)
-      probs_loaded = loaded.predict(prepared).scores
-      probs_orig = p.predict(prepared).scores
+      probs_loaded = loaded.predict(prepared)
+      probs_orig = p.predict(prepared)
       self.assertTrue(torch.allclose(probs_orig, probs_loaded, atol=1e-5))
 
   def test_logistic_interface(self):
@@ -339,9 +339,10 @@ class TestProbeDeviceHandling(unittest.TestCase):
     self.assertTrue(p._fitted)
     self.assertTrue(p._trained_on_tokens)
 
-    # Verify prediction works
-    scores = p.predict(prepared)
-    self.assertEqual(scores.shape[0], 10)
+    # Verify prediction works - returns [n_tokens, 2] for token-level
+    probs = p.predict(prepared)
+    self.assertEqual(probs.shape[0], 50)  # 10 samples * 5 tokens each
+    self.assertEqual(probs.shape[1], 2)
 
   def test_mlp_token_level_device_consistency(self):
     """Test that MLP token-level training handles device correctly."""
@@ -352,8 +353,10 @@ class TestProbeDeviceHandling(unittest.TestCase):
     self.assertTrue(p._fitted)
     self.assertTrue(p._trained_on_tokens)
 
-    scores = p.predict(prepared)
-    self.assertEqual(scores.shape[0], 10)
+    # Returns [n_tokens, 2] for token-level
+    probs = p.predict(prepared)
+    self.assertEqual(probs.shape[0], 50)  # 10 samples * 5 tokens each
+    self.assertEqual(probs.shape[1], 2)
 
   def test_logistic_repeat_interleave_same_device(self):
     """Verify repeat_interleave uses consistent device for labels and tokens_per_sample."""

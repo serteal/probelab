@@ -34,15 +34,16 @@ class TestActivationsConstruction(unittest.TestCase):
         self.assertEqual(a.shape, (1, 4, 8, 16))
         self.assertEqual(a.n_layers, 1)
 
-    def test_from_tensor_2d_raises(self):
+    def test_from_tensor_2d_pooled(self):
+        """2D tensors are treated as already-pooled [batch, hidden]."""
         t = torch.randn(4, 16)
-        with self.assertRaises(ValueError):
-            Activations.from_tensor(
-                t,
-                attention_mask=torch.ones(4, 1),
-                input_ids=torch.ones(4, 1, dtype=torch.long),
-                detection_mask=torch.ones(4, 1),
-            )
+        a = Activations.from_tensor(t)
+        self.assertEqual(a.axes, (Axis.BATCH, Axis.HIDDEN))
+        self.assertEqual(a.shape, (4, 16))
+        self.assertFalse(a.has_axis(Axis.SEQ))
+        self.assertFalse(a.has_axis(Axis.LAYER))
+        self.assertIsNone(a.layer_meta)
+        self.assertIsNone(a.sequence_meta)
 
     def test_layer_indices_default(self):
         t = torch.randn(3, 4, 8, 16)

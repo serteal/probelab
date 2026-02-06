@@ -6,16 +6,19 @@ from pathlib import Path
 import torch
 
 from ..processing.activations import Activations
-from ..processing.scores import Scores
 
 
 class BaseProbe(ABC):
     """Base class for probes.
 
-    Probes are classifiers that operate on Activations and return Scores.
+    Probes are classifiers that operate on Activations and return probability tensors.
     They adapt based on input dimensionality:
     - If activations have SEQ axis: Train/predict on tokens
     - If no SEQ axis: Train/predict on sequences
+
+    Two interfaces:
+    - probe(x): Differentiable forward pass on raw tensors, returns logits
+    - probe.predict(X): Convenience method for Activations, returns probabilities
 
     Args:
         device: Device to use. If None, auto-detects from input in fit().
@@ -31,8 +34,12 @@ class BaseProbe(ABC):
         pass
 
     @abstractmethod
-    def predict(self, X: Activations) -> Scores:
-        """Predict, returning Scores object."""
+    def predict(self, X: Activations) -> torch.Tensor:
+        """Predict probabilities from Activations.
+
+        Returns:
+            Tensor of shape [batch, 2] or [n_tokens, 2] with probabilities.
+        """
         pass
 
     @abstractmethod

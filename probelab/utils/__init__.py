@@ -1,6 +1,6 @@
-"""Internal utilities for probelab."""
+"""Utilities for probelab."""
 
-from .pooling import masked_pool
-from .validation import check_activations, check_scores
+from .pooling import ema, masked_pool, pool, rolling
+from .validation import check_activations
 
-__all__ = ["check_activations", "check_scores", "masked_pool"]
+__all__ = ["check_activations", "masked_pool", "pool", "ema", "rolling"]
