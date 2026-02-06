@@ -7,8 +7,10 @@ from datasets import load_dataset
 from ..types import Label, Message
 from .base import Dataset
 from .builders import build_from_messages
+from .registry import Topic, _register_dataset
 
 
+@_register_dataset("wildchat", Topic.MULTILINGUAL, "WildChat 1M")
 def wildchat() -> Dataset:
     """WildChat-1M - 1M+ conversations in 68 languages."""
     data = load_dataset("allenai/WildChat-1M")["train"]
@@ -32,6 +34,7 @@ def wildchat() -> Dataset:
     return Dataset(dialogues, labels, "wildchat", metadata).shuffle()
 
 
+@_register_dataset("multilingual_thinking", Topic.MULTILINGUAL, "Multilingual thinking")
 def multilingual_thinking() -> Dataset:
     """Multilingual Thinking - reasoning traces in 5 languages."""
     data = load_dataset("HuggingFaceH4/Multilingual-Thinking")["train"]
@@ -51,6 +54,7 @@ def multilingual_thinking() -> Dataset:
     return Dataset(dialogues, labels, "multilingual_thinking", metadata).shuffle()
 
 
+@_register_dataset("palo_multilingual", Topic.MULTILINGUAL, "PALO multilingual")
 def palo_multilingual() -> Dataset:
     """PALO Multilingual - 10 languages vision-language conversations."""
     data = load_dataset("MBZUAI/palo_multilingual_dataset")["train"]

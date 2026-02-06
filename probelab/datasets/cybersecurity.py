@@ -6,8 +6,10 @@ from datasets import load_dataset
 
 from ..types import Label, Message
 from .base import Dataset
+from .registry import Topic, _register_dataset
 
 
+@_register_dataset("trendyol_cybersecurity", Topic.CYBERSECURITY, "Trendyol cybersecurity")
 def trendyol_cybersecurity() -> Dataset:
     """Trendyol Cybersecurity 53K covering 200+ domains."""
     data = load_dataset("Trendyol/Trendyol-Cybersecurity-Instruction-Tuning-Dataset")["train"]
@@ -34,6 +36,7 @@ def trendyol_cybersecurity() -> Dataset:
     return Dataset(dialogues, labels, "trendyol_cybersecurity").shuffle()
 
 
+@_register_dataset("cybersecurity_dpo", Topic.CYBERSECURITY, "Cybersecurity DPO")
 def cybersecurity_dpo(include_rejected: bool = True) -> Dataset:
     """Code Vulnerability Security DPO - secure vs insecure code pairs."""
     data = load_dataset("CyberNative/Code_Vulnerability_Security_DPO")["train"]
@@ -56,6 +59,7 @@ def cybersecurity_dpo(include_rejected: bool = True) -> Dataset:
     return Dataset(dialogues, labels, "cybersecurity_dpo", metadata).shuffle()
 
 
+@_register_dataset("defensive_cybersecurity", Topic.CYBERSECURITY, "Defensive cybersecurity")
 def defensive_cybersecurity() -> Dataset:
     """Defensive Cybersecurity V1 - 2.5K high-quality pairs."""
     data = load_dataset("AlicanKiraz0/Cybersecurity-Dataset-v1")["train"]

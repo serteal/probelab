@@ -6,11 +6,13 @@ from datasets import load_dataset
 
 from ..types import Label, Message
 from .base import Dataset
+from .registry import Topic, _register_dataset
 
 CHOICE_LETTERS = ["A", "B", "C", "D", "E"]
 MMMU_SUBJECTS = ["Biology", "Chemistry", "Physics", "Math", "Computer_Science", "Economics", "Psychology", "History", "Art", "Music"]
 
 
+@_register_dataset("scienceqa", Topic.SCIENCE, "ScienceQA")
 def scienceqa(split: str = "train") -> Dataset:
     """ScienceQA 21K+ multimodal science questions."""
     data = load_dataset("derek-thomas/ScienceQA")[split]
@@ -44,6 +46,7 @@ def scienceqa(split: str = "train") -> Dataset:
     return Dataset(dialogues, labels, "scienceqa", metadata).shuffle()
 
 
+@_register_dataset("mmmu", Topic.SCIENCE, "MMMU")
 def mmmu(subjects: list[str] | None = None, split: str = "validation") -> Dataset:
     """MMMU 1.5K+ college-level multimodal questions."""
     subjects = subjects or ["Biology", "Chemistry", "Physics"]
@@ -77,6 +80,7 @@ def mmmu(subjects: list[str] | None = None, split: str = "validation") -> Datase
     return Dataset(dialogues, labels, "mmmu", metadata).shuffle()
 
 
+@_register_dataset("biology_tot", Topic.SCIENCE, "Biology ToT")
 def biology_tot() -> Dataset:
     """Biology Tree-of-Thought 5.7K Q&A."""
     data = load_dataset("LLMTeamAkiyama/cleand_moremilk_ToT-Biology")["train"]
@@ -104,6 +108,7 @@ def biology_tot() -> Dataset:
     return Dataset(dialogues, labels, "biology_tot", metadata).shuffle()
 
 
+@_register_dataset("biochem_reasoning", Topic.SCIENCE, "Biochem reasoning")
 def biochem_reasoning() -> Dataset:
     """Biochemistry reasoning 10K+ from PrimeKG."""
     data = load_dataset("extrasensory/reasoning-biochem")["train"]
@@ -128,6 +133,7 @@ def biochem_reasoning() -> Dataset:
     return Dataset(dialogues, labels, "biochem_reasoning", metadata).shuffle()
 
 
+@_register_dataset("stem_qa", Topic.SCIENCE, "STEM Q&A")
 def stem_qa() -> Dataset:
     """Combined STEM Q&A from CAMEL-AI physics."""
     data = load_dataset("camel-ai/physics")["train"]

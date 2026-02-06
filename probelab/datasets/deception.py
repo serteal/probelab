@@ -15,6 +15,7 @@ from datasets import load_dataset
 
 from ..types import Dialogue, Label, Message, Role
 from .base import Dataset
+from .registry import Topic, _register_dataset
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DECEPTION_DATA_PATH = REPO_ROOT / "data" / "deception"
@@ -35,6 +36,7 @@ def _dialogue_from_dict_list(sample: list[dict]) -> Dialogue:
 # DolusChat
 # ---------------------------------------------------------------------------
 
+@_register_dataset("dolus_chat", Topic.DECEPTION, "Dolus chat deception")
 def dolus_chat() -> Dataset:
     ds = load_dataset("AlignmentResearch/DolusChat")["train"]
     dialogues, labels = [], []
@@ -56,6 +58,7 @@ def dolus_chat() -> Dataset:
 # Roleplaying
 # ---------------------------------------------------------------------------
 
+@_register_dataset("roleplaying", Topic.DECEPTION, "Roleplaying dataset")
 def roleplaying() -> Dataset:
     data = yaml.safe_load(open(DECEPTION_DATA_PATH / "roleplaying" / "dataset.yaml"))
     dialogues, labels = [], []
@@ -158,6 +161,7 @@ def _insider_trading_prewritten() -> Dataset:
     return Dataset(dialogues, labels, "insider_trading:prewritten", metadata).shuffle()
 
 
+@_register_dataset("insider_trading", Topic.DECEPTION, "Insider trading dataset")
 def insider_trading(variant: str = "upscale") -> Dataset:
     loaders = {"upscale": _insider_trading_upscale, "onpolicy": _insider_trading_onpolicy, "prewritten": _insider_trading_prewritten}
     if variant not in loaders:
@@ -169,6 +173,7 @@ def insider_trading(variant: str = "upscale") -> Dataset:
 # TruthfulQA
 # ---------------------------------------------------------------------------
 
+@_register_dataset("truthful_qa", Topic.DECEPTION, "TruthfulQA dataset")
 def truthful_qa() -> Dataset:
     df = pd.read_csv(DECEPTION_DATA_PATH / "truthfulqa" / "eval_examples.csv")
     dialogues, labels = [], []
@@ -215,6 +220,7 @@ def _ai_liar_create_dialogue(raw: dict, deceptive: bool, variant: str) -> Dialog
     return dialogue
 
 
+@_register_dataset("ai_liar", Topic.DECEPTION, "AI liar dataset")
 def ai_liar(variant: str = "original_with_answers") -> Dataset:
     variants = ["original_with_answers", "original_without_answers", "mc", "normal_instruction", "deceive_instruction"]
     if variant not in variants:
@@ -240,6 +246,7 @@ def ai_liar(variant: str = "original_with_answers") -> Dataset:
 # REPE
 # ---------------------------------------------------------------------------
 
+@_register_dataset("repe", Topic.DECEPTION, "REPE dataset")
 def repe(variant: str = "you_are_fact_sys") -> Dataset:
     variants = ["plain", "plain_with_sys", "you_are", "you_are_fact", "you_are_fact_sys"]
     if variant not in variants:
@@ -320,6 +327,7 @@ def _werewolf_opening(role: str, night_info: str, discussion: list[dict]) -> Mes
     return Message("user", text)
 
 
+@_register_dataset("werewolf", Topic.DECEPTION, "Werewolf dataset")
 def werewolf(variant: str = "paired") -> Dataset:
     if variant not in ["paired", "open_response"]:
         raise ValueError(f"Unknown variant: {variant}. Available: paired, open_response")
@@ -380,6 +388,7 @@ def _sandbagging_mmlu(n: int) -> list[dict]:
     return [_sandbagging_format_row(row, row["subject"]) for row in ds]
 
 
+@_register_dataset("sandbagging", Topic.DECEPTION, "Sandbagging dataset")
 def sandbagging(variant: str = "wmdp_mmlu", total_examples: int = 1000) -> Dataset:
     if variant != "wmdp_mmlu":
         raise ValueError(f"Unknown variant: {variant}. Available: wmdp_mmlu")
@@ -449,6 +458,7 @@ def _ai_audit_prepare(dialogue: Dialogue, num_skipped: int, reasoning: bool) -> 
     return dialogue
 
 
+@_register_dataset("ai_audit", Topic.DECEPTION, "AI audit dataset")
 def ai_audit(variant: str = "no_reasoning") -> Dataset:
     variants = ["no_reasoning", "reasoning", "a1_2", "a1_2_reasoning"]
     if variant not in variants:

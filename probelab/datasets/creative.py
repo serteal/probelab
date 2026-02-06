@@ -7,8 +7,10 @@ from datasets import load_dataset
 from ..types import Label, Message
 from .base import Dataset
 from .builders import build_from_messages
+from .registry import Topic, _register_dataset
 
 
+@_register_dataset("synthetic_persona_chat", Topic.CREATIVE, "Synthetic persona chat")
 def synthetic_persona_chat() -> Dataset:
     """Synthetic Persona Chat 20K+ from Google."""
     data = load_dataset("google/Synthetic-Persona-Chat")["train"]
@@ -43,6 +45,7 @@ def synthetic_persona_chat() -> Dataset:
     return Dataset(dialogues, labels, "synthetic_persona_chat", metadata).shuffle()
 
 
+@_register_dataset("persona_based_chat", Topic.CREATIVE, "Persona-based chat")
 def persona_based_chat() -> Dataset:
     """Persona-Based Chat 64K+."""
     data = load_dataset("nazlicanto/persona-based-chat")["train"]
@@ -72,6 +75,7 @@ def persona_based_chat() -> Dataset:
     return Dataset(dialogues, labels, "persona_based_chat", metadata).shuffle()
 
 
+@_register_dataset("roleplay", Topic.CREATIVE, "Roleplay")
 def roleplay() -> Dataset:
     """Roleplay 5K+ character conversations."""
     data = load_dataset("hieunguyenminh/roleplay")["train"]
@@ -94,6 +98,7 @@ def roleplay() -> Dataset:
     return Dataset(dialogues, labels, "roleplay", metadata).shuffle()
 
 
+@_register_dataset("multi_character_dialogue", Topic.CREATIVE, "Multi-character dialogue")
 def multi_character_dialogue() -> Dataset:
     """Multi-Character Dialogue 10K+ scenarios."""
     data = load_dataset("agentlans/multi-character-dialogue")["train"]
@@ -113,6 +118,7 @@ def multi_character_dialogue() -> Dataset:
     return Dataset(dialogues, labels, "multi_character_dialogue", metadata).shuffle()
 
 
+@_register_dataset("literary_genre", Topic.CREATIVE, "Literary genre")
 def literary_genre() -> Dataset:
     """Literary Genre Examples 86 genres."""
     data = load_dataset("agentlans/literary-genre-examples")["train"]
@@ -133,6 +139,7 @@ def literary_genre() -> Dataset:
     return Dataset(dialogues, labels, "literary_genre", metadata).shuffle()
 
 
+@_register_dataset("writing_prompts", Topic.CREATIVE, "Writing prompts")
 def writing_prompts() -> Dataset:
     """Writing Prompts for story generation."""
     data = load_dataset("fabraz/writingPromptAug")["train"]

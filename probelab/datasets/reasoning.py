@@ -6,8 +6,10 @@ from datasets import load_dataset
 
 from ..types import Label, Message
 from .base import Dataset
+from .registry import Topic, _register_dataset
 
 
+@_register_dataset("openr1_math", Topic.REASONING, "OpenR1 math")
 def openr1_math(config: str = "default") -> Dataset:
     """OpenR1-Math-220k - large-scale math reasoning."""
     data = load_dataset("open-r1/OpenR1-Math-220k", config)["train"]
@@ -42,6 +44,7 @@ def openr1_math(config: str = "default") -> Dataset:
     return Dataset(dialogues, labels, "openr1_math", metadata).shuffle()
 
 
+@_register_dataset("openmath_reasoning", Topic.REASONING, "OpenMath reasoning")
 def openmath_reasoning() -> Dataset:
     """OpenMathReasoning 306K from NVIDIA."""
     data = load_dataset("nvidia/OpenMathReasoning")["train"]
@@ -66,6 +69,7 @@ def openmath_reasoning() -> Dataset:
     return Dataset(dialogues, labels, "openmath_reasoning", metadata).shuffle()
 
 
+@_register_dataset("numina_math", Topic.REASONING, "NuminaMath CoT")
 def numina_math() -> Dataset:
     """NuminaMath CoT 860K+ competition problems."""
     data = load_dataset("AI-MO/NuminaMath-CoT")["train"]
@@ -98,6 +102,7 @@ def numina_math() -> Dataset:
     return Dataset(dialogues, labels, "numina_math", metadata).shuffle()
 
 
+@_register_dataset("math_instruct_enhanced", Topic.REASONING, "MathInstruct enhanced")
 def math_instruct_enhanced() -> Dataset:
     """Enhanced MathInstruct from TIGER-Lab."""
     data = load_dataset("TIGER-Lab/MathInstruct")["train"]

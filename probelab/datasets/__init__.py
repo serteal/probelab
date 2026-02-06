@@ -8,6 +8,6 @@ Usage:
 """
 
 from .base import Dataset
-from .registry import info, list_categories, list_datasets, load
+from .registry import Topic, info, list_categories, list_datasets, load
 
-__all__ = ["Dataset", "load", "list_datasets", "list_categories", "info"]
+__all__ = ["Dataset", "Topic", "load", "list_datasets", "list_categories", "info"]

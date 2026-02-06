@@ -6,10 +6,12 @@ from datasets import load_dataset
 
 from ..types import Label, Message
 from .base import Dataset
+from .registry import Topic, _register_dataset
 
 SENTIMENT_MAP = {0: "negative", 1: "neutral", 2: "positive"}
 
 
+@_register_dataset("caselaw", Topic.LEGAL_FINANCE, "Case law")
 def caselaw(config: str = "US") -> Dataset:
     """HFforLegal Case Law - legal decisions from various countries."""
     data = load_dataset("HFforLegal/case-law", config)["train"]
@@ -29,6 +31,7 @@ def caselaw(config: str = "US") -> Dataset:
     return Dataset(dialogues, labels, "caselaw", metadata).shuffle()
 
 
+@_register_dataset("finance_tasks", Topic.LEGAL_FINANCE, "Finance tasks")
 def finance_tasks() -> Dataset:
     """AdaptLLM Finance Tasks for domain adaptation."""
     data = load_dataset("AdaptLLM/finance-tasks")["train"]
@@ -51,6 +54,7 @@ def finance_tasks() -> Dataset:
     return Dataset(dialogues, labels, "finance_tasks").shuffle()
 
 
+@_register_dataset("financial_phrasebank", Topic.LEGAL_FINANCE, "Financial phrasebank")
 def financial_phrasebank(config: str = "sentences_allagree") -> Dataset:
     """Financial Phrasebank 4.8K - financial news sentiment."""
     data = load_dataset("takala/financial_phrasebank", config)["train"]
@@ -67,6 +71,7 @@ def financial_phrasebank(config: str = "sentences_allagree") -> Dataset:
     return Dataset(dialogues, labels, "financial_phrasebank", metadata).shuffle()
 
 
+@_register_dataset("legal_advice_reddit", Topic.LEGAL_FINANCE, "Legal advice Reddit")
 def legal_advice_reddit() -> Dataset:
     """Legal Advice from Reddit (subset of Pile of Law)."""
     data = load_dataset("pile-of-law/pile-of-law", "r_legaladvice")["train"]

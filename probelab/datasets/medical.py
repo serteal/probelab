@@ -6,8 +6,10 @@ from datasets import load_dataset
 
 from ..types import Label, Message
 from .base import Dataset
+from .registry import Topic, _register_dataset
 
 
+@_register_dataset("meddialog", Topic.MEDICAL, "MedDialog")
 def meddialog() -> Dataset:
     """MedDialog 260K+ doctor-patient conversations."""
     data = load_dataset("bigbio/meddialog", "meddialog_en_bigbio_text")["train"]
@@ -22,6 +24,7 @@ def meddialog() -> Dataset:
     return Dataset(dialogues, labels, "meddialog").shuffle()
 
 
+@_register_dataset("medical_soap", Topic.MEDICAL, "Medical SOAP")
 def medical_soap() -> Dataset:
     """Medical Dialogue to SOAP Summary 10K."""
     data = load_dataset("omi-health/medical-dialogue-to-soap-summary")["train"]
@@ -41,6 +44,7 @@ def medical_soap() -> Dataset:
     return Dataset(dialogues, labels, "medical_soap", metadata).shuffle()
 
 
+@_register_dataset("clinical_notes", Topic.MEDICAL, "Clinical notes")
 def clinical_notes() -> Dataset:
     """Augmented Clinical Notes with synthetic conversations."""
     data = load_dataset("AGBonnet/augmented-clinical-notes")["train"]
@@ -73,6 +77,7 @@ def clinical_notes() -> Dataset:
     return Dataset(dialogues, labels, "clinical_notes", metadata).shuffle()
 
 
+@_register_dataset("know_medical", Topic.MEDICAL, "Know medical dialogue")
 def know_medical() -> Dataset:
     """Know Medical Dialogue V2 - medical Q&A."""
     data = load_dataset("knowrohit07/know_medical_dialogue_v2")["train"]

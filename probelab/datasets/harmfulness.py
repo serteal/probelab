@@ -7,6 +7,7 @@ from datasets import load_dataset
 
 from ..types import Label, Message
 from .base import Dataset
+from .registry import Topic, _register_dataset
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -15,6 +16,7 @@ def _sanitize_prompt(prompt: str) -> str:
     return prompt.replace("<bos><start_of_turn>user\n", "").replace("<end_of_turn>\n<start_of_turn>model\n", "")
 
 
+@_register_dataset("wild_jailbreak", Topic.HARMFULNESS, "Wild jailbreak dataset")
 def wild_jailbreak() -> Dataset:
     df = pd.read_csv(REPO_ROOT / "data" / "harmfulness" / "wildjailbreak_train.csv")
     dialogues, labels = [], []
@@ -30,6 +32,7 @@ def wild_jailbreak() -> Dataset:
     return Dataset(dialogues, labels, "wild_jailbreak").shuffle()
 
 
+@_register_dataset("circuit_breakers", Topic.HARMFULNESS, "Circuit breakers dataset")
 def circuit_breakers(split: str = "train") -> Dataset:
     ds = load_dataset("Mechanistic-Anomaly-Detection/gemma2-jailbreaks")
     data = ds["circuit_breakers_test"] if split == "test" else ds["circuit_breakers_train"]
@@ -40,6 +43,7 @@ def circuit_breakers(split: str = "train") -> Dataset:
     return Dataset(dialogues, labels, "circuit_breakers").shuffle()
 
 
+@_register_dataset("benign_instructions", Topic.HARMFULNESS, "Benign instructions")
 def benign_instructions(split: str = "train") -> Dataset:
     ds = load_dataset("Mechanistic-Anomaly-Detection/gemma2-jailbreaks")
     data = ds["benign_instructions_test"] if split == "test" else ds["benign_instructions_train"]
@@ -50,6 +54,7 @@ def benign_instructions(split: str = "train") -> Dataset:
     return Dataset(dialogues, labels, "benign_instructions").shuffle()
 
 
+@_register_dataset("wildguard_mix", Topic.HARMFULNESS, "WildGuard mix dataset")
 def wildguard_mix(split: str = "train") -> Dataset:
     ds_split = "wildguardtest" if split == "test" else "wildguardtrain"
     data = load_dataset("allenai/wildguardmix", ds_split)[split]
@@ -66,6 +71,7 @@ def wildguard_mix(split: str = "train") -> Dataset:
     return Dataset(dialogues, labels, "wildguard_mix", metadata).shuffle()
 
 
+@_register_dataset("xstest_response", Topic.HARMFULNESS, "XSTest response dataset")
 def xstest_response() -> Dataset:
     data = load_dataset("allenai/xstest-response")["response_harmfulness"]
 
@@ -75,6 +81,7 @@ def xstest_response() -> Dataset:
     return Dataset(dialogues, labels, "xstest_response").shuffle()
 
 
+@_register_dataset("clearharm_llama3", Topic.HARMFULNESS, "ClearHarm Llama3")
 def clearharm_llama3() -> Dataset:
     df = pd.read_json(REPO_ROOT / "data" / "harmfulness" / "outputs_huihui-ai_Meta-Llama-3.json")
 
@@ -84,6 +91,7 @@ def clearharm_llama3() -> Dataset:
     return Dataset(dialogues, labels, "clearharm_llama3").shuffle()
 
 
+@_register_dataset("clearharm_mistral", Topic.HARMFULNESS, "ClearHarm Mistral")
 def clearharm_mistral() -> Dataset:
     df = pd.read_json(REPO_ROOT / "data" / "harmfulness" / "outputs_huihui-ai_Mistral-Small-24B-Instruct-2501-abliterated_20250702_233538.json")
 

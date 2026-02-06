@@ -8,8 +8,10 @@ from datasets import load_dataset
 from ..types import Label, Message
 from .base import Dataset
 from .builders import build_from_messages
+from .registry import Topic, _register_dataset
 
 
+@_register_dataset("xlam_function_calling", Topic.AGENTS, "xLAM function calling")
 def xlam_function_calling() -> Dataset:
     """xLAM Function Calling 60K from Salesforce."""
     data = load_dataset("Salesforce/xlam-function-calling-60k")["train"]
@@ -44,6 +46,7 @@ def xlam_function_calling() -> Dataset:
     return Dataset(dialogues, labels, "xlam_function_calling", metadata).shuffle()
 
 
+@_register_dataset("glaive_function_calling", Topic.AGENTS, "Glaive function calling")
 def glaive_function_calling() -> Dataset:
     """Glaive Function Calling 52K."""
     data = load_dataset("glaiveai/glaive-function-calling")["train"]
@@ -82,6 +85,7 @@ def glaive_function_calling() -> Dataset:
     return Dataset(dialogues, labels, "glaive_function_calling").shuffle()
 
 
+@_register_dataset("hermes_function_calling", Topic.AGENTS, "Hermes function calling")
 def hermes_function_calling() -> Dataset:
     """Hermes Function Calling V1 from NousResearch."""
     data = load_dataset("NousResearch/hermes-function-calling-v1")["train"]
@@ -97,6 +101,7 @@ def hermes_function_calling() -> Dataset:
     return Dataset(dialogues, labels, "hermes_function_calling").shuffle()
 
 
+@_register_dataset("function_calling_sharegpt", Topic.AGENTS, "Function calling ShareGPT")
 def function_calling_sharegpt() -> Dataset:
     """Function Calling ShareGPT 86K."""
     data = load_dataset("hypervariance/function-calling-sharegpt")["train"]

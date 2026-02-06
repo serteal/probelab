@@ -6,8 +6,10 @@ from datasets import load_dataset
 
 from ..types import Label, Message
 from .base import Dataset
+from .registry import Topic, _register_dataset
 
 
+@_register_dataset("mentalchat", Topic.MENTAL_HEALTH, "MentalChat")
 def mentalchat() -> Dataset:
     """MentalChat16K - synthetic counselor-client conversations."""
     data = load_dataset("ShenLab/MentalChat16K")["train"]
@@ -34,6 +36,7 @@ def mentalchat() -> Dataset:
     return Dataset(dialogues, labels, "mentalchat").shuffle()
 
 
+@_register_dataset("mental_health_counseling", Topic.MENTAL_HEALTH, "Mental health counseling")
 def mental_health_counseling() -> Dataset:
     """Mental Health Counseling Conversations."""
     data = load_dataset("Amod/mental_health_counseling_conversations")["train"]
@@ -56,6 +59,7 @@ def mental_health_counseling() -> Dataset:
     return Dataset(dialogues, labels, "mental_health_counseling").shuffle()
 
 
+@_register_dataset("prosocial_dialog", Topic.MENTAL_HEALTH, "Prosocial dialog")
 def prosocial_dialog() -> Dataset:
     """ProsocialDialog 58K - prosocial responses to problematic content."""
     data = load_dataset("allenai/prosocial-dialog")["train"]
@@ -84,6 +88,7 @@ def prosocial_dialog() -> Dataset:
     return Dataset(dialogues, labels, "prosocial_dialog", metadata).shuffle()
 
 
+@_register_dataset("emotional_support", Topic.MENTAL_HEALTH, "Emotional support")
 def emotional_support() -> Dataset:
     """Mental Health Chatbot Dataset for emotional support."""
     data = load_dataset("heliosbrahma/mental_health_chatbot_dataset")["train"]
