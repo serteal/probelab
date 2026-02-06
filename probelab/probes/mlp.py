@@ -159,22 +159,27 @@ class MLP(BaseProbe):
             X: Activations without LAYER axis
 
         Returns:
-            Probabilities tensor [batch, 2] or [n_tokens, 2] (no gradients)
+            Probability of positive class:
+            - [batch, seq] if X has SEQ axis (token-level)
+            - [batch] if X has no SEQ axis (sequence-level)
         """
         self._check_fitted()
 
         if X.has_axis(Axis.LAYER):
             raise ValueError("MLP expects no LAYER axis")
 
-        if X.has_axis(Axis.SEQ):
-            features, _ = X.extract_tokens()
-        else:
-            features = X.activations
-
         with torch.no_grad():
-            logits = self(features)
-            probs_pos = torch.sigmoid(logits)
-            return torch.stack([1 - probs_pos, probs_pos], dim=-1)
+            if X.has_axis(Axis.SEQ):
+                features, _ = X.extract_tokens()
+                flat_probs = torch.sigmoid(self(features))
+
+                # Scatter back to [batch, seq]
+                mask = X.detection_mask.bool()
+                probs = torch.zeros_like(mask, dtype=flat_probs.dtype)
+                probs[mask] = flat_probs
+                return probs
+            else:
+                return torch.sigmoid(self(X.activations))
 
     def save(self, path: Path | str) -> None:
         self._check_fitted()

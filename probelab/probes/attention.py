@@ -193,7 +193,7 @@ class Attention(BaseProbe):
             X: Activations with SEQ axis, without LAYER axis
 
         Returns:
-            Probabilities tensor [batch, 2] (no gradients)
+            Probability of positive class [batch]
         """
         self._check_fitted()
 
@@ -208,8 +208,7 @@ class Attention(BaseProbe):
         with torch.no_grad():
             logits, attn_weights = self(sequences, detection_mask)
             self.attention_weights = attn_weights.detach().cpu()
-            probs_pos = torch.sigmoid(logits)
-            return torch.stack([1 - probs_pos, probs_pos], dim=-1)
+            return torch.sigmoid(logits)
 
     def save(self, path: Path | str) -> None:
         self._check_fitted()

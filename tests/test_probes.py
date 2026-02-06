@@ -81,7 +81,7 @@ class TestLogisticPredict(unittest.TestCase):
     prepared = acts.select(layer=0).pool("sequence", "mean")
     p = Logistic(device="cpu").fit(prepared, labels)
     scores = p.predict(prepared)
-    self.assertEqual(scores.shape, (20, 2))
+    self.assertEqual(scores.shape, (20,))  # [batch] for sequence-level
 
   def test_predict_valid_probabilities(self):
     acts, labels = _separable_acts()
@@ -90,15 +90,14 @@ class TestLogisticPredict(unittest.TestCase):
     probs = p.predict(prepared)
     self.assertTrue(torch.all(probs >= 0))
     self.assertTrue(torch.all(probs <= 1))
-    self.assertTrue(torch.allclose(probs.sum(dim=1), torch.ones(20)))
 
   def test_predict_separable_accuracy(self):
     acts, labels = _separable_acts(n_samples=20, gap=3.0)
     prepared = acts.select(layer=0).pool("sequence", "mean")
     p = Logistic(device="cpu").fit(prepared, labels)
     probs = p.predict(prepared)
-    pos_correct = (probs[:10, 1] > 0.5).sum()
-    neg_correct = (probs[10:, 0] > 0.5).sum()
+    pos_correct = (probs[:10] > 0.5).sum()  # Positive class should have high prob
+    neg_correct = (probs[10:] < 0.5).sum()  # Negative class should have low prob
     self.assertGreater(pos_correct + neg_correct, 14)  # >70% accuracy
 
   def test_predict_before_fit_raises(self):
@@ -183,7 +182,7 @@ class TestMLPPredict(unittest.TestCase):
     prepared = acts.select(layer=0).pool("sequence", "mean")
     p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
     scores = p.predict(prepared)
-    self.assertEqual(scores.shape, (20, 2))
+    self.assertEqual(scores.shape, (20,))  # [batch] for sequence-level
 
   def test_predict_valid_probabilities(self):
     acts, labels = _separable_acts()
@@ -192,7 +191,6 @@ class TestMLPPredict(unittest.TestCase):
     probs = p.predict(prepared)
     self.assertTrue(torch.all(probs >= 0))
     self.assertTrue(torch.all(probs <= 1))
-    self.assertTrue(torch.allclose(probs.sum(dim=1), torch.ones(20)))
 
   def test_predict_before_fit_raises(self):
     acts = _acts()
@@ -242,10 +240,10 @@ class TestProbeInterface(unittest.TestCase):
     self.assertIs(result, p)
     self.assertTrue(p._fitted)
 
-    # Test predict returns tensor
+    # Test predict returns tensor with batch dimension
     probs = p.predict(prepared)
-    self.assertEqual(probs.shape[0], 20)
-    self.assertEqual(probs.shape[-1], 2)
+    self.assertEqual(probs.shape[0], 20)  # batch size
+    self.assertEqual(len(probs.shape), 1)  # [batch] for sequence-level
 
     # Test save/load
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -309,7 +307,7 @@ class TestProbeEdgeCases(unittest.TestCase):
 
     p = Logistic(device="cpu").fit(prepared, labels)
     scores = p.predict(prepared)
-    self.assertEqual(scores.shape, (4, 2))
+    self.assertEqual(scores.shape, (4,))  # [batch]
 
   def test_integer_labels(self):
     acts, _ = _separable_acts(n_samples=10)
@@ -339,10 +337,9 @@ class TestProbeDeviceHandling(unittest.TestCase):
     self.assertTrue(p._fitted)
     self.assertTrue(p._trained_on_tokens)
 
-    # Verify prediction works - returns [n_tokens, 2] for token-level
+    # Verify prediction works - returns [batch, seq] for token-level
     probs = p.predict(prepared)
-    self.assertEqual(probs.shape[0], 50)  # 10 samples * 5 tokens each
-    self.assertEqual(probs.shape[1], 2)
+    self.assertEqual(probs.shape, (10, 5))  # [batch, seq]
 
   def test_mlp_token_level_device_consistency(self):
     """Test that MLP token-level training handles device correctly."""
@@ -353,10 +350,9 @@ class TestProbeDeviceHandling(unittest.TestCase):
     self.assertTrue(p._fitted)
     self.assertTrue(p._trained_on_tokens)
 
-    # Returns [n_tokens, 2] for token-level
+    # Returns [batch, seq] for token-level
     probs = p.predict(prepared)
-    self.assertEqual(probs.shape[0], 50)  # 10 samples * 5 tokens each
-    self.assertEqual(probs.shape[1], 2)
+    self.assertEqual(probs.shape, (10, 5))  # [batch, seq]
 
   def test_logistic_repeat_interleave_same_device(self):
     """Verify repeat_interleave uses consistent device for labels and tokens_per_sample."""
@@ -369,7 +365,6 @@ class TestProbeDeviceHandling(unittest.TestCase):
 
     # If device handling is wrong, this would fail during fit
     self.assertTrue(p._fitted)
-    self.assertEqual(p._tokens_per_sample.sum().item(), 6 * 4)  # All tokens detected
 
 if __name__ == '__main__':
   unittest.main()

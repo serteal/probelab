@@ -208,7 +208,7 @@ class GatedBipolar(BaseProbe):
             X: Activations with SEQ axis, without LAYER axis
 
         Returns:
-            Probabilities tensor [batch, 2] (no gradients)
+            Probability of positive class [batch]
         """
         self._check_fitted()
 
@@ -221,8 +221,7 @@ class GatedBipolar(BaseProbe):
         detection_mask = X.detection_mask.to(self.device)
 
         with torch.no_grad():
-            probs_pos = torch.sigmoid(self(sequences, detection_mask))
-            return torch.stack([1 - probs_pos, probs_pos], dim=-1)
+            return torch.sigmoid(self(sequences, detection_mask))
 
     def save(self, path: Path | str) -> None:
         self._check_fitted()
