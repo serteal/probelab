@@ -35,13 +35,13 @@ print(f"Train: {train_ds}")
 print(f"Test: {test_ds}")
 
 # Tokenize
-train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
-test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
+train_tokens = pl.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
+test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
 # Collect activations (single layer returns no LAYER axis, keeps SEQ for attention-based probes)
 print(f"\nCollecting activations from layer {LAYER}...")
-train_acts = pl.processing.collect_activations(model, train_tokens, layers=[LAYER])
-test_acts = pl.processing.collect_activations(model, test_tokens, layers=[LAYER])
+train_acts = pl.collect_activations(model, train_tokens, layers=[LAYER])
+test_acts = pl.collect_activations(model, test_tokens, layers=[LAYER])
 
 # Pool for probes that don't need sequence dimension
 train_pooled = train_acts.mean_pool()

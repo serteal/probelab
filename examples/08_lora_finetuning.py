@@ -47,11 +47,11 @@ train_ds, test_ds = dataset.split(0.8, stratified=True)
 print(f"Train: {train_ds}")
 print(f"Test: {test_ds}")
 
-train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
-test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
+train_tokens = pl.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
+test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
-train_acts = pl.processing.collect_activations(model, train_tokens, layers=[LAYER])
-test_acts = pl.processing.collect_activations(model, test_tokens, layers=[LAYER])
+train_acts = pl.collect_activations(model, train_tokens, layers=[LAYER])
+test_acts = pl.collect_activations(model, test_tokens, layers=[LAYER])
 
 train_prepared = train_acts.mean_pool()
 test_prepared = test_acts.mean_pool()
@@ -174,7 +174,7 @@ print("\n--- Step 5: Evaluation ---")
 peft_model.eval()
 
 # Collect new activations from fine-tuned model (single layer, no LAYER axis)
-test_acts_new = pl.processing.collect_activations(peft_model, test_tokens, layers=[LAYER])
+test_acts_new = pl.collect_activations(peft_model, test_tokens, layers=[LAYER])
 test_prepared_new = test_acts_new.mean_pool()
 
 # Evaluate with same probe

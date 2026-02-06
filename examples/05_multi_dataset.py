@@ -58,13 +58,13 @@ print(f"Test: {test_ds}")
 
 # Tokenize with last assistant message mask
 mask = pl.masks.assistant() & pl.masks.nth_message(-1)
-train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=mask)
-test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=mask)
+train_tokens = pl.tokenize_dataset(train_ds, tokenizer, mask=mask)
+test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=mask)
 
 # Collect activations (single layer returns no LAYER axis)
 print(f"\nCollecting activations from layer {LAYER}...")
-train_acts = pl.processing.collect_activations(model, train_tokens, layers=[LAYER])
-test_acts = pl.processing.collect_activations(model, test_tokens, layers=[LAYER])
+train_acts = pl.collect_activations(model, train_tokens, layers=[LAYER])
+test_acts = pl.collect_activations(model, test_tokens, layers=[LAYER])
 
 # Prepare
 train_prepared = train_acts.mean_pool()
@@ -91,8 +91,8 @@ datasets_to_eval = [
 for name, ds in datasets_to_eval:
     # Get fresh samples not in training
     test_sample = ds.sample(30, stratified=True, seed=123)
-    tokens = pl.processing.tokenize_dataset(test_sample, tokenizer, mask=mask)
-    acts = pl.processing.collect_activations(model, tokens, layers=[LAYER])
+    tokens = pl.tokenize_dataset(test_sample, tokenizer, mask=mask)
+    acts = pl.collect_activations(model, tokens, layers=[LAYER])
     prepared = acts.mean_pool()
     probs = probe.predict(prepared)
     auroc = pl.metrics.auroc(test_sample.labels, probs)

@@ -36,8 +36,8 @@ print(f"Train samples: {len(train_ds)}")
 print(f"Test samples: {len(test_ds)}")
 
 # Tokenize
-train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
-test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
+train_tokens = pl.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
+test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
 d_model = model.config.hidden_size
 print(f"Hidden dimension: {d_model}")
@@ -95,14 +95,14 @@ probe_streamed.fit(train_acts_streamed, train_ds.labels)
 print("\n--- Method 2: Built-in pooling during collection ---")
 
 # collect_activations can pool on-the-fly, reducing memory
-train_acts_pooled = pl.processing.collect_activations(
+train_acts_pooled = pl.collect_activations(
     model,
     train_tokens,
     layers=[LAYER],
     batch_size=BATCH_SIZE,
     pool="mean",  # Pool during collection
 )
-test_acts_pooled = pl.processing.collect_activations(
+test_acts_pooled = pl.collect_activations(
     model,
     test_tokens,
     layers=[LAYER],

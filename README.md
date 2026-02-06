@@ -37,16 +37,16 @@ train_ds, test_ds = (
 ).split(0.8)
 
 # Tokenize with mask selecting assistant tokens only
-train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
-test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
+train_tokens = pl.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
+test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
-# Collect activations
-train_acts = pl.processing.collect_activations(model, train_tokens, layers=[16])
-test_acts = pl.processing.collect_activations(model, test_tokens, layers=[16])
+# Collect activations (single layer returns no LAYER axis)
+train_acts = pl.collect_activations(model, train_tokens, layers=[16])
+test_acts = pl.collect_activations(model, test_tokens, layers=[16])
 
-# Prepare: select layer, pool over sequence
-train_prepared = train_acts.select(layer=16).pool("sequence", "mean")
-test_prepared = test_acts.select(layer=16).pool("sequence", "mean")
+# Pool over sequence dimension
+train_prepared = train_acts.mean_pool()
+test_prepared = test_acts.mean_pool()
 
 # Train and evaluate (probes auto-detect device from input)
 for name, probe in [
@@ -54,8 +54,8 @@ for name, probe in [
     ("mlp", pl.probes.MLP()),
 ]:
     probe.fit(train_prepared, train_ds.labels)
-    scores = probe.predict(test_prepared)
-    print(f"{name}: AUROC={pl.metrics.auroc(test_ds.labels, scores.scores):.3f}")
+    probs = probe.predict(test_prepared)
+    print(f"{name}: AUROC={pl.metrics.auroc(test_ds.labels, probs):.3f}")
 ```
 
 ## Development

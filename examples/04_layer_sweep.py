@@ -35,16 +35,16 @@ print(f"Train: {train_ds}")
 print(f"Test: {test_ds}")
 
 # Tokenize
-train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
-test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
+train_tokens = pl.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
+test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
 # Collect activations from ALL layers at once
 # This is more efficient than collecting one layer at a time
 all_layers = list(range(num_layers))
 print(f"\nCollecting activations from all {num_layers} layers...")
 
-train_acts = pl.processing.collect_activations(model, train_tokens, layers=all_layers, batch_size=8)
-test_acts = pl.processing.collect_activations(model, test_tokens, layers=all_layers, batch_size=8)
+train_acts = pl.collect_activations(model, train_tokens, layers=all_layers, batch_size=8)
+test_acts = pl.collect_activations(model, test_tokens, layers=all_layers, batch_size=8)
 
 print(f"Full activations shape: {train_acts.shape}")
 

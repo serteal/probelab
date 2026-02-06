@@ -39,13 +39,13 @@ print(f"Train: {train_ds}")
 print(f"Test: {test_ds}")
 
 # Tokenize (using all assistant tokens)
-train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
-test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
+train_tokens = pl.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
+test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
 # Collect activations (single layer returns no LAYER axis, keeps SEQ)
 print(f"\nCollecting activations from layer {LAYER}...")
-train_acts = pl.processing.collect_activations(model, train_tokens, layers=[LAYER])
-test_acts = pl.processing.collect_activations(model, test_tokens, layers=[LAYER])
+train_acts = pl.collect_activations(model, train_tokens, layers=[LAYER])
+test_acts = pl.collect_activations(model, test_tokens, layers=[LAYER])
 
 print(f"Token-level activations shape: {train_acts.shape}")
 

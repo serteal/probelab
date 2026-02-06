@@ -34,15 +34,15 @@ print(f"Train: {train_ds}")
 print(f"Test: {test_ds}")
 
 # Tokenize with assistant mask (only extract assistant tokens)
-train_tokens = pl.processing.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
-test_tokens = pl.processing.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
+train_tokens = pl.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
+test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
 print(f"Token shapes: train={train_tokens.shape}, test={test_tokens.shape}")
 
 # Collect activations from target layer
 print(f"\nCollecting activations from layer {LAYER}...")
-train_acts = pl.processing.collect_activations(model, train_tokens, layers=[LAYER], batch_size=8)
-test_acts = pl.processing.collect_activations(model, test_tokens, layers=[LAYER], batch_size=8)
+train_acts = pl.collect_activations(model, train_tokens, layers=[LAYER], batch_size=8)
+test_acts = pl.collect_activations(model, test_tokens, layers=[LAYER], batch_size=8)
 
 # Pool sequence dimension (single layer already has no LAYER axis)
 train_prepared = train_acts.mean_pool()

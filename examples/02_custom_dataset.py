@@ -101,13 +101,13 @@ model = AutoModelForCausalLM.from_pretrained(
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 # Tokenize custom dataset
-tokens = pl.processing.tokenize_dataset(custom_dataset, tokenizer, mask=pl.masks.assistant())
+tokens = pl.tokenize_dataset(custom_dataset, tokenizer, mask=pl.masks.assistant())
 
 print(f"Tokenized shape: {tokens.shape}")
 print(f"Padding side: {tokens.padding_side}")
 
 # Collect activations (single layer returns no LAYER axis)
-acts = pl.processing.collect_activations(model, tokens, layers=[LAYER], batch_size=2)
+acts = pl.collect_activations(model, tokens, layers=[LAYER], batch_size=2)
 prepared = acts.mean_pool()
 
 print(f"Activations shape: {prepared.shape}")
