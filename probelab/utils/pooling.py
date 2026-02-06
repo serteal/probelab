@@ -1,4 +1,4 @@
-"""Shared pooling utilities for activations."""
+"""Pooling utilities for tensors and activations."""
 
 from __future__ import annotations
 
@@ -8,7 +8,44 @@ import torch.nn.functional as F
 from ..types import AggregationMethod
 
 
-def masked_pool(
+def pool(
+    x: torch.Tensor,
+    mask: torch.Tensor,
+    method: str = "mean",
+    *,
+    dim: int = 1,
+    alpha: float = 0.5,
+    window_size: int = 10,
+) -> torch.Tensor:
+    """Pool tensor over a dimension using mask.
+
+    Args:
+        x: Input tensor [batch, seq, ...] or any shape with batch and pooling dims
+        mask: Boolean mask [batch, seq] where True = valid positions
+        method: Pooling method:
+            - "mean": Average over valid positions
+            - "max": Maximum over valid positions
+            - "last_token": Last valid position only
+            - "ema": Exponential moving average, then max
+            - "rolling": Rolling window mean, then max
+        dim: Dimension to pool over (default: 1 for sequence)
+        alpha: EMA smoothing factor in (0, 1]. Higher = more weight on recent.
+        window_size: Rolling window size (>= 1)
+
+    Returns:
+        Tensor with pooled dimension removed
+
+    Examples:
+        >>> probs = probe.predict(acts)  # [batch, seq]
+        >>> mask = acts.detection_mask.bool()
+        >>> pooled = pool(probs, mask, "mean")  # [batch]
+        >>> pooled = pool(probs, mask, "ema", alpha=0.3)
+        >>> pooled = pool(probs, mask, "rolling", window_size=5)
+    """
+    return _masked_pool(x, mask, method, seq_dim=dim, batch_dim=0, alpha=alpha, window_size=window_size)
+
+
+def _masked_pool(
     tensor: torch.Tensor,
     mask: torch.Tensor,
     method: AggregationMethod | str,
@@ -17,32 +54,7 @@ def masked_pool(
     alpha: float = 0.5,
     window_size: int = 10,
 ) -> torch.Tensor:
-    """Pool tensor over sequence dimension using only masked positions.
-
-    This is the shared implementation used by Activations and
-    batch_activations_pooled to avoid code duplication.
-
-    Args:
-        tensor: Input tensor of any shape containing a batch and sequence dimension
-        mask: Boolean or float mask of shape [batch, seq] where True/1.0 indicates
-              valid positions to include in pooling
-        method: Pooling method - "mean", "max", "last_token", "ema", or "rolling"
-        seq_dim: Index of the sequence dimension in tensor
-        batch_dim: Index of the batch dimension in tensor (default: 0)
-        alpha: Smoothing factor for EMA in (0, 1]. Higher = more weight on current token.
-        window_size: Window size for rolling mean (>= 1)
-
-    Returns:
-        Tensor with sequence dimension removed via pooling
-
-    Examples:
-        >>> # Pool [batch, seq, hidden] over seq (dim=1)
-        >>> pooled = masked_pool(tensor, mask, "mean", seq_dim=1)
-        >>> # pooled.shape: [batch, hidden]
-
-        >>> # EMA pooling with custom alpha
-        >>> pooled = masked_pool(tensor, mask, "ema", seq_dim=1, alpha=0.3)
-    """
+    """Internal: pool tensor over sequence dimension using only masked positions."""
     if isinstance(method, str):
         try:
             method = AggregationMethod(method)
@@ -113,8 +125,6 @@ def masked_pool(
         seq_len = tensor.shape[seq_dim]
 
         # Compute EMA along seq_dim
-        # ema[j] = alpha * tensor[j] + (1-alpha) * ema[j-1] for valid positions
-        # For invalid positions, carry forward previous EMA
         ema = torch.zeros_like(tensor)
 
         # Get slice for first position
@@ -169,12 +179,11 @@ def masked_pool(
 
         rolling_means = roll_tensor / roll_counts.clamp(min=1)
 
-        # Max over valid windows (windows with at least one valid position)
+        # Max over valid windows
         valid_windows = roll_counts > 0
         rolling_masked = rolling_means.masked_fill(~valid_windows, float("-inf"))
         pooled = rolling_masked.max(dim=seq_dim).values
 
-        # Handle empty sequences using original mask (not expanded valid_windows)
         no_valid = ~mask_bool.any(dim=1)
         if no_valid.any():
             indexer = [slice(None)] * pooled.ndim
@@ -189,11 +198,9 @@ def masked_pool(
 
 def _pad_for_dim(dim: int, ndim: int, pad_size: int) -> tuple[int, ...]:
     """Create padding tuple for F.pad to pad a specific dimension."""
-    # F.pad pads from last dim backwards, so we need to reverse
     pad = [0] * (2 * ndim)
-    # dim from the end
     dim_from_end = ndim - 1 - dim
-    pad[2 * dim_from_end] = pad_size  # pad before
+    pad[2 * dim_from_end] = pad_size
     return tuple(pad)
 
 
@@ -202,60 +209,3 @@ def _slice_dim(tensor: torch.Tensor, dim: int, start: int | None, end: int | Non
     idx = [slice(None)] * tensor.ndim
     idx[dim] = slice(start, end)
     return tensor[tuple(idx)]
-
-
-# Convenience functions for common pooling patterns
-
-
-def pool(
-    scores: torch.Tensor,
-    mask: torch.Tensor,
-    method: str = "mean",
-) -> torch.Tensor:
-    """Pool token-level scores to sequence-level.
-
-    Args:
-        scores: Token scores [batch, seq] or [batch, seq, n_classes]
-        mask: Boolean mask [batch, seq] indicating valid tokens
-        method: "mean", "max", or "last_token"
-
-    Returns:
-        Pooled scores [batch] or [batch, n_classes]
-    """
-    return masked_pool(scores, mask, method, seq_dim=1, batch_dim=0)
-
-
-def ema(
-    scores: torch.Tensor,
-    mask: torch.Tensor,
-    alpha: float = 0.5,
-) -> torch.Tensor:
-    """EMA pooling: compute EMA over sequence, then take max.
-
-    Args:
-        scores: Token scores [batch, seq] or [batch, seq, n_classes]
-        mask: Boolean mask [batch, seq] indicating valid tokens
-        alpha: Smoothing factor in (0, 1]. Higher = more weight on current token.
-
-    Returns:
-        Pooled scores [batch] or [batch, n_classes]
-    """
-    return masked_pool(scores, mask, "ema", seq_dim=1, batch_dim=0, alpha=alpha)
-
-
-def rolling(
-    scores: torch.Tensor,
-    mask: torch.Tensor,
-    window_size: int = 10,
-) -> torch.Tensor:
-    """Rolling window mean pooling, then max across windows.
-
-    Args:
-        scores: Token scores [batch, seq] or [batch, seq, n_classes]
-        mask: Boolean mask [batch, seq] indicating valid tokens
-        window_size: Size of rolling window (>= 1)
-
-    Returns:
-        Pooled scores [batch] or [batch, n_classes]
-    """
-    return masked_pool(scores, mask, "rolling", seq_dim=1, batch_dim=0, window_size=window_size)

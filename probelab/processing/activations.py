@@ -15,7 +15,7 @@ import torch
 
 from ..models import HookedModel
 from ..types import AggregationMethod
-from ..utils.pooling import masked_pool
+from ..utils.pooling import _masked_pool
 
 if TYPE_CHECKING:
     from transformers import PreTrainedModel
@@ -534,48 +534,64 @@ class Activations:
         return Activations(activations=subset, axes=self.axes, layer_meta=LayerMeta(tuple(layers)),
                          sequence_meta=self.sequence_meta, batch_indices=self.batch_indices)
 
-    def pool(self, dim: Literal["sequence", "seq", "layer"] = "sequence",
-             method: AggregationMethod | str = AggregationMethod.MEAN, use_detection_mask: bool = True) -> "Activations":
-        """Pool over a specified dimension, removing that axis."""
+    def pool(
+        self,
+        dim: Axis | Literal["sequence", "seq", "layer"] = Axis.SEQ,
+        method: str = "mean",
+        *,
+        alpha: float = 0.5,
+        window_size: int = 10,
+    ) -> "Activations":
+        """Pool over a dimension, removing that axis.
+
+        Args:
+            dim: Dimension to pool over - Axis.SEQ, Axis.LAYER, or string
+            method: Pooling method:
+                - "mean": Average over valid positions
+                - "max": Maximum over valid positions
+                - "last_token": Last valid position only
+                - "ema": Exponential moving average, then max
+                - "rolling": Rolling window mean, then max
+            alpha: EMA smoothing factor in (0, 1]
+            window_size: Rolling window size (>= 1)
+
+        Returns:
+            Activations with pooled dimension removed
+        """
+        # Convert string to Axis
+        if isinstance(dim, str):
+            if dim in ("sequence", "seq"):
+                axis = Axis.SEQ
+            elif dim == "layer":
+                axis = Axis.LAYER
+            else:
+                raise ValueError(f"Unknown dimension: {dim}. Use Axis.SEQ, Axis.LAYER, or 'sequence'/'layer'")
+        else:
+            axis = dim
+
+        # Convert method string to enum
         if isinstance(method, str):
             try:
-                method = AggregationMethod(method)
+                method_enum = AggregationMethod(method)
             except ValueError:
                 raise ValueError(f"Unknown pooling method: {method}. Supported: {[m.value for m in AggregationMethod]}")
-
-        if dim in ("sequence", "seq"):
-            axis = Axis.SEQ
-        elif dim == "layer":
-            axis = Axis.LAYER
         else:
-            raise ValueError(f"Unknown dimension: {dim}. Supported: 'sequence', 'seq', 'layer'")
+            method_enum = method
 
         if axis == Axis.SEQ:
-            if use_detection_mask:
-                reduced = self._reduce_sequence(method)
-            else:
-                dim_idx = self._axis_positions[Axis.SEQ]
-                if method == AggregationMethod.MEAN:
-                    reduced = self.activations.mean(dim=dim_idx)
-                elif method == AggregationMethod.MAX:
-                    reduced = self.activations.max(dim=dim_idx).values
-                elif method == AggregationMethod.LAST_TOKEN:
-                    reduced = self.activations.select(dim_idx, -1)
-                else:
-                    raise ValueError(f"Unknown pooling method: {method}")
-
+            reduced = self._reduce_sequence(method_enum, alpha=alpha, window_size=window_size)
             new_axes = tuple(ax for ax in self.axes if ax != Axis.SEQ)
             return Activations(activations=reduced, axes=new_axes, layer_meta=self.layer_meta,
                              sequence_meta=None, batch_indices=self.batch_indices)
 
         elif axis == Axis.LAYER:
-            if method == AggregationMethod.LAST_TOKEN:
-                raise ValueError("'last_token' pooling is only supported for sequence dimension")
+            if method_enum in (AggregationMethod.LAST_TOKEN, AggregationMethod.EMA, AggregationMethod.ROLLING):
+                raise ValueError(f"'{method}' pooling is only supported for sequence dimension")
 
             dim_idx = self._axis_positions[Axis.LAYER]
-            if method == AggregationMethod.MEAN:
+            if method_enum == AggregationMethod.MEAN:
                 reduced = self.activations.mean(dim=dim_idx)
-            elif method == AggregationMethod.MAX:
+            elif method_enum == AggregationMethod.MAX:
                 reduced = self.activations.max(dim=dim_idx).values
             else:
                 raise ValueError(f"Unknown pooling method: {method}")
@@ -583,6 +599,9 @@ class Activations:
             new_axes = tuple(ax for ax in self.axes if ax != Axis.LAYER)
             return Activations(activations=reduced, axes=new_axes, layer_meta=None,
                              sequence_meta=self.sequence_meta, batch_indices=self.batch_indices)
+
+        else:
+            raise ValueError(f"Unsupported axis for pooling: {axis}")
 
     def extract_tokens(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Extract detected tokens for token-level training."""
@@ -606,14 +625,17 @@ class Activations:
 
         return features, tokens_per_sample.to(device=acts.device)
 
-    def _reduce_sequence(self, method: AggregationMethod | str) -> torch.Tensor:
+    def _reduce_sequence(self, method: AggregationMethod | str, alpha: float = 0.5, window_size: int = 10) -> torch.Tensor:
         """Reduce sequence dimension using specified method."""
         with torch.no_grad():
             seq_meta = self._require_sequence_meta()
             detection_mask = seq_meta.detection_mask
             batch_dim = self._axis_positions[Axis.BATCH]
             seq_dim = self._axis_positions[Axis.SEQ]
-            return masked_pool(tensor=self.activations, mask=detection_mask, method=method, seq_dim=seq_dim, batch_dim=batch_dim)
+            return _masked_pool(
+                tensor=self.activations, mask=detection_mask, method=method,
+                seq_dim=seq_dim, batch_dim=batch_dim, alpha=alpha, window_size=window_size
+            )
 
 
 # ---------------------------------------------------------------------------

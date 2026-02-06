@@ -4,12 +4,12 @@ Instead of pooling activations before training, this example trains
 on individual tokens and aggregates predictions afterward. Useful
 for understanding when harmful content appears in responses.
 
-Score aggregation methods (via pl.utils):
-- pool(scores, mask, "mean"): Simple average over tokens
-- pool(scores, mask, "max"): Maximum score (any token triggers)
-- pool(scores, mask, "last_token"): Last token only
-- ema(scores, mask, alpha): Exponential moving average, then max
-- rolling(scores, mask, window_size): Rolling window mean, then max
+Score aggregation methods (via pl.utils.pool):
+- pool(x, mask, "mean"): Simple average over tokens
+- pool(x, mask, "max"): Maximum score (any token triggers)
+- pool(x, mask, "last_token"): Last token only
+- pool(x, mask, "ema", alpha=0.5): Exponential moving average, then max
+- pool(x, mask, "rolling", window_size=10): Rolling window mean, then max
 """
 
 import torch
@@ -96,7 +96,7 @@ print(f"{'last_token':<15} {auroc:<12.4f} {recall:<12.4f}")
 
 # EMA with different alphas
 for alpha in [0.3, 0.5, 0.7]:
-    pooled = pl.utils.ema(token_probs, mask, alpha=alpha)
+    pooled = pl.utils.pool(token_probs, mask, "ema", alpha=alpha)
     auroc = pl.metrics.auroc(test_ds.labels, pooled)
     recall = pl.metrics.recall_at_fpr(test_ds.labels, pooled, fpr=0.05)
     name = f"ema_{alpha}"
@@ -105,7 +105,7 @@ for alpha in [0.3, 0.5, 0.7]:
 
 # Rolling window with different sizes
 for window in [5, 10, 20]:
-    pooled = pl.utils.rolling(token_probs, mask, window_size=window)
+    pooled = pl.utils.pool(token_probs, mask, "rolling", window_size=window)
     auroc = pl.metrics.auroc(test_ds.labels, pooled)
     recall = pl.metrics.recall_at_fpr(test_ds.labels, pooled, fpr=0.05)
     name = f"rolling_{window}"
