@@ -178,13 +178,15 @@ len(tokens)             # Batch size
 acts.select(layer=16)           # Select single layer from multi-layer, removes LAYER axis
 acts.select(layers=[8, 16])     # Select multiple layers, keeps LAYER axis
 acts.mean_pool()                # Pool sequence dimension by mean
-acts.last_token()               # Pool sequence dimension by last token
+acts.last_pool()                # Pool sequence dimension by last token
 acts.to("cuda")                 # Move to device
 
 # Properties
 acts.shape                      # Tensor shape
-acts.has_axis(Axis.LAYER)       # Check if axis exists
-acts.axis_size(Axis.BATCH)      # Size of axis
+acts.dims                       # Dimension string: "bh", "bsh", "blh", or "blsh"
+"l" in acts.dims                # Check if LAYER axis exists
+acts.batch_size                 # Size of batch dimension
+acts.n_layers                   # Size of layer dimension (or None)
 ```
 
 **Probes** - Classifiers with two interfaces:
@@ -193,7 +195,7 @@ acts.axis_size(Axis.BATCH)      # Size of axis
 logits = probe(features)  # [batch] or [n_tokens]
 
 # probe.predict(X) - Convenience method, returns probabilities tensor
-probs = probe.predict(activations)  # [batch, 2] or [n_tokens, 2]
+probs = probe.predict(activations)  # [batch] or [batch, seq] for token-level
 
 # Save/load
 probe.save("probe.pt")
