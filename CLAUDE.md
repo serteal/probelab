@@ -36,8 +36,9 @@ acts = pl.processing.collect_activations(model, tokens, layers=[16])
 # Train probe (auto-detects device from input)
 probe = pl.probes.Logistic().fit(acts.select(layer=16).pool("sequence", "mean"), labels)
 
-# Evaluate
-score = pl.metrics.auroc(labels, probe.predict(test_acts).scores)
+# Evaluate - predict() returns tensor directly
+probs = probe.predict(test_acts)  # [batch, 2]
+score = pl.metrics.auroc(labels, probs)
 ```
 
 ## Commands
@@ -66,7 +67,6 @@ uv run pytest tests/ -v
 # Run specific test modules
 uv run pytest tests/test_activations.py -v   # Activations container
 uv run pytest tests/test_probes.py -v        # Probe implementations
-uv run pytest tests/test_scores.py -v        # Scores container
 uv run pytest tests/test_masks.py -v         # Mask functions
 uv run pytest tests/datasets/ -v             # Dataset classes
 uv run pytest tests/utils/ -v                # Utilities
@@ -84,20 +84,20 @@ uv run ruff format probelab/
 
 ## Architecture Overview
 
-probelab is a library for training classifiers (probes) on LLM activations. The design philosophy is **explicit over implicit** - operations are method calls on data objects, not hidden in pipeline abstractions.
+probelab is a library for training classifiers (probes) on LLM activations. The design philosophy is **tensor-centric** - probes return raw tensors, not wrapper objects.
 
 ### Core Concepts
 
 1. **Activations**: Hidden states extracted from LLM layers, with axis-aware operations
-2. **Scores**: Prediction outputs from probes, with aggregation methods
-3. **Probes**: Simple classifiers that operate on Activations and return Scores
-4. **Masks**: Control which tokens are used for training
+2. **Probes**: Classifiers that operate on Activations and return probability tensors
+3. **Masks**: Control which tokens are used for training
+4. **Utils**: Standalone pooling functions for aggregation
 
 ### Module Structure
 
 ```
 probelab/
-├── __init__.py          # Exports: Activations, Scores, Label
+├── __init__.py          # Exports: Activations, Label
 ├── types.py             # Core types (Label, Message, Dialogue, Role)
 ├── masks.py             # Mask functions (all, assistant, user, nth_message, etc.)
 ├── metrics.py           # auroc, recall_at_fpr
@@ -106,7 +106,6 @@ probelab/
 ├── processing/          # Tokenization + activation collection
 │   ├── tokenization.py     # Tokens, tokenize_dialogues, tokenize_dataset
 │   ├── activations.py      # Activations, collect_activations, stream_activations
-│   ├── scores.py           # Scores (pool, ema, rolling)
 │   └── chat_templates.py   # TEMPLATES dict for tokenizer config
 │
 ├── models/              # Model interfaces
@@ -117,16 +116,17 @@ probelab/
 │   ├── base.py             # BaseProbe abstract class
 │   ├── logistic.py         # Logistic regression
 │   ├── mlp.py              # MLP
-│   └── attention.py        # Attention-based
+│   ├── attention.py        # Attention-based
+│   ├── multimax.py         # Multi-head hard max
+│   └── gated_bipolar.py    # AlphaEvolve gated bipolar
 │
 ├── datasets/            # Dataset classes (17 files)
 │   ├── base.py             # Dataset base class
 │   └── ...                 # Domain-specific datasets
 │
 └── utils/               # Utilities
-    ├── normalize.py        # Normalize class
-    ├── pooling.py          # masked_pool utility
-    └── validation.py       # check_activations, check_scores
+    ├── pooling.py          # pool, ema, rolling functions
+    └── validation.py       # check_activations
 ```
 
 ### Core API Pattern
@@ -148,9 +148,8 @@ prepared = acts.select(layer=16).pool("sequence", "mean")
 # 4. Train probe (auto-detects device from input)
 probe = pl.probes.Logistic().fit(prepared, labels)
 
-# 5. Predict and get probabilities
-scores = probe.predict(test_prepared)
-probs = scores.scores  # [batch, 2] tensor
+# 5. Predict - returns tensor directly [batch, 2]
+probs = probe.predict(test_prepared)
 ```
 
 ### Key Classes
@@ -187,34 +186,25 @@ acts.has_axis(Axis.LAYER)       # Check if axis exists
 acts.axis_size(Axis.BATCH)      # Size of axis
 ```
 
-**Scores** - Container for probe predictions:
+**Probes** - Classifiers with two interfaces:
 ```python
-# Methods
-scores.pool("sequence", "mean")  # Mean pooling over tokens
-scores.ema(alpha=0.5)           # EMA pooling, then max
-scores.rolling(window_size=10)  # Rolling window mean, then max
-scores.to("cuda")               # Move to device
+# probe(x) - Differentiable forward pass, returns logits tensor
+logits = probe(features)  # [batch] or [n_tokens]
 
-# Properties
-scores.scores                   # Raw tensor [batch, 2] or [batch, seq, 2]
-scores.shape                    # Tensor shape
-scores.batch_size               # Batch size
+# probe.predict(X) - Convenience method, returns probabilities tensor
+probs = probe.predict(activations)  # [batch, 2] or [n_tokens, 2]
+
+# Save/load
+probe.save("probe.pt")
+probe = pl.probes.Logistic.load("probe.pt", device="cuda")
 ```
 
-**Probes** - Classifiers (auto-detect device from input, or specify explicitly):
+**Utils** - Standalone pooling functions for token-level aggregation:
 ```python
-# Logistic regression
-probe = Logistic(C=1.0)  # device auto-detected in fit()
-probe.fit(activations, labels)
-scores = probe.predict(activations)  # Returns Scores object
-probe.save("probe.pt")
-probe = Logistic.load("probe.pt", device="cuda")  # explicit on load
-
-# MLP
-probe = MLP(hidden_dim=64, dropout=0.1)
-
-# Attention (handles sequences internally)
-probe = Attention(hidden_dim=64)
+# Pool token-level predictions to sequence-level
+probs = pl.utils.pool(token_probs, mask, "mean")  # or "max", "last_token"
+probs = pl.utils.ema(token_probs, mask, alpha=0.5)  # EMA + max
+probs = pl.utils.rolling(token_probs, mask, window_size=10)  # rolling mean + max
 ```
 
 ### Common Workflows
@@ -240,8 +230,8 @@ test_prepared = test_acts.select(layer=16).pool("sequence", "mean")
 probe = pl.probes.Logistic().fit(train_prepared, train_ds.labels)
 
 # Evaluate
-scores = probe.predict(test_prepared)
-print(f"AUROC: {pl.metrics.auroc(test_ds.labels, scores.scores):.3f}")
+probs = probe.predict(test_prepared)
+print(f"AUROC: {pl.metrics.auroc(test_ds.labels, probs):.3f}")
 ```
 
 **2. Multi-Layer Analysis**
@@ -255,20 +245,22 @@ results = {}
 for layer in [8, 12, 16, 20]:
     prepared = acts.select(layer=layer).pool("sequence", "mean")
     probe = pl.probes.Logistic().fit(prepared, labels)
-    scores = probe.predict(test_prepared)
-    results[layer] = pl.metrics.auroc(test_labels, scores.scores)
+    probs = probe.predict(test_prepared)
+    results[layer] = pl.metrics.auroc(test_labels, probs)
 ```
 
-**3. Token-Level with Score Aggregation**
+**3. Token-Level with Aggregation**
 ```python
 # Train on tokens (keep SEQ axis)
 prepared = acts.select(layer=16)
 probe = pl.probes.Logistic().fit(prepared, labels)
 
-# Predict and aggregate
-scores = probe.predict(test_acts.select(layer=16))
-aggregated = scores.pool("sequence", "mean")  # or .ema() or .rolling()
-probs = aggregated.scores
+# Predict token-level, then aggregate
+token_probs = probe.predict(test_acts.select(layer=16))  # [n_tokens, 2]
+
+# Reshape to [batch, seq, 2] and aggregate
+# Use pl.utils.pool/ema/rolling for aggregation
+pooled = pl.utils.pool(token_probs[:, 1].reshape(batch, seq), mask, "mean")
 ```
 
 **4. Using Masks**
@@ -291,10 +283,23 @@ for acts_batch, indices, seq_len in pl.processing.stream_activations(model, toke
     # ... accumulate results
 ```
 
+**6. Differentiable Probe for Fine-tuning**
+```python
+# Use probe(x) for gradient-based training
+hidden_states = model(..., output_hidden_states=True).hidden_states[layer]
+logits = probe(hidden_states)  # Differentiable!
+loss = some_loss_fn(logits, targets)
+loss.backward()
+```
+
 ### Adding New Probes
 
 1. Create class inheriting from `BaseProbe` in `probes/`
-2. Implement: `fit(X: Activations, y) -> self`, `predict(X: Activations) -> Scores`, `save()`, `load()`
+2. Implement:
+   - `__call__(x: Tensor) -> Tensor` - differentiable forward, returns logits
+   - `predict(X: Activations) -> Tensor` - returns probabilities
+   - `fit(X: Activations, y) -> self`
+   - `save()`, `load()`
 3. Add tests in `tests/test_probes.py`
 
 ### Adding New Model Architectures
