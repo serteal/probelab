@@ -19,6 +19,7 @@ class Topic(Enum):
     CREATIVE = "creative"
     LEGAL_FINANCE = "legal_finance"
     SCIENCE = "science"
+    HALLUCINATION = "hallucination"
 
 
 # Registry: name -> (loader_fn, category, description)
@@ -75,6 +76,7 @@ def _init_registry() -> None:
         creative,
         cybersecurity,
         deception,
+        hallucination,
         harmfulness,
         legal_finance,
         medical,

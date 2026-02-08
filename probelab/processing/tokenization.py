@@ -31,12 +31,16 @@ class Tokens:
         attention_mask: Attention mask [batch, seq].
         padding_side: "left" or "right" - required for correct batch assembly.
         detection_mask: Which tokens to extract [batch, seq]. Defaults to attention_mask.
+        formatted_texts: Chat-templated strings per sample (preserved from tokenization).
+        char_to_token: BatchEncoding.char_to_token callable: (batch_idx, char_pos) -> tok_idx.
     """
 
     input_ids: torch.Tensor
     attention_mask: torch.Tensor
     padding_side: str
     detection_mask: torch.Tensor | None = None
+    formatted_texts: tuple[str, ...] | None = None
+    char_to_token: Any | None = None
 
     def __post_init__(self) -> None:
         if self.detection_mask is None:
@@ -55,19 +59,21 @@ class Tokens:
 
     def to(self, device: str | torch.device) -> "Tokens":
         return Tokens(
-            self.input_ids.to(device),
-            self.attention_mask.to(device),
-            self.padding_side,
-            self.detection_mask.to(device) if self.detection_mask is not None else None,
+            input_ids=self.input_ids.to(device),
+            attention_mask=self.attention_mask.to(device),
+            padding_side=self.padding_side,
+            detection_mask=self.detection_mask.to(device) if self.detection_mask is not None else None,
+            formatted_texts=self.formatted_texts,
+            char_to_token=self.char_to_token,
         )
 
     def __getitem__(self, idx: int | slice | list[int] | torch.Tensor) -> "Tokens":
         """Slice tokens: tokens[10:20] or tokens[[0,5,10]]."""
         return Tokens(
-            self.input_ids[idx],
-            self.attention_mask[idx],
-            self.padding_side,
-            self.detection_mask[idx] if self.detection_mask is not None else None,
+            input_ids=self.input_ids[idx],
+            attention_mask=self.attention_mask[idx],
+            padding_side=self.padding_side,
+            detection_mask=self.detection_mask[idx] if self.detection_mask is not None else None,
         )
 
 
@@ -360,6 +366,10 @@ def tokenize_dialogues(
         attention_mask=token_dict["attention_mask"],
         padding_side=getattr(tokenizer, "padding_side", "right"),
         detection_mask=detection_mask,
+        formatted_texts=tuple(formatted_dialogues),
+        char_to_token=token_dict.char_to_token
+        if hasattr(token_dict, "char_to_token")
+        else None,
     )
 
 

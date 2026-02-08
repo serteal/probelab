@@ -76,10 +76,10 @@ class Logistic(BaseProbe):
         if features.dtype != torch.float32:
             self.net = self.net.to(features.dtype)
 
-        # Standardize
+        # Standardize in-place to avoid doubling memory
         self.scaler_mean = features.mean(0)
         self.scaler_std = features.std(0).clamp(min=1e-8)
-        features_scaled = (features - self.scaler_mean) / self.scaler_std
+        features.sub_(self.scaler_mean).div_(self.scaler_std)
 
         # Train with LBFGS
         optimizer = torch.optim.LBFGS(
@@ -90,7 +90,7 @@ class Logistic(BaseProbe):
 
         def closure():
             optimizer.zero_grad()
-            loss = F.binary_cross_entropy_with_logits(self.net(features_scaled), labels)
+            loss = F.binary_cross_entropy_with_logits(self.net(features), labels)
             if l2_weight > 0:
                 loss = loss + l2_weight * weight_param.pow(2).sum()
             loss.backward()
