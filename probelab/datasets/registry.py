@@ -20,6 +20,7 @@ class Topic(Enum):
     LEGAL_FINANCE = "legal_finance"
     SCIENCE = "science"
     HALLUCINATION = "hallucination"
+    SPARSE_PROBING = "sparse_probing"
 
 
 # Registry: name -> (loader_fn, category, description)
@@ -85,6 +86,7 @@ def _init_registry() -> None:
         ood,
         reasoning,
         science,
+        sparse_probing,
     )
 
 
