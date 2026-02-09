@@ -7,18 +7,74 @@ using the new mask system instead of use_for_training flags.
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import torch
 
-from ..datasets import DialogueDataset
+from ..datasets import Dataset
 from ..logger import logger
-from ..masks import MaskFunction, TokenMetadata
-from ..models.architectures import ArchitectureRegistry
+from ..masks import Mask, TokenMetadata
 from ..types import Dialogue, Message
+from .chat_templates import detect_template, get_template
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
+
+@dataclass(frozen=True, slots=True)
+class Tokens:
+    """Tokenized inputs ready for activation collection.
+
+    Args:
+        input_ids: Token IDs [batch, seq].
+        attention_mask: Attention mask [batch, seq].
+        padding_side: "left" or "right" - required for correct batch assembly.
+        detection_mask: Which tokens to extract [batch, seq]. Defaults to attention_mask.
+        formatted_texts: Chat-templated strings per sample (preserved from tokenization).
+        char_to_token: BatchEncoding.char_to_token callable: (batch_idx, char_pos) -> tok_idx.
+    """
+
+    input_ids: torch.Tensor
+    attention_mask: torch.Tensor
+    padding_side: str
+    detection_mask: torch.Tensor | None = None
+    formatted_texts: tuple[str, ...] | None = None
+    char_to_token: Any | None = None
+
+    def __post_init__(self) -> None:
+        if self.detection_mask is None:
+            object.__setattr__(self, "detection_mask", self.attention_mask)
+
+    def __len__(self) -> int:
+        return self.input_ids.shape[0]
+
+    @property
+    def seq_len(self) -> int:
+        return self.input_ids.shape[1]
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return (self.input_ids.shape[0], self.input_ids.shape[1])
+
+    def to(self, device: str | torch.device) -> "Tokens":
+        return Tokens(
+            input_ids=self.input_ids.to(device),
+            attention_mask=self.attention_mask.to(device),
+            padding_side=self.padding_side,
+            detection_mask=self.detection_mask.to(device) if self.detection_mask is not None else None,
+            formatted_texts=self.formatted_texts,
+            char_to_token=self.char_to_token,
+        )
+
+    def __getitem__(self, idx: int | slice | list[int] | torch.Tensor) -> "Tokens":
+        """Slice tokens: tokens[10:20] or tokens[[0,5,10]]."""
+        return Tokens(
+            input_ids=self.input_ids[idx],
+            attention_mask=self.attention_mask[idx],
+            padding_side=self.padding_side,
+            detection_mask=self.detection_mask[idx] if self.detection_mask is not None else None,
+        )
 
 
 def preprocess_dialogue(
@@ -46,7 +102,12 @@ def preprocess_dialogue(
 
     for message in dialogue:
         if processed and processed[-1]["role"] == message.role:
-            processed[-1]["content"] += message.content.strip()
+            next_content = message.content.strip()
+            if next_content:
+                if processed[-1]["content"]:
+                    processed[-1]["content"] += " " + next_content
+                else:
+                    processed[-1]["content"] = next_content
         else:
             processed.append({"role": message.role, "content": message.content.strip()})
 
@@ -83,19 +144,20 @@ def build_token_metadata(
     if hasattr(tokenizer, "bos_token_id") and tokenizer.bos_token_id is not None:
         bos_token_ids.add(tokenizer.bos_token_id)
 
-    model_family = get_model_family(tokenizer)
-    prefix_pattern = _get_prefix_pattern(model_family)
-    arch = ArchitectureRegistry.get_architecture_by_name(model_family)
-    padding_config = arch.get_token_padding()
+    template_name = detect_template(tokenizer)
+    template = get_template(tokenizer)
+    prefix_pattern = template["prefix_pattern"]
+    pad_left, pad_right = template["token_padding"]
+    fold_system = template["fold_system"]
 
     for batch_idx, dialogue in enumerate(dialogues):
         char_idx = 0
         formatted_text = formatted_dialogues[batch_idx]
 
         for msg_idx, message in enumerate(dialogue):
-            # For models that don't support system messages (like Gemma),
+            # For models that fold system messages into user (like Gemma),
             # system content gets merged with user, so skip explicit system messages
-            if model_family == "gemma" and message.role == "system":
+            if fold_system and message.role == "system":
                 # The content will be part of the user message in the formatted text
                 continue
 
@@ -139,7 +201,7 @@ def build_token_metadata(
 
     role_ids_with_padding = role_ids_no_padding.clone()
 
-    if padding_config.left > 0 or padding_config.right > 0:
+    if pad_left > 0 or pad_right > 0:
         for batch_idx in range(batch_size):
             for role_id in [0, 1, 2]:  # system, user, assistant
                 role_mask = role_ids_no_padding[batch_idx] == role_id
@@ -160,8 +222,8 @@ def build_token_metadata(
                 ends = torch.where(diff == -1)[0]
 
                 for start, end in zip(starts, ends):
-                    padded_start = max(0, start - padding_config.left)
-                    padded_end = min(seq_len, end + padding_config.right)
+                    padded_start = max(0, start - pad_left)
+                    padded_end = min(seq_len, end + pad_right)
                     role_ids_with_padding[batch_idx, padded_start:padded_end] = role_id
 
     # Mark BOS tokens as system only in the padded view (include_padding=True)
@@ -193,7 +255,7 @@ def build_token_metadata(
         token_to_char=None,  # Not available in tokenizer output
         formatted_texts=formatted_dialogues,
         role_ids_no_padding=role_ids_no_padding,  # Store unpadded version
-        architecture=model_family,  # Store architecture info
+        architecture=template_name,  # Store template name
         special_token_ids=special_token_ids,
     )
 
@@ -201,11 +263,12 @@ def build_token_metadata(
 def tokenize_dialogues(
     tokenizer: "PreTrainedTokenizerBase",
     dialogues: Sequence[Dialogue],
-    mask: MaskFunction,
+    mask: Mask,
     device: torch.device | str = "cpu",
     add_generation_prompt: bool = False,
+    template_kwargs: dict[str, Any] | None = None,
     **tokenize_kwargs: Any,
-) -> dict[str, torch.Tensor]:
+) -> Tokens:
     """Tokenize dialogues with explicit mask for detection control.
 
     Args:
@@ -215,16 +278,19 @@ def tokenize_dialogues(
             Use ``masks.all()`` to detect all non-padding tokens.
         device: Device to place tensors on.
         add_generation_prompt: Whether to append the model's generation prompt.
+        template_kwargs: Extra keyword arguments forwarded to
+            ``tokenizer.apply_chat_template()`` (e.g. ``{"enable_thinking": True}``
+            for Qwen3).
         **tokenize_kwargs: Additional tokenizer arguments forwarded verbatim.
 
     Returns:
-        Dictionary with tokenized tensors including ``detection_mask``.
+        Tokens object with input_ids, attention_mask, detection_mask.
     """
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # Convert dialogues to format expected by tokenizer
-    fold_system = get_model_family(tokenizer) == "gemma"
+    fold_system = get_template(tokenizer)["fold_system"]
     dialogue_dicts = [
         preprocess_dialogue(dialogue, fold_system) for dialogue in dialogues
     ]
@@ -237,10 +303,15 @@ def tokenize_dialogues(
 
     # Apply chat template if available, otherwise use simple formatting
     if hasattr(tokenizer, 'chat_template') and tokenizer.chat_template is not None:
+        apply_kwargs: dict[str, Any] = {
+            "tokenize": False,
+            "add_generation_prompt": add_generation_prompt,
+        }
+        if template_kwargs:
+            apply_kwargs.update(template_kwargs)
         formatted_dialogues = tokenizer.apply_chat_template(
             dialogue_dicts,
-            tokenize=False,
-            add_generation_prompt=add_generation_prompt,
+            **apply_kwargs,
         )
     else:
         # Fallback for models without chat templates (e.g., LLAMA-2)
@@ -288,95 +359,49 @@ def tokenize_dialogues(
     )
 
     # Evaluate mask and create detection_mask
-    detection_mask = mask.evaluate(dialogues, metadata)
-    token_dict["detection_mask"] = detection_mask
+    detection_mask = mask(dialogues, metadata)
 
-    return token_dict  # type: ignore
+    return Tokens(
+        input_ids=token_dict["input_ids"],
+        attention_mask=token_dict["attention_mask"],
+        padding_side=getattr(tokenizer, "padding_side", "right"),
+        detection_mask=detection_mask,
+        formatted_texts=tuple(formatted_dialogues),
+        char_to_token=token_dict.char_to_token
+        if hasattr(token_dict, "char_to_token")
+        else None,
+    )
 
 
 def tokenize_dataset(
-    dataset: DialogueDataset,
+    dataset: Dataset,
     tokenizer: "PreTrainedTokenizerBase",
-    mask: MaskFunction,
+    mask: Mask,
     device: torch.device | str = "cpu",
+    template_kwargs: dict[str, Any] | None = None,
     **tokenize_kwargs: Any,
-) -> dict[str, torch.Tensor]:
+) -> Tokens:
     """Tokenize a dataset with explicit mask for detection control.
 
     Args:
-        dataset: DialogueDataset to tokenize.
+        dataset: Dataset to tokenize.
         tokenizer: HuggingFace tokenizer aligned with the model.
         mask: Mask function determining which tokens to detect. Required.
             Use ``masks.all()`` to detect all non-padding tokens.
         device: Device to place tensors on.
+        template_kwargs: Extra keyword arguments forwarded to
+            ``tokenizer.apply_chat_template()`` (e.g. ``{"enable_thinking": True}``
+            for Qwen3).
         **tokenize_kwargs: Additional tokenizer arguments.
 
     Returns:
-        Dictionary with tokenized outputs including ``detection_mask``.
+        Tokens object with input_ids, attention_mask, detection_mask.
     """
     return tokenize_dialogues(
         tokenizer=tokenizer,
         dialogues=dataset.dialogues,
         mask=mask,
         device=device,
+        template_kwargs=template_kwargs,
         **tokenize_kwargs,
     )
-
-
-# Cache for compiled regex patterns
-_PREFIX_PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
-
-
-def _get_prefix_pattern(model_family: str) -> re.Pattern[str]:
-    """
-    Get regex pattern for matching chat template tokens.
-
-    This pattern is used to accurately locate message boundaries in tokenized text.
-
-    Args:
-        model_family: Model family name ("llama", "gemma", "mistral")
-
-    Returns:
-        Compiled regex pattern for the model family
-    """
-    # Return cached pattern if available
-    if model_family in _PREFIX_PATTERN_CACHE:
-        return _PREFIX_PATTERN_CACHE[model_family]
-
-    # Compile pattern based on model family
-    if model_family == "gemma":
-        begin_of_text = r"(<pad>)*(<bos>)?"
-        end_of_last = r"(<end_of_turn>\n)?"
-        start_of_turn = r"<start_of_turn>(user|model)\n"
-        pattern = re.compile(
-            rf"{begin_of_text}{start_of_turn}|{end_of_last}{start_of_turn}|(\n\n)?"
-        )
-    elif model_family == "llama":
-        begin_of_text = r"((<\|pad\|>)*(<\|begin_of_text\|>))?"
-        header = r"<\|start_header_id\|>(system|user|assistant)<\|end_header_id\|>\n\n"
-        end_of_turn = r"<\|eot_id\|>"
-        # llama3 system prompt has some boilerplate which we keep constant across all prompts
-        date_info = r"(Cutting Knowledge Date: December 2023\nToday Date: \d\d \w\w\w 202[45]\n\n)?"
-        pattern = re.compile(
-            rf"({begin_of_text}{header}{date_info})?({end_of_turn}{header})?(\n\n)?"
-        )
-    else:
-        # Default fallback pattern that matches common separators
-        pattern = re.compile(r"(\n\n)?")
-
-    # Cache and return
-    _PREFIX_PATTERN_CACHE[model_family] = pattern
-    return pattern
-
-
-def get_model_family(tokenizer: "PreTrainedTokenizerBase") -> str:
-    """
-    Determine model family from tokenizer name.
-
-    Args:
-        tokenizer: HuggingFace tokenizer
-
-    Returns:
-        Model family string ("llama", "gemma", etc.)
-    """
-    return ArchitectureRegistry.detect_from_tokenizer_name(tokenizer.name_or_path)

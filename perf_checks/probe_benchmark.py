@@ -8,9 +8,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from utils import TimingResult, measure_with_warmup, timer
 
 import probelab as pl
-from probelab import Pipeline
 from probelab.models import HookedModel
-from probelab.preprocessing import Pool, SelectLayer
 from probelab.processing import tokenize_dataset
 
 torch.set_float32_matmul_precision("high")
@@ -25,10 +23,7 @@ def benchmark_activation_collection(
     batch_size: int = 8,
     max_samples: Optional[int] = None,
 ) -> Dict[str, TimingResult]:
-    """Benchmark activation collection performance.
-
-    Returns dict with timing results for each operation.
-    """
+    """Benchmark activation collection performance."""
     results = {}
 
     # Limit samples if requested
@@ -79,11 +74,11 @@ def benchmark_activation_collection(
         return pl.collect_activations(
             model=model,
             tokenizer=tokenizer,
-            dataset=dataset,
+            data=dataset,
             layers=layers,
-            mask=pl.masks.assistant(),  # Required parameter
+            mask=pl.masks.assistant(),
             batch_size=batch_size,
-            streaming=False,  # Use batch mode for fair comparison
+            streaming=False,
             verbose=False,
         )
 
@@ -95,17 +90,16 @@ def benchmark_activation_collection(
     )
     results["activation_collection_high_level_batch"] = high_level_batch_result
 
-    # Measure streaming mode (now with optimizations built-in)
+    # Measure streaming mode
     def collect_high_level_streaming():
-        # Get the iterator (now optimized by default)
         activation_iter = pl.collect_activations(
             model=model,
             tokenizer=tokenizer,
-            dataset=dataset,
+            data=dataset,
             layers=layers,
-            mask=pl.masks.assistant(),  # Required parameter
+            mask=pl.masks.assistant(),
             batch_size=batch_size,
-            streaming=True,  # Force streaming mode
+            streaming=True,
             verbose=False,
         )
 
@@ -114,15 +108,13 @@ def benchmark_activation_collection(
         for batch in activation_iter:
             all_batches.append(batch)
 
-        # In real usage, probes would process batches incrementally
-        # But for benchmarking, we need to measure the full iteration time
         return all_batches
 
     high_level_streaming_result = measure_with_warmup(
         collect_high_level_streaming,
         warmup_runs=1,
         measurement_runs=3,
-        name="Activation Collection (streaming mode - optimized)",
+        name="Activation Collection (streaming mode)",
     )
     results["activation_collection_high_level_streaming"] = high_level_streaming_result
 
@@ -144,45 +136,32 @@ def benchmark_probe_training(
     if max_samples:
         dataset = dataset[:max_samples]
 
+    layer = layers[0]
+
     # === FIRST: Benchmark with PRE-COLLECTED activations (probe training only) ===
-    # This shows the theoretical max throughput without activation collection overhead
     print("\n" + "=" * 60)
     print("Pre-collecting activations for probe-only benchmarks...")
     print("=" * 60)
 
-    # Collect activations once with pooled strategy (most common use case)
-    pre_collected_pooled = pl.collect_activations(
+    # Collect activations once
+    pre_collected = pl.collect_activations(
         model=model,
         tokenizer=tokenizer,
-        dataset=dataset,
+        data=dataset,
         layers=layers,
         mask=pl.masks.assistant(),
         batch_size=batch_size,
-        collection_strategy="mean",  # Pool during collection
         verbose=True,
     )
 
-    # Also collect dense activations for token-level benchmarks
-    pre_collected_dense = pl.collect_activations(
-        model=model,
-        tokenizer=tokenizer,
-        dataset=dataset,
-        layers=layers,
-        mask=pl.masks.assistant(),
-        batch_size=batch_size,
-        collection_strategy=None,  # Dense collection
-        verbose=True,
-    )
+    # Prepare pooled activations
+    pre_collected_pooled = pre_collected.select(layer=layer).pool("sequence", "mean")
+    pre_collected_tokens = pre_collected.select(layer=layer)
 
     # Benchmark probe training ONLY with pre-collected pooled activations
     def train_probe_only_pooled():
-        pipeline = Pipeline([
-            ("select", SelectLayer(layers[0])),
-            # No Pool needed - activations are already pooled
-            ("probe", pl.probes.Logistic()),
-        ])
-        pl.scripts.train_pipelines(pipeline, pre_collected_pooled, dataset.labels, verbose=False)
-        return pipeline
+        probe = pl.probes.Logistic().fit(pre_collected_pooled, dataset.labels)
+        return probe
 
     probe_only_pooled_result = measure_with_warmup(
         train_probe_only_pooled,
@@ -194,33 +173,25 @@ def benchmark_probe_training(
 
     # Benchmark probe training ONLY with pre-collected dense activations
     def train_probe_only_dense():
-        pipeline = Pipeline([
-            ("select", SelectLayer(layers[0])),
-            ("agg", Pool(dim="sequence", method="mean")),
-            ("probe", pl.probes.Logistic()),
-        ])
-        pl.scripts.train_pipelines(pipeline, pre_collected_dense, dataset.labels, verbose=False)
-        return pipeline
+        # Pool at training time
+        prepared = pre_collected_tokens.pool("sequence", "mean")
+        probe = pl.probes.Logistic().fit(prepared, dataset.labels)
+        return probe
 
     probe_only_dense_result = measure_with_warmup(
         train_probe_only_dense,
         warmup_runs=1,
         measurement_runs=5,
-        name="Probe Training ONLY (pre-collected dense activations)",
+        name="Probe Training ONLY (pre-collected dense -> pool at train)",
     )
     results["probe_only_dense"] = probe_only_dense_result
 
     # Benchmark 10 probes with pre-collected activations
     def train_10_probes_only():
-        pipelines = {
-            f"logistic_{i}": Pipeline([
-                ("select", SelectLayer(layers[0])),
-                ("probe", pl.probes.Logistic()),
-            ])
-            for i in range(10)
-        }
-        pl.scripts.train_pipelines(pipelines, pre_collected_pooled, dataset.labels, verbose=False)
-        return pipelines
+        probes = {}
+        for i in range(10):
+            probes[f"logistic_{i}"] = pl.probes.Logistic().fit(pre_collected_pooled, dataset.labels)
+        return probes
 
     probe_10_only_result = measure_with_warmup(
         train_10_probes_only,
@@ -231,167 +202,120 @@ def benchmark_probe_training(
     results["probe_10_only"] = probe_10_only_result
 
     # === NEXT: Full pipeline benchmarks (activation collection + training) ===
-    # Measure full pipeline (activation collection + training)
-    def train_pipeline_full(probe_class, use_aggregation=True):
-        def inner_train_pipeline_full():
-            if use_aggregation:
-                pipeline = Pipeline(
-                    [
-                        ("select", SelectLayer(layers[0])),
-                        ("agg", Pool(dim="sequence", method="mean")),
-                        ("probe", probe_class()),
-                    ]
-                )
-            else:
-                # Token-level: no aggregation before probe
-                pipeline = Pipeline(
-                    [
-                        ("select", SelectLayer(layers[0])),
-                        ("probe", probe_class()),
-                    ]
-                )
-            return pl.scripts.train_from_model(
-                pipelines=pipeline,
-                model=model,
-                tokenizer=tokenizer,
-                dataset=dataset,
-                layers=layers,
-                mask=pl.masks.assistant(),
-                batch_size=batch_size,
-                streaming=True,  # Batch mode for direct comparison
-                verbose=False,
-            )
 
-        return inner_train_pipeline_full
-
-    # Test with MEAN pooling (sample-level aggregation)
-    gpu_logistic_mean_result = measure_with_warmup(
-        train_pipeline_full(pl.probes.Logistic, use_aggregation=True),
-        warmup_runs=1,
-        measurement_runs=3,
-        name="GPU Logistic with MEAN pooling",
-    )
-    results["gpu_logistic_mean_pooling"] = gpu_logistic_mean_result
-
-    # Test with token-level training (no aggregation)
-    gpu_logistic_token_result = measure_with_warmup(
-        train_pipeline_full(pl.probes.Logistic, use_aggregation=False),
-        warmup_runs=1,
-        measurement_runs=3,
-        name="GPU Logistic with token-level (no aggregation)",
-    )
-    results["gpu_logistic_token_level"] = gpu_logistic_token_result
-
-    # MLP with MEAN pooling
-    mlp_mean_result = measure_with_warmup(
-        train_pipeline_full(pl.probes.MLP, use_aggregation=True),
-        warmup_runs=1,
-        measurement_runs=3,
-        name="MLP with MEAN pooling",
-    )
-    results["mlp_mean_pooling"] = mlp_mean_result
-
-    # MLP with token-level (no aggregation)
-    mlp_token_result = measure_with_warmup(
-        train_pipeline_full(pl.probes.MLP, use_aggregation=False),
-        warmup_runs=1,
-        measurement_runs=3,
-        name="MLP with token-level (no aggregation)",
-    )
-    results["mlp_token_level"] = mlp_token_result
-
-    # Attention probe (no aggregation, uses attention internally)
-    attention_full_pipeline_result = measure_with_warmup(
-        train_pipeline_full(pl.probes.Attention, use_aggregation=False),
-        warmup_runs=1,
-        measurement_runs=3,
-        name="Attention Probe (attention-based aggregation)",
-    )
-    results["attention_full_pipeline"] = attention_full_pipeline_result
-
-    def train_10_pipelines_full():
-        pipelines = {
-            f"logistic_{i}": Pipeline(
-                [
-                    ("select", SelectLayer(layers[0])),
-                    ("agg", Pool(dim="sequence", method="mean")),
-                    ("probe", pl.probes.Logistic()),
-                ]
-            )
-            for i in range(10)
-        }
-        return pl.scripts.train_from_model(
-            pipelines=pipelines,
+    def train_full_logistic_pooled():
+        acts = pl.collect_activations(
             model=model,
             tokenizer=tokenizer,
-            dataset=dataset,
+            data=dataset,
             layers=layers,
             mask=pl.masks.assistant(),
             batch_size=batch_size,
-            streaming=False,  # Batch mode for direct comparison
             verbose=False,
         )
+        prepared = acts.select(layer=layer).pool("sequence", "mean")
+        probe = pl.probes.Logistic().fit(prepared, dataset.labels)
+        return probe
 
-    logistic_10_probes_full_pipeline_result = measure_with_warmup(
-        train_10_pipelines_full,
+    gpu_logistic_mean_result = measure_with_warmup(
+        train_full_logistic_pooled,
         warmup_runs=1,
         measurement_runs=3,
-        name="Logistic 10 Pipelines Full Pipeline",
+        name="Full: Logistic with MEAN pooling",
     )
-    results["logistic_10_probes_full_pipeline"] = (
-        logistic_10_probes_full_pipeline_result
-    )
+    results["gpu_logistic_mean_pooling"] = gpu_logistic_mean_result
 
-    # Streaming mode benchmarks (using partial_fit - single pass)
-    def train_pipeline_streaming(probe_class, use_aggregation=True):
-        def inner_train_pipeline_streaming():
-            if use_aggregation:
-                pipeline = Pipeline(
-                    [
-                        ("select", SelectLayer(layers[0])),
-                        ("agg", Pool(dim="sequence", method="mean")),
-                        ("probe", probe_class()),
-                    ]
-                )
-            else:
-                # Token-level: no aggregation before probe
-                pipeline = Pipeline(
-                    [
-                        ("select", SelectLayer(layers[0])),
-                        ("probe", probe_class()),
-                    ]
-                )
-            return pl.scripts.train_from_model(
-                pipelines=pipeline,
-                model=model,
-                tokenizer=tokenizer,
-                dataset=dataset,
-                layers=layers,
-                mask=pl.masks.assistant(),
-                batch_size=batch_size,
-                streaming=True,  # Streaming mode - single pass with partial_fit
-                verbose=False,
-            )
+    def train_full_logistic_tokens():
+        acts = pl.collect_activations(
+            model=model,
+            tokenizer=tokenizer,
+            data=dataset,
+            layers=layers,
+            mask=pl.masks.assistant(),
+            batch_size=batch_size,
+            verbose=False,
+        )
+        prepared = acts.select(layer=layer)  # Keep tokens
+        probe = pl.probes.Logistic().fit(prepared, dataset.labels)
+        return probe
 
-        return inner_train_pipeline_streaming
-
-    # Streaming Logistic with MEAN pooling
-    streaming_logistic_mean_result = measure_with_warmup(
-        train_pipeline_streaming(pl.probes.Logistic, use_aggregation=True),
+    gpu_logistic_token_result = measure_with_warmup(
+        train_full_logistic_tokens,
         warmup_runs=1,
         measurement_runs=3,
-        name="Streaming Logistic with MEAN pooling",
+        name="Full: Logistic token-level (no pooling)",
     )
-    results["streaming_logistic_mean_pooling"] = streaming_logistic_mean_result
+    results["gpu_logistic_token_level"] = gpu_logistic_token_result
 
-    # Streaming MLP with MEAN pooling
-    streaming_mlp_mean_result = measure_with_warmup(
-        train_pipeline_streaming(pl.probes.MLP, use_aggregation=True),
+    def train_full_mlp_pooled():
+        acts = pl.collect_activations(
+            model=model,
+            tokenizer=tokenizer,
+            data=dataset,
+            layers=layers,
+            mask=pl.masks.assistant(),
+            batch_size=batch_size,
+            verbose=False,
+        )
+        prepared = acts.select(layer=layer).pool("sequence", "mean")
+        probe = pl.probes.MLP().fit(prepared, dataset.labels)
+        return probe
+
+    mlp_mean_result = measure_with_warmup(
+        train_full_mlp_pooled,
         warmup_runs=1,
         measurement_runs=3,
-        name="Streaming MLP with MEAN pooling",
+        name="Full: MLP with MEAN pooling",
     )
-    results["streaming_mlp_mean_pooling"] = streaming_mlp_mean_result
+    results["mlp_mean_pooling"] = mlp_mean_result
+
+    def train_full_attention():
+        acts = pl.collect_activations(
+            model=model,
+            tokenizer=tokenizer,
+            data=dataset,
+            layers=layers,
+            mask=pl.masks.assistant(),
+            batch_size=batch_size,
+            verbose=False,
+        )
+        prepared = acts.select(layer=layer)  # Keep tokens for attention
+        probe = pl.probes.Attention().fit(prepared, dataset.labels)
+        return probe
+
+    attention_result = measure_with_warmup(
+        train_full_attention,
+        warmup_runs=1,
+        measurement_runs=3,
+        name="Full: Attention Probe",
+    )
+    results["attention_full"] = attention_result
+
+    def train_10_probes_full():
+        # Collect activations once
+        acts = pl.collect_activations(
+            model=model,
+            tokenizer=tokenizer,
+            data=dataset,
+            layers=layers,
+            mask=pl.masks.assistant(),
+            batch_size=batch_size,
+            verbose=False,
+        )
+        prepared = acts.select(layer=layer).pool("sequence", "mean")
+
+        probes = {}
+        for i in range(10):
+            probes[f"logistic_{i}"] = pl.probes.Logistic().fit(prepared, dataset.labels)
+        return probes
+
+    logistic_10_probes_result = measure_with_warmup(
+        train_10_probes_full,
+        warmup_runs=1,
+        measurement_runs=3,
+        name="Full: 10 Logistic Probes (collect once)",
+    )
+    results["logistic_10_probes_full"] = logistic_10_probes_result
 
     return results
 
@@ -407,7 +331,6 @@ def print_summary(
         print("-" * 40)
         for name, result in activation_results.items():
             throughput = num_samples / result.mean
-            # Clean up the display name
             display_name = name.replace("activation_collection_", "").replace("_", " ")
             print(f"  {display_name}:")
             print(f"    Time: {result}")
@@ -435,7 +358,6 @@ def main():
     parser = argparse.ArgumentParser(description="Benchmark probelab performance")
     parser.add_argument(
         "--model",
-        # default="meta-llama/Llama-3.1-8B-Instruct",
         default="google/gemma-2-2b-it",
         help="Model to use for benchmarking",
     )
@@ -453,12 +375,12 @@ def main():
         "--max-samples",
         type=int,
         default=200,
-        help="Maximum number of samples to use (None for all)",
+        help="Maximum number of samples to use",
     )
     parser.add_argument(
         "--add-activation-benchmark",
         action="store_true",
-        help="Only benchmark activation collection",
+        help="Also benchmark activation collection",
     )
 
     args = parser.parse_args()
@@ -497,7 +419,7 @@ def main():
             dataset=dataset,
             layers=args.layers,
             batch_size=args.batch_size,
-            max_samples=None,  # Already limited above
+            max_samples=None,
         )
 
         # Clear cache before training benchmark
@@ -506,14 +428,13 @@ def main():
             gc.collect()
 
     # Benchmark probe training
-    training_results = None
     training_results = benchmark_probe_training(
         model=model,
         tokenizer=tokenizer,
         dataset=dataset,
         layers=args.layers,
         batch_size=args.batch_size,
-        max_samples=None,  # Already limited above
+        max_samples=None,
     )
 
     # Print summary

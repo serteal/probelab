@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any, Callable, Self
 import torch
 
 from ..types import HookPoint
-from .architectures import ArchitectureRegistry
+from .architectures import get_arch
 
 if TYPE_CHECKING:
     from transformers import PreTrainedModel
@@ -37,7 +37,7 @@ class HookedModel:
         self.layer_set = set(layers)
         self.cache = {}
         self.hooks = []
-        self.architecture = ArchitectureRegistry.get_architecture(model)
+        self.architecture = get_arch(model)
         self.original_layers = None
         self.detach_activations = detach_activations
         self.hook_point = hook_point

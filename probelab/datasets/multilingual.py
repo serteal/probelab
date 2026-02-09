@@ -1,90 +1,74 @@
-"""
-Multilingual conversation datasets.
+"""Multilingual conversation datasets."""
 
-These datasets provide conversations in multiple languages, useful for
-training probes to detect language or analyze cross-lingual patterns.
-"""
+from typing import Any
 
-from .hf_dataset import DatasetSpec, HFDataset
+from datasets import load_dataset
 
-
-class WildChatDataset(HFDataset):
-    """
-    WildChat-1M: Real conversations with ChatGPT from 210K unique users.
-
-    Contains 1M+ conversations in 68 languages with rich metadata including
-    language, country, model used, and toxicity flags.
-
-    Source: https://huggingface.co/datasets/allenai/WildChat-1M
-
-    Metadata fields:
-        - language: Detected language of the conversation
-        - model: GPT model used (e.g., "gpt-4", "gpt-3.5-turbo")
-        - country: User's country
-        - toxic: Whether conversation was flagged as toxic
-        - turn: Number of conversation turns
-    """
-
-    base_name = "wildchat"
-    spec = DatasetSpec(
-        hf_path="allenai/WildChat-1M",
-        shape="messages",
-        messages_field="conversation",
-        metadata_fields={
-            "language": ("language",),
-            "model": ("model",),
-            "country": ("country",),
-            "toxic": ("toxic",),
-            "turn": ("turn",),
-        },
-    )
+from ..types import Label, Message
+from .base import Dataset
+from .builders import build_from_messages
+from .registry import Topic, _register_dataset
 
 
-class MultilingualThinkingDataset(HFDataset):
-    """
-    Multilingual reasoning dataset with chain-of-thought in multiple languages.
+@_register_dataset("wildchat", Topic.MULTILINGUAL, "WildChat 1M")
+def wildchat() -> Dataset:
+    """WildChat-1M - 1M+ conversations in 68 languages."""
+    data = load_dataset("allenai/WildChat-1M")["train"]
 
-    Contains reasoning traces translated from English into Spanish, French,
-    Italian, and German.
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"language": [], "model": [], "country": [], "toxic": [], "turn": []}
 
-    Source: https://huggingface.co/datasets/HuggingFaceH4/Multilingual-Thinking
+    for item in data:
+        dialogue = build_from_messages(item.get("conversation", []))
+        if not dialogue:
+            continue
 
-    Metadata fields:
-        - language: Target language of the reasoning trace
-    """
+        dialogues.append(dialogue)
+        labels.append(Label.NEGATIVE)
+        metadata["language"].append(item.get("language"))
+        metadata["model"].append(item.get("model"))
+        metadata["country"].append(item.get("country"))
+        metadata["toxic"].append(item.get("toxic"))
+        metadata["turn"].append(item.get("turn"))
 
-    base_name = "multilingual_thinking"
-    spec = DatasetSpec(
-        hf_path="HuggingFaceH4/Multilingual-Thinking",
-        shape="messages",
-        messages_field="messages",
-        metadata_fields={
-            "language": ("language",),
-        },
-    )
+    return Dataset(dialogues, labels, "wildchat", metadata).shuffle()
 
 
-class PaloMultilingualDataset(HFDataset):
-    """
-    PALO multilingual vision-language conversation dataset.
+@_register_dataset("multilingual_thinking", Topic.MULTILINGUAL, "Multilingual thinking")
+def multilingual_thinking() -> Dataset:
+    """Multilingual Thinking - reasoning traces in 5 languages."""
+    data = load_dataset("HuggingFaceH4/Multilingual-Thinking")["train"]
 
-    Contains conversations in English, Chinese, French, Spanish, Russian,
-    Japanese, Arabic, Hindi, Bengali, and Urdu.
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"language": []}
 
-    Source: https://huggingface.co/datasets/MBZUAI/palo_multilingual_dataset
+    for item in data:
+        dialogue = build_from_messages(item.get("messages", []))
+        if not dialogue:
+            continue
 
-    Metadata fields:
-        - language: Language of the conversation
-    """
+        dialogues.append(dialogue)
+        labels.append(Label.NEGATIVE)
+        metadata["language"].append(item.get("language"))
 
-    base_name = "palo_multilingual"
-    spec = DatasetSpec(
-        hf_path="MBZUAI/palo_multilingual_dataset",
-        shape="messages",
-        messages_field="conversations",
-        role_field="from",
-        content_field="value",
-        metadata_fields={
-            "language": ("language",),
-        },
-    )
+    return Dataset(dialogues, labels, "multilingual_thinking", metadata).shuffle()
+
+
+@_register_dataset("palo_multilingual", Topic.MULTILINGUAL, "PALO multilingual")
+def palo_multilingual() -> Dataset:
+    """PALO Multilingual - 10 languages vision-language conversations."""
+    data = load_dataset("MBZUAI/palo_multilingual_dataset")["train"]
+
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"language": []}
+
+    for item in data:
+        dialogue = build_from_messages(item.get("conversations", []), role_field="from", content_field="value")
+        if not dialogue:
+            continue
+
+        dialogues.append(dialogue)
+        labels.append(Label.NEGATIVE)
+        metadata["language"].append(item.get("language"))
+
+    return Dataset(dialogues, labels, "palo_multilingual", metadata).shuffle()

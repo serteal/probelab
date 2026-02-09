@@ -1,133 +1,89 @@
-"""
-Legal and finance domain datasets.
+"""Legal and finance domain datasets."""
 
-These datasets provide legal documents, financial text, and domain-specific
-conversations, useful for training probes to detect legal/financial content.
-"""
-
-from typing import Any, ClassVar
+from typing import Any
 
 from datasets import load_dataset
 
-from ..types import Dialogue, DialogueDataType, Label, Message
-from .base import DialogueDataset
-from .builders import sample_hf_dataset
-from .hf_dataset import DatasetSpec, HFDataset
+from ..types import Label, Message
+from .base import Dataset
+from .registry import Topic, _register_dataset
+
+SENTIMENT_MAP = {0: "negative", 1: "neutral", 2: "positive"}
 
 
-class CaselawDataset(HFDataset):
-    """
-    HFforLegal Case Law dataset.
+@_register_dataset("caselaw", Topic.LEGAL_FINANCE, "Case law")
+def caselaw(config: str = "US") -> Dataset:
+    """HFforLegal Case Law - legal decisions from various countries."""
+    data = load_dataset("HFforLegal/case-law", config)["train"]
 
-    Comprehensive collection of legal decisions from various countries
-    in a standardized format.
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"court": []}
 
-    Source: https://huggingface.co/datasets/HFforLegal/case-law
+    for item in data:
+        text = item.get("text", "")
+        if not text:
+            continue
 
-    Metadata fields:
-        - country: Country code (ISO 3166-1 alpha-2)
-        - court: Court or tribunal name
-    """
+        dialogues.append([Message("assistant", text)])
+        labels.append(Label.NEGATIVE)
+        metadata["court"].append(item.get("court") or item.get("tribunal"))
 
-    base_name = "caselaw"
-    spec = DatasetSpec(
-        hf_path="HFforLegal/case-law",
-        hf_config="US",  # Default to US cases
-        shape="text",
-        text_field="text",
-        text_as_assistant=True,
-        default_max_samples=10000,
-        metadata_fields={
-            "court": ("court", "tribunal"),
-        },
-    )
+    return Dataset(dialogues, labels, "caselaw", metadata).shuffle()
 
 
-class FinanceTasksDataset(HFDataset):
-    """
-    AdaptLLM Finance Tasks dataset.
+@_register_dataset("finance_tasks", Topic.LEGAL_FINANCE, "Finance tasks")
+def finance_tasks() -> Dataset:
+    """AdaptLLM Finance Tasks for domain adaptation."""
+    data = load_dataset("AdaptLLM/finance-tasks")["train"]
 
-    Finance-specific instruction tasks for domain adaptation.
+    dialogues, labels = [], []
 
-    Source: https://huggingface.co/datasets/AdaptLLM/finance-tasks
-    """
+    for item in data:
+        instruction = item.get("instruction") or item.get("input") or ""
+        output = item.get("output") or item.get("response") or ""
+        if not instruction:
+            continue
 
-    base_name = "finance_tasks"
-    spec = DatasetSpec(
-        hf_path="AdaptLLM/finance-tasks",
-        shape="fields",
-        user_fields=("instruction", "input"),
-        assistant_fields=("output", "response"),
-    )
+        dialogue = [Message("user", instruction)]
+        if output:
+            dialogue.append(Message("assistant", output))
 
+        dialogues.append(dialogue)
+        labels.append(Label.NEGATIVE)
 
-class FinancialPhrasebankDataset(DialogueDataset):
-    """
-    Financial Phrasebank: Financial news sentiment dataset.
-
-    Contains 4,840 sentences from financial news categorized by sentiment
-    (positive, negative, neutral).
-
-    Source: https://huggingface.co/datasets/takala/financial_phrasebank
-
-    Metadata fields:
-        - sentiment: The sentiment label (positive/negative/neutral)
-    """
-
-    base_name = "financial_phrasebank"
-
-    # Sentiment mapping from numeric labels
-    SENTIMENT_MAP: ClassVar[dict[int, str]] = {
-        0: "negative",
-        1: "neutral",
-        2: "positive",
-    }
-
-    def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        max_samples = kwargs.get("max_samples")
-        config = kwargs.get("config", "sentences_allagree")
-
-        dataset = load_dataset("takala/financial_phrasebank", config)
-        split = dataset["train"]
-
-        split = sample_hf_dataset(split, max_samples)
-
-        dialogues: list[Dialogue] = []
-        labels: list[Label] = []
-        metadata: dict[str, list[Any]] = {
-            "sentiment": [],
-        }
-
-        for item in split:
-            sentence = item.get("sentence", "")
-            label = item.get("label", 1)
-
-            if sentence:
-                dialogue: Dialogue = [
-                    Message(role="assistant", content=sentence),
-                ]
-                dialogues.append(dialogue)
-                labels.append(Label.NEGATIVE)  # All financial text
-                metadata["sentiment"].append(self.SENTIMENT_MAP.get(label, "neutral"))
-
-        return dialogues, labels, metadata
+    return Dataset(dialogues, labels, "finance_tasks").shuffle()
 
 
-class LegalAdviceRedditDataset(HFDataset):
-    """
-    Legal Advice from Reddit (subset of Pile of Law).
+@_register_dataset("financial_phrasebank", Topic.LEGAL_FINANCE, "Financial phrasebank")
+def financial_phrasebank(config: str = "sentences_allagree") -> Dataset:
+    """Financial Phrasebank 4.8K - financial news sentiment."""
+    data = load_dataset("takala/financial_phrasebank", config)["train"]
 
-    Contains posts and discussions from r/legaladvice subreddit.
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"sentiment": []}
 
-    Source: https://huggingface.co/datasets/pile-of-law/pile-of-law (r_legaladvice subset)
-    """
+    for item in data:
+        if sentence := item.get("sentence", ""):
+            dialogues.append([Message("assistant", sentence)])
+            labels.append(Label.NEGATIVE)
+            metadata["sentiment"].append(SENTIMENT_MAP.get(item.get("label", 1), "neutral"))
 
-    base_name = "legal_advice_reddit"
-    spec = DatasetSpec(
-        hf_path="pile-of-law/pile-of-law",
-        hf_config="r_legaladvice",
-        shape="text",
-        text_field="text",
-        text_as_assistant=False,  # Reddit posts as user content
-        default_max_samples=10000,
-    )
+    return Dataset(dialogues, labels, "financial_phrasebank", metadata).shuffle()
+
+
+@_register_dataset("legal_advice_reddit", Topic.LEGAL_FINANCE, "Legal advice Reddit")
+def legal_advice_reddit() -> Dataset:
+    """Legal Advice from Reddit (subset of Pile of Law)."""
+    data = load_dataset("pile-of-law/pile-of-law", "r_legaladvice")["train"]
+
+    dialogues, labels = [], []
+
+    for item in data:
+        text = item.get("text", "")
+        if not text:
+            continue
+
+        dialogues.append([Message("user", text)])
+        labels.append(Label.NEGATIVE)
+
+    return Dataset(dialogues, labels, "legal_advice_reddit").shuffle()

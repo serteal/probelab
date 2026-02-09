@@ -1,275 +1,128 @@
-"""
-Dataset interfaces and utilities for probelab.
+"""Minimal dataset container (tinygrad style)."""
 
-This module provides the core dataset abstractions for working with dialogue data,
-including mask-based token selection and metadata handling.
-"""
-
-from abc import ABC, abstractmethod
-from typing import Any, Self
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import numpy as np
 
-from ..masks import MaskFunction, assistant
-from ..types import Dialogue, DialogueDataType, Label
+from ..types import Dialogue, Label
+
+# Type alias for loader functions
+LoaderFn = Callable[..., "Dataset"]
 
 
-class DialogueDataset(ABC):
-    """
-    Abstract base class for dialogue datasets.
+@dataclass(slots=True)
+class Dataset:
+    """Minimal dataset: dialogues + labels + optional metadata."""
 
-    This class provides the core interface for working with dialogue data in probelab.
-
-    Key features:
-    - Mask-based token selection
-    - Metadata handling
-    - Label management
-    - Dialogue shuffling and slicing
-    """
-
-    # Class attributes to be set by subclasses
-    base_name: str = "base_dataset"
-
-    @property
-    def default_mask(self) -> MaskFunction:
-        """
-        Default mask for this dataset.
-
-        By default, uses assistant-only mask (most common case).
-        Subclasses can override this for different behavior.
-        """
-        return assistant()
-
-    def __init__(
-        self,
-        dialogues: list[Dialogue] | None = None,
-        labels: list[Label] | None = None,
-        metadata: dict[str, list[Any]] | None = None,
-        shuffle_upon_init: bool = True,
-        shuffle_seed: int | None = 42,
-        **kwargs,
-    ):
-        """
-        Initialize the DialogueDataset.
-
-        Args:
-            dialogues: List of dialogues (if None, will call _get_dialogues)
-            labels: List of labels corresponding to dialogues
-            metadata: Optional metadata dictionary
-            shuffle_upon_init: Whether to shuffle dialogues on initialization
-        """
-
-        if dialogues is None:
-            assert labels is None and metadata is None, (
-                "If dialogues is None, labels and metadata must also be None"
-            )
-            dialogues, labels, metadata = self._get_dialogues(**kwargs)
-
-        assert labels is not None, "Labels must be provided"
-
-        self.dialogues = dialogues
-        self.labels = labels
-        self.metadata = metadata
-        self._shuffle_seed = shuffle_seed
-        self._shuffle_rng = (
-            np.random.default_rng(shuffle_seed)
-            if shuffle_seed is not None
-            else np.random.default_rng()
-        )
-
-        self.post_process()
-
-        # Shuffle for better train/test splits
-        if len(set(self.labels)) > 1 and shuffle_upon_init:
-            self.randomly_shuffle_dialogues()
-
-    @abstractmethod
-    def _get_dialogues(self, **kwargs) -> DialogueDataType:
-        """
-        Abstract method to load dialogues, labels, and metadata.
-
-        Must be implemented by subclasses to define how data is loaded.
-
-        Returns:
-            Tuple of (dialogues, labels, metadata)
-        """
-        pass
-
-    def post_process(self) -> None:
-        """Post-process the dataset. Override in subclasses if needed."""
-        pass
-
-    def randomly_shuffle_dialogues(self) -> None:
-        """Randomly shuffle dialogues, labels, and metadata."""
-        perm = self._shuffle_rng.permutation(len(self))
-
-        self.dialogues = [self.dialogues[i] for i in perm]
-        self.labels = [self.labels[i] for i in perm]
-
-        if self.metadata is not None:
-            self.metadata = {k: [v[i] for i in perm] for k, v in self.metadata.items()}
-
-    def _slice_by_index(self, indices: int | list[int]) -> DialogueDataType:
-        """Slice dataset by indices."""
-        if isinstance(indices, int):
-            indices = [indices]
-
-        dialogues = [self.dialogues[i] for i in indices]
-        labels = [self.labels[i] for i in indices]
-        metadata = None
-
-        if self.metadata is not None:
-            metadata = {k: [v[i] for i in indices] for k, v in self.metadata.items()}
-
-        return dialogues, labels, metadata
-
-    def subset_where_true(self, condition: list[bool]) -> Self:
-        """Filter dataset by boolean condition."""
-        assert len(condition) == len(self)
-        indices = [i for i, c in enumerate(condition) if c]
-
-        dialogues, labels, metadata = self._slice_by_index(indices)
-
-        new_dataset = self.__class__(
-            dialogues=dialogues,
-            labels=labels,
-            metadata=metadata,
-            shuffle_upon_init=False,
-            shuffle_seed=self._shuffle_seed,
-        )
-        new_dataset.base_name = self.base_name
-
-        return new_dataset
-
-    def get_with_label(self, label: Label) -> Self:
-        """Get subset with specific label."""
-        return self.subset_where_true([_label == label for _label in self.labels])
-
-    def get_negative(self) -> Self:
-        """Get negative examples."""
-        return self.get_with_label(Label.NEGATIVE)
-
-    def get_positive(self) -> Self:
-        """Get positive examples."""
-        return self.get_with_label(Label.POSITIVE)
+    dialogues: list[Dialogue]
+    labels: list[Label]
+    name: str = "dataset"
+    metadata: dict[str, list[Any]] | None = None
 
     def __len__(self) -> int:
-        """Return number of dialogues."""
         return len(self.dialogues)
 
-    def __getitem__(self, idx: int | slice | list) -> Self:
-        """Get dialogue(s) by index/slice/list."""
-        if isinstance(idx, int):
-            dialogues, labels, metadata = self._slice_by_index(idx)
-        elif isinstance(idx, slice):
-            indices = list(range(len(self)))[idx]
-            dialogues, labels, metadata = self._slice_by_index(indices)
-        elif isinstance(idx, list):
-            dialogues, labels, metadata = self._slice_by_index(idx)
-        else:
-            raise TypeError(
-                f"Dataset indices must be integers, slices, or lists, not {type(idx).__name__}"
-            )
+    def __getitem__(self, idx: int | slice | list) -> "Dataset":
+        idx = [idx] if isinstance(idx, int) else list(range(len(self)))[idx] if isinstance(idx, slice) else idx
+        meta = {k: [v[i] for i in idx] for k, v in self.metadata.items()} if self.metadata else None
+        return Dataset([self.dialogues[i] for i in idx], [self.labels[i] for i in idx], self.name, meta)
 
-        new_dataset = self.__class__(
-            dialogues=dialogues,
-            labels=labels,
-            metadata=metadata,
-            shuffle_upon_init=False,
-            shuffle_seed=self._shuffle_seed,
-        )
-        new_dataset.base_name = self.base_name
+    def __add__(self, other: "Dataset") -> "Dataset":
+        def _src(ds): return (ds.metadata or {}).get("source") or [ds.name] * len(ds)
+        def _get(ds, k): return (ds.metadata or {}).get(k) or [None] * len(ds)
+        keys = (set(self.metadata or {}) | set(other.metadata or {})) | {"source"}
+        meta = {k: (_src(self) + _src(other) if k == "source" else _get(self, k) + _get(other, k)) for k in keys}
+        return Dataset(self.dialogues + other.dialogues, self.labels + other.labels, f"{self.name}+{other.name}", meta)
 
-        return new_dataset
+    def shuffle(self, seed: int = 42) -> "Dataset":
+        """Return shuffled copy."""
+        perm = np.random.default_rng(seed).permutation(len(self)).tolist()
+        return self[perm]
 
-    def __add__(self, other: "DialogueDataset") -> "DialogueDataset":
-        """Concatenate two datasets."""
-        dialogues = self.dialogues + other.dialogues
-        labels = self.labels + other.labels
-
-        if self.metadata is not None and other.metadata is not None:
-            assert set(self.metadata.keys()) == set(other.metadata.keys()), (
-                "Metadata key mismatch"
-            )
-            metadata = {k: self.metadata[k] + other.metadata[k] for k in self.metadata}
-        else:
-            metadata = None
-
-        new_base_name = f"{self.base_name}+{other.base_name}"
-
-        new_dataset = self.__class__(
-            dialogues=dialogues,
-            labels=labels,
-            metadata=metadata,
-            shuffle_upon_init=True,
-            shuffle_seed=self._shuffle_seed,
-        )
-        new_dataset.base_name = new_base_name
-
-        return new_dataset
-
-    def split(self, proportion: float = 0.8, shuffle: bool = True) -> tuple[Self, Self]:
-        """
-        Split dataset into two parts.
+    def sample(self, n: int, stratified: bool = False, seed: int = 42) -> "Dataset":
+        """Return random sample of n items.
 
         Args:
-            proportion: Fraction of data for first split (between 0 and 1)
-            shuffle: Whether to shuffle before splitting (passed to shuffle_upon_init)
-
-        Returns:
-            Tuple of (first_split, second_split) datasets
-
-        Example:
-            >>> dataset = DolusChatDataset()
-            >>> train, test = dataset.split(0.8)
-            >>> train, test = dataset.split(0.8, shuffle=False)
+            n: Number of samples (capped at dataset size)
+            stratified: If True, preserve label proportions
+            seed: Random seed for reproducibility
         """
-        if not 0 < proportion < 1:
-            raise ValueError(f"Proportion must be between 0 and 1, got {proportion}")
+        if n >= len(self):
+            return self
 
-        split_idx = int(len(self) * proportion)
+        rng = np.random.default_rng(seed)
 
-        first_dialogues = self.dialogues[:split_idx]
-        first_labels = self.labels[:split_idx]
-        first_metadata = None
-        if self.metadata is not None:
-            first_metadata = {k: v[:split_idx] for k, v in self.metadata.items()}
+        if not stratified:
+            indices = rng.choice(len(self), size=n, replace=False).tolist()
+        else:
+            # Stratified: sample proportionally from each class
+            pos_idx = [i for i, l in enumerate(self.labels) if l == Label.POSITIVE]
+            neg_idx = [i for i, l in enumerate(self.labels) if l == Label.NEGATIVE]
 
-        second_dialogues = self.dialogues[split_idx:]
-        second_labels = self.labels[split_idx:]
-        second_metadata = None
-        if self.metadata is not None:
-            second_metadata = {k: v[split_idx:] for k, v in self.metadata.items()}
+            # Calculate proportional sample sizes
+            pos_ratio = len(pos_idx) / len(self) if len(self) > 0 else 0.5
+            n_pos = min(int(round(n * pos_ratio)), len(pos_idx))
+            n_neg = min(n - n_pos, len(neg_idx))
 
-        first_split = self.__class__(
-            dialogues=first_dialogues,
-            labels=first_labels,
-            metadata=first_metadata,
-            shuffle_upon_init=shuffle,
-            shuffle_seed=self._shuffle_seed,
-        )
-        first_split.base_name = self.base_name
+            # Adjust if we can't get enough from one class
+            if n_pos + n_neg < n:
+                if n_neg < n - n_pos:
+                    n_pos = min(n - n_neg, len(pos_idx))
+                else:
+                    n_neg = min(n - n_pos, len(neg_idx))
 
-        second_split = self.__class__(
-            dialogues=second_dialogues,
-            labels=second_labels,
-            metadata=second_metadata,
-            shuffle_upon_init=shuffle,
-            shuffle_seed=self._shuffle_seed,
-        )
-        second_split.base_name = self.base_name
+            indices = (rng.choice(pos_idx, size=n_pos, replace=False).tolist() +
+                      rng.choice(neg_idx, size=n_neg, replace=False).tolist())
+            rng.shuffle(indices)
 
-        return first_split, second_split
+        return self[indices]
+
+    def split(self, frac: float = 0.8, stratified: bool = False, seed: int = 42) -> tuple["Dataset", "Dataset"]:
+        """Split into train/test sets.
+
+        Args:
+            frac: Fraction for first split (train)
+            stratified: If True, preserve label proportions in both splits
+            seed: Random seed for reproducibility
+        """
+        if not stratified:
+            shuffled = self.shuffle(seed)
+            n = int(len(self) * frac)
+            return shuffled[:n], shuffled[n:]
+
+        # Stratified split
+        rng = np.random.default_rng(seed)
+        pos_idx = [i for i, l in enumerate(self.labels) if l == Label.POSITIVE]
+        neg_idx = [i for i, l in enumerate(self.labels) if l == Label.NEGATIVE]
+
+        rng.shuffle(pos_idx)
+        rng.shuffle(neg_idx)
+
+        n_pos_train = int(len(pos_idx) * frac)
+        n_neg_train = int(len(neg_idx) * frac)
+
+        train_idx = pos_idx[:n_pos_train] + neg_idx[:n_neg_train]
+        test_idx = pos_idx[n_pos_train:] + neg_idx[n_neg_train:]
+
+        rng.shuffle(train_idx)
+        rng.shuffle(test_idx)
+
+        return self[train_idx], self[test_idx]
+
+    def where(self, cond: list[bool]) -> "Dataset":
+        """Filter by boolean condition."""
+        return self[[i for i, c in enumerate(cond) if c]]
 
     @property
-    def name(self) -> str:
-        """Get dataset name."""
-        return self.base_name
-    
-    def __repr__(self) -> str:
-        """Get dataset name."""
-        return self.name
+    def positive(self) -> "Dataset":
+        return self.where([l == Label.POSITIVE for l in self.labels])
 
-    def __str__(self) -> str:
-        """Get dataset name."""
-        return self.name
+    @property
+    def negative(self) -> "Dataset":
+        return self.where([l == Label.NEGATIVE for l in self.labels])
+
+    def __repr__(self) -> str:
+        pos = sum(1 for l in self.labels if l == Label.POSITIVE)
+        neg = len(self) - pos
+        return f"Dataset({self.name!r}, n={len(self)}, pos={pos}, neg={neg})"

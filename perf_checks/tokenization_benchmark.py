@@ -14,19 +14,6 @@ from transformers import AutoTokenizer
 from utils import TimingResult, measure_with_warmup
 
 import probelab as pl
-from probelab.masks import (
-    after,
-    all,
-    assistant,
-    before,
-    between,
-    contains,
-    none,
-    nth_message,
-    special_tokens,
-    system,
-    user,
-)
 from probelab.processing.tokenization import tokenize_dataset
 
 torch.set_float32_matmul_precision("high")
@@ -68,34 +55,34 @@ def benchmark_mask_evaluation(
     """Benchmark tokenization with different mask types."""
     results = {}
 
-    # Define mask configurations to test
+    # Define mask configurations to test (using pl.masks.*)
     mask_configs = [
         # Basic masks
-        ("none", none(), "No tokens selected"),
-        ("all", all(), "All tokens selected"),
+        ("none", pl.masks.none(), "No tokens selected"),
+        ("all", pl.masks.all(), "All tokens selected"),
         # Role masks (should be fast with optimizations)
-        ("assistant", assistant(), "Assistant messages"),
-        ("user", user(), "User messages"),
-        ("system", system(), "System messages"),
-        ("assistant_no_pad", assistant(include_padding=False), "Assistant no padding"),
+        ("assistant", pl.masks.assistant(), "Assistant messages"),
+        ("user", pl.masks.user(), "User messages"),
+        ("system", pl.masks.system(), "System messages"),
+        ("assistant_no_pad", pl.masks.assistant(include_padding=False), "Assistant no padding"),
         # Text matching masks
-        ("contains_the", contains("the"), "Contains 'the'"),
-        ("contains_i", contains("I"), "Contains 'I'"),
+        ("contains_the", pl.masks.contains("the"), "Contains 'the'"),
+        ("contains_i", pl.masks.contains("I"), "Contains 'I'"),
         # Position masks
-        ("after_colon", after(":"), "After colon"),
-        ("before_period", before("."), "Before period"),
-        ("between_quotes", between('"', '"'), "Between quotes"),
+        ("after_colon", pl.masks.after(":"), "After colon"),
+        ("before_period", pl.masks.before("."), "Before period"),
+        ("between_quotes", pl.masks.between('"', '"'), "Between quotes"),
         # Special masks
-        ("special_tokens", special_tokens(), "Special tokens"),
-        ("nth_first", nth_message(0), "First message"),
-        ("nth_last", nth_message(-1), "Last message"),
+        ("special_tokens", pl.masks.special_tokens(), "Special tokens"),
+        ("nth_first", pl.masks.nth_message(0), "First message"),
+        ("nth_last", pl.masks.nth_message(-1), "Last message"),
         # Complex combinations
-        ("complex_and", assistant() & contains("I"), "Assistant AND contains 'I'"),
-        ("complex_or", user() | assistant(), "User OR assistant"),
-        ("complex_not", ~user(), "NOT user"),
+        ("complex_and", pl.masks.assistant() & pl.masks.contains("I"), "Assistant AND contains 'I'"),
+        ("complex_or", pl.masks.user() | pl.masks.assistant(), "User OR assistant"),
+        ("complex_not", ~pl.masks.user(), "NOT user"),
         (
             "complex_nested",
-            (assistant() & after(":")) | (user() & contains("?")),
+            (pl.masks.assistant() & pl.masks.after(":")) | (pl.masks.user() & pl.masks.contains("?")),
             "Nested: (assistant & after ':') | (user & contains '?')",
         ),
     ]
@@ -133,9 +120,9 @@ def analyze_scaling(
     # Test a few key masks at different scales
     test_masks = {
         "no_mask": None,
-        "assistant": assistant(),
-        "complex": assistant() & contains("I"),
-        "between": between("<", ">"),
+        "assistant": pl.masks.assistant(),
+        "complex": pl.masks.assistant() & pl.masks.contains("I"),
+        "between": pl.masks.between("<", ">"),
     }
 
     for size in sizes:

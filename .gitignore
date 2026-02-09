@@ -27,3 +27,4 @@ external/
 # Model checkpoints
 final_model/
 checkpoints/
+plans/

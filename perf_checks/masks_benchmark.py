@@ -7,17 +7,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from utils import TimingResult, measure_with_warmup, timer
 
 import probelab as pl
-from probelab import Pipeline
-from probelab.masks import (
-    after,
-    assistant,
-    between,
-    contains,
-    nth_message,
-    regex,
-    user,
-)
-from probelab.preprocessing import Pool, SelectLayer
 
 torch.set_float32_matmul_precision("high")
 pl.logger.setLevel(logging.WARNING)
@@ -38,67 +27,37 @@ def benchmark_probe_training_with_masks(
     if max_samples:
         dataset = dataset[:max_samples]
 
+    layer = layers[0]
+
     # Test different mask configurations
     mask_configs = [
         ("default", None, "Default mask (assistant messages)"),
-        ("assistant_only", assistant(), "Explicit assistant mask"),
-        ("user_only", user(), "User messages only"),
-        # New position-based masks
-        ("between_tags", between("<", ">", inclusive=False), "Between angle brackets"),
-        ("after_question", after("?", inclusive=False), "After question mark"),
-        # ("before_period", before(".", inclusive=False), "Before period"),
-        # ("nth_first", nth_message(0), "First message only"),
-        # ("nth_last", nth_message(-1), "Last message only"),
-        # # Special tokens and padding
-        # ("special_tokens", special_tokens(), "Special tokens only"),
-        # ("padded_contains", padding(contains("the"), before=1, after=1), "Contains 'the' with padding"),
-        # # Complex combinations with new masks
-        # ("complex_and", assistant() & contains("I"), "Assistant AND contains 'I'"),
-        # ("complex_or", assistant() | user(), "Assistant OR user"),
-        # ("complex_not", ~user(), "NOT user (system and assistant)"),
-        # (
-        #     "nested_complex",
-        #     (assistant() & contains("I")) | (user() & contains("please")),
-        #     "Complex nested: (assistant & 'I') | (user & 'please')",
-        # ),
-        # (
-        #     "new_complex",
-        #     nth_message(1) & after("is", inclusive=False),
-        #     "Second message after 'is'",
-        # ),
-        # (
-        #     "position_combo",
-        #     assistant() & between("The", ".", inclusive=False),
-        #     "Assistant text between 'The' and '.'",
-        # ),
-        # (
-        #     "regex_mask",
-        #     assistant() & regex(r"\b(yes|no|maybe)\b", flags=re.IGNORECASE),
-        #     "Assistant with regex for yes/no/maybe",
-        # ),
-        # ("all_tokens", all(), "All tokens"),
-        # ("none_tokens", none(), "No tokens (should be fast)"),
+        ("assistant_only", pl.masks.assistant(), "Explicit assistant mask"),
+        ("user_only", pl.masks.user(), "User messages only"),
+        # Position-based masks
+        ("between_tags", pl.masks.between("<", ">", inclusive=False), "Between angle brackets"),
+        ("after_question", pl.masks.after("?", inclusive=False), "After question mark"),
     ]
 
     for mask_name, mask, description in mask_configs:
         print(f"\nTesting mask: {description}")
 
         def train_probe_with_mask():
-            pipeline = Pipeline([
-                ("select", SelectLayer(layers[0])),
-                ("agg", Pool(dim="sequence", method="mean")),
-                ("probe", pl.probes.Logistic()),
-            ])
-            return pl.scripts.train_from_model(
-                pipelines=pipeline,
+            # Collect activations
+            acts = pl.collect_activations(
                 model=model,
                 tokenizer=tokenizer,
-                dataset=dataset,
+                data=dataset,
                 layers=layers,
                 mask=mask,
                 batch_size=batch_size,
-                streaming=True,
+                streaming=False,
             )
+
+            # Direct API: select layer, pool, train probe
+            prepared = acts.select(layer=layer).pool("sequence", "mean")
+            probe = pl.probes.Logistic().fit(prepared, dataset.labels)
+            return probe
 
         mask_result = measure_with_warmup(
             train_probe_with_mask,
@@ -108,40 +67,36 @@ def benchmark_probe_training_with_masks(
         )
         results[f"mask_{mask_name}"] = mask_result
 
-    # Also test multiple probes with complex mask using new masks
+    # Also test multiple probes with complex mask
     def train_multiple_probes_complex_mask():
-        # Complex mask combining new and old masks
+        # Complex mask combining multiple conditions
         complex_mask = (
-            (nth_message(-1) & contains("not"))
-            | (user() & regex(r"\?$"))
-            | (assistant() & after("The", inclusive=False))
+            (pl.masks.nth_message(-1) & pl.masks.contains("not"))
+            | (pl.masks.user() & pl.masks.regex(r"\?$"))
+            | (pl.masks.assistant() & pl.masks.after("The", inclusive=False))
         )
-        pipelines = {
-            "logistic": Pipeline([
-                ("select", SelectLayer(layers[0])),
-                ("agg", Pool(dim="sequence", method="mean")),
-                ("probe", pl.probes.Logistic()),
-            ]),
-            "mlp": Pipeline([
-                ("select", SelectLayer(layers[0])),
-                ("agg", Pool(dim="sequence", method="mean")),
-                ("probe", pl.probes.MLP()),
-            ]),
-            "attention": Pipeline([
-                ("select", SelectLayer(layers[0])),
-                ("probe", pl.probes.Attention()),
-            ]),
-        }
-        return pl.scripts.train_from_model(
-            pipelines=pipelines,
+
+        # Collect activations
+        acts = pl.collect_activations(
             model=model,
             tokenizer=tokenizer,
-            dataset=dataset,
+            data=dataset,
             layers=layers,
             mask=complex_mask,
             batch_size=batch_size,
-            streaming=True,
+            streaming=False,
         )
+
+        # Train multiple probe types
+        prepared_pooled = acts.select(layer=layer).pool("sequence", "mean")
+        prepared_tokens = acts.select(layer=layer)
+
+        probes = {
+            "logistic": pl.probes.Logistic().fit(prepared_pooled, dataset.labels),
+            "mlp": pl.probes.MLP().fit(prepared_pooled, dataset.labels),
+            "attention": pl.probes.Attention().fit(prepared_tokens, dataset.labels),
+        }
+        return probes
 
     multi_probe_result = measure_with_warmup(
         train_multiple_probes_complex_mask,

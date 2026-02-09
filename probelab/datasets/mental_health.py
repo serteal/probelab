@@ -1,108 +1,111 @@
-"""
-Mental health and counseling conversation datasets.
+"""Mental health and counseling conversation datasets."""
 
-These datasets provide therapy, counseling, and emotional support conversations,
-useful for training probes to detect mental health domain content.
-"""
+from typing import Any
 
-from ..types import Label
-from .hf_dataset import DatasetSpec, HFDataset
+from datasets import load_dataset
 
-
-def _prosocial_label(item: dict) -> Label:
-    """Label function for ProsocialDialog - casual is NEGATIVE, others POSITIVE."""
-    safety_label = item.get("safety_label", "__casual__")
-    return Label.NEGATIVE if safety_label == "__casual__" else Label.POSITIVE
+from ..types import Label, Message
+from .base import Dataset
+from .registry import Topic, _register_dataset
 
 
-class MentalChatDataset(HFDataset):
-    """
-    MentalChat16K: Synthetic counselor-client conversations.
+@_register_dataset("mentalchat", Topic.MENTAL_HEALTH, "MentalChat")
+def mentalchat() -> Dataset:
+    """MentalChat16K - synthetic counselor-client conversations."""
+    data = load_dataset("ShenLab/MentalChat16K")["train"]
 
-    Contains 16K+ conversations covering 33 mental health topics including
-    anxiety, depression, relationships, and family conflict.
+    dialogues, labels = [], []
 
-    Source: https://huggingface.co/datasets/ShenLab/MentalChat16K
+    for item in data:
+        dialogue = []
+        if instruction := item.get("instruction", ""):
+            dialogue.append(Message("system", instruction))
 
-    Fields:
-        - instruction: System prompt for counselor role
-        - input: Patient's mental health question/concern
-        - output: Counselor's response
-    """
+        user_input = item.get("input", "")
+        output = item.get("output", "")
 
-    base_name = "mentalchat"
-    spec = DatasetSpec(
-        hf_path="ShenLab/MentalChat16K",
-        shape="fields",
-        system_fields=("instruction",),
-        user_fields=("input",),
-        assistant_fields=("output",),
-    )
+        if user_input:
+            dialogue.append(Message("user", user_input))
+        if output:
+            dialogue.append(Message("assistant", output))
 
+        if dialogue:
+            dialogues.append(dialogue)
+            labels.append(Label.NEGATIVE)
 
-class MentalHealthCounselingDataset(HFDataset):
-    """
-    Mental Health Counseling Conversations dataset.
-
-    Source: https://huggingface.co/datasets/Amod/mental_health_counseling_conversations
-    """
-
-    base_name = "mental_health_counseling"
-    spec = DatasetSpec(
-        hf_path="Amod/mental_health_counseling_conversations",
-        shape="fields",
-        user_fields=("Context", "context", "input"),
-        assistant_fields=("Response", "response", "output"),
-    )
+    return Dataset(dialogues, labels, "mentalchat").shuffle()
 
 
-class ProsocialDialogDataset(HFDataset):
-    """
-    ProsocialDialog: Teaching agents to respond prosocially to problematic content.
+@_register_dataset("mental_health_counseling", Topic.MENTAL_HEALTH, "Mental health counseling")
+def mental_health_counseling() -> Dataset:
+    """Mental Health Counseling Conversations."""
+    data = load_dataset("Amod/mental_health_counseling_conversations")["train"]
 
-    Contains 58K dialogues with safety annotations. Includes both problematic
-    user utterances and prosocial assistant responses grounded in social norms.
+    dialogues, labels = [], []
 
-    Source: https://huggingface.co/datasets/allenai/prosocial-dialog
+    for item in data:
+        user = item.get("Context") or item.get("context") or item.get("input") or ""
+        assistant = item.get("Response") or item.get("response") or item.get("output") or ""
+        if not user:
+            continue
 
-    Labels:
-        - NEGATIVE: Casual/acceptable content (safety_label == "__casual__")
-        - POSITIVE: Content that needs caution or intervention
+        dialogue = [Message("user", user)]
+        if assistant:
+            dialogue.append(Message("assistant", assistant))
 
-    Metadata fields:
-        - safety_label: Original safety classification
-        - rots: Rules-of-thumb (social norms) guiding the response
-        - source: Origin of the seed text
-    """
+        dialogues.append(dialogue)
+        labels.append(Label.NEGATIVE)
 
-    base_name = "prosocial_dialog"
-    spec = DatasetSpec(
-        hf_path="allenai/prosocial-dialog",
-        shape="fields",
-        user_fields=("context",),
-        assistant_fields=("response",),
-        metadata_fields={
-            "safety_label": ("safety_label",),
-            "rots": ("rots",),
-            "source": ("source",),
-        },
-        label_fn=_prosocial_label,
-    )
+    return Dataset(dialogues, labels, "mental_health_counseling").shuffle()
 
 
-class EmotionalSupportDataset(HFDataset):
-    """
-    Mental Health Chatbot Dataset for emotional support conversations.
+@_register_dataset("prosocial_dialog", Topic.MENTAL_HEALTH, "Prosocial dialog")
+def prosocial_dialog() -> Dataset:
+    """ProsocialDialog 58K - prosocial responses to problematic content."""
+    data = load_dataset("allenai/prosocial-dialog")["train"]
 
-    Curated from healthcare blogs like WebMD, Mayo Clinic, and HealthLine.
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"safety_label": [], "rots": [], "source": []}
 
-    Source: https://huggingface.co/datasets/heliosbrahma/mental_health_chatbot_dataset
-    """
+    for item in data:
+        context = item.get("context", "")
+        response = item.get("response", "")
+        if not context:
+            continue
 
-    base_name = "emotional_support"
-    spec = DatasetSpec(
-        hf_path="heliosbrahma/mental_health_chatbot_dataset",
-        shape="fields",
-        user_fields=("question", "input", "text", "context"),
-        assistant_fields=("answer", "output", "response", "reply"),
-    )
+        dialogue = [Message("user", context)]
+        if response:
+            dialogue.append(Message("assistant", response))
+
+        dialogues.append(dialogue)
+        # Label based on safety_label: casual is negative, others are positive
+        safety_label = item.get("safety_label", "__casual__")
+        labels.append(Label.NEGATIVE if safety_label == "__casual__" else Label.POSITIVE)
+        metadata["safety_label"].append(safety_label)
+        metadata["rots"].append(item.get("rots"))
+        metadata["source"].append(item.get("source"))
+
+    return Dataset(dialogues, labels, "prosocial_dialog", metadata).shuffle()
+
+
+@_register_dataset("emotional_support", Topic.MENTAL_HEALTH, "Emotional support")
+def emotional_support() -> Dataset:
+    """Mental Health Chatbot Dataset for emotional support."""
+    data = load_dataset("heliosbrahma/mental_health_chatbot_dataset")["train"]
+
+    dialogues, labels = [], []
+
+    for item in data:
+        user = item.get("question") or item.get("input") or item.get("text") or item.get("context") or ""
+        assistant = item.get("answer") or item.get("output") or item.get("response") or item.get("reply") or ""
+        if not user:
+            continue
+
+        dialogue = [Message("user", user)]
+        if assistant:
+            dialogue.append(Message("assistant", assistant))
+
+        dialogues.append(dialogue)
+        labels.append(Label.NEGATIVE)
+
+    return Dataset(dialogues, labels, "emotional_support").shuffle()
