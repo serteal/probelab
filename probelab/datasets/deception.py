@@ -15,6 +15,7 @@ from datasets import load_dataset
 
 from ..types import Dialogue, Label, Message, Role
 from .base import Dataset
+from .builders import build_from_messages
 from .registry import Topic, _register_dataset
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -512,3 +513,20 @@ def ai_audit(variant: str = "no_reasoning") -> Dataset:
     metadata["experiment_variation"].append("B")
 
     return Dataset(dialogues, labels, f"ai_audit:{variant}", metadata).shuffle()
+
+
+# ---------------------------------------------------------------------------
+# Liars' Bench
+# ---------------------------------------------------------------------------
+
+@_register_dataset("liars_bench", Topic.DECEPTION, "Liars' Bench instructed deception")
+def liars_bench(config: str = "instructed-deception") -> Dataset:
+    """Load Liars' Bench dataset.
+
+    Args:
+        config: HF config name (default: 'instructed-deception').
+    """
+    data = load_dataset("Cadenza-Labs/liars-bench", config)["test"]
+    dialogues = [build_from_messages(row["messages"]) for row in data]
+    labels = [Label.POSITIVE if row["deceptive"] else Label.NEGATIVE for row in data]
+    return Dataset(dialogues, labels, "liars_bench").shuffle()

@@ -62,6 +62,7 @@ dev = [
     "python-dotenv>=1.1.1",
     "pytest-cov>=6.2.1",
     "py-spy>=0.4.1",
+    "matplotlib>=3.10.8",
 ]
 
 [tool.ruff]

@@ -87,6 +87,8 @@ def _init_registry() -> None:
         reasoning,
         science,
         sparse_probing,
+        spam,
+        toxicity,
     )
 
 

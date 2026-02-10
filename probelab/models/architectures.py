@@ -78,11 +78,11 @@ ARCHITECTURES: dict[str, Arch] = {
         num_layers=_num_layers_gemma,
     ),
     "gemma3": Arch(
-        get_layers=lambda m: list(m.language_model.layers),
-        get_layer=lambda m, i: m.language_model.layers[i],
-        get_layernorm=lambda m, i: m.language_model.layers[i].input_layernorm,
-        set_layers=lambda m, layers: setattr(m.language_model, "layers", type(m.language_model.layers)(layers)),
-        num_layers=lambda m: m.language_model.config.num_hidden_layers,
+        get_layers=lambda m: list(m.model.language_model.layers),
+        get_layer=lambda m, i: m.model.language_model.layers[i],
+        get_layernorm=lambda m, i: m.model.language_model.layers[i].input_layernorm,
+        set_layers=lambda m, layers: setattr(m.model.language_model, "layers", type(m.model.language_model.layers)(layers)),
+        num_layers=lambda m: m.model.language_model.config.num_hidden_layers,
     ),
 }
 
