@@ -31,7 +31,7 @@ class Logistic(BaseProbe):
     - If X has no SEQ axis: Trains on sequences, returns sequence-level scores
     """
 
-    def __init__(self, C: float = 1.0, max_iter: int = 100, device: str | None = None):
+    def __init__(self, C: float = 1.0, max_iter: int = 500, device: str | None = None):
         super().__init__(device=device)
         self.C = C
         self.max_iter = max_iter
@@ -67,19 +67,17 @@ class Logistic(BaseProbe):
         if features.shape[0] == 0:
             return self
 
-        features = features.to(self.device)
+        features = features.to(self.device, dtype=torch.float32)
         labels = labels.to(self.device).float()
         d_model = features.shape[1]
 
         # Fresh state every fit()
-        self.net = _LogisticNetwork(d_model).to(self.device)
-        if features.dtype != torch.float32:
-            self.net = self.net.to(features.dtype)
+        self.net = _LogisticNetwork(d_model).to(self.device).to(torch.float32)
 
-        # Standardize in-place to avoid doubling memory
+        # Standardize (clone to avoid mutating input data)
         self.scaler_mean = features.mean(0)
         self.scaler_std = features.std(0).clamp(min=1e-8)
-        features.sub_(self.scaler_mean).div_(self.scaler_std)
+        features = (features - self.scaler_mean) / self.scaler_std
 
         # Train with LBFGS
         optimizer = torch.optim.LBFGS(
@@ -109,9 +107,9 @@ class Logistic(BaseProbe):
             Logits tensor [batch] or [n_tokens] (not probabilities)
         """
         self._check_fitted()
-        x = x.to(self.device)
+        x = x.to(self.device, dtype=torch.float32)
         x_scaled = (x - self.scaler_mean) / self.scaler_std
-        return self.net(x_scaled.to(self.net.linear.weight.dtype))
+        return self.net(x_scaled)
 
     def predict(self, X: Activations) -> torch.Tensor:
         """Evaluate on activations.
@@ -134,10 +132,10 @@ class Logistic(BaseProbe):
                 features, _ = X.extract_tokens()
                 flat_probs = torch.sigmoid(self(features))
 
-                # Scatter back to [batch, seq]
-                mask = X.mask.bool()
-                probs = torch.zeros_like(mask, dtype=flat_probs.dtype)
-                probs[mask] = flat_probs
+                # Scatter back to [batch, seq] via to_padded()
+                padded_data, padded_det = X.to_padded()
+                probs = torch.zeros_like(padded_det, dtype=flat_probs.dtype)
+                probs[padded_det] = flat_probs
                 return probs
             else:
                 return torch.sigmoid(self(X.data))
