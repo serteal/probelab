@@ -535,6 +535,22 @@ def collect_activations(
     layers = [layers] if isinstance(layers, int) else list(layers)
     single_layer = len(layers) == 1
     n = len(tokens)
+    stream_kwargs = dict(backend_kwargs)
+    if (
+        pool in {"mean", "last_token"}
+        and "vllm_pool_mode" not in stream_kwargs
+    ):
+        try:
+            backend_impl = resolve_backend(model, backend=backend)
+            if (
+                getattr(backend_impl, "name", None) == "vllm"
+                and bool(tokens.detection_mask.bool().all().item())
+            ):
+                # Native vLLM pooled capture avoids exporting full token streams
+                # when pooling over all tokens.
+                stream_kwargs["vllm_pool_mode"] = pool
+        except Exception:
+            pass
 
     def _iter_stream():
         iterator = stream_activations(
@@ -543,7 +559,7 @@ def collect_activations(
             layers,
             batch_size,
             backend=backend,
-            **backend_kwargs,
+            **stream_kwargs,
         )
         if progress and tqdm is not None:
             desc = progress_desc or ("collect+pool" if pool else "collect")
@@ -580,6 +596,10 @@ def collect_activations(
         elif out.is_cuda:
             # Keep all reduction work on GPU, move to CPU only once at the end.
             out = out.cpu()
+        if out.dtype != torch.float32:
+            # Backends may stream lower-precision activations for throughput.
+            # Cast once at the boundary instead of per-batch/per-token.
+            out = out.float()
 
         if single_layer:
             return Activations(data=out.squeeze(1), dims="bh", layers=None)

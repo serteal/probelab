@@ -4,6 +4,7 @@ import torch
 import pytest
 
 import probelab as pl
+from probelab.backends.transformers import _iter_batches
 from probelab.processing.tokenization import Tokens
 
 
@@ -151,3 +152,66 @@ def test_stream_activations_yields_flat_format():
         assert det.dtype == torch.bool
         assert flat_data.shape[1] == 2  # n_layers
         assert flat_data.shape[2] == 3  # hidden
+
+
+def _make_varlen_tokens(lengths: list[int]) -> Tokens:
+    total = sum(lengths)
+    input_ids = torch.arange(total, dtype=torch.long)
+    offsets = torch.zeros(len(lengths) + 1, dtype=torch.int64)
+    running = 0
+    for i, length in enumerate(lengths):
+        running += length
+        offsets[i + 1] = running
+    detection_mask = torch.ones(total, dtype=torch.bool)
+    return Tokens(
+        input_ids=input_ids,
+        offsets=offsets,
+        detection_mask=detection_mask,
+        pad_token_id=0,
+        padding_side="right",
+    )
+
+
+def test_transformers_iter_batches_respects_token_budget():
+    tokens = _make_varlen_tokens([5, 4, 3, 2])
+
+    batches = list(
+        _iter_batches(tokens, batch_size=4, batch_token_budget=10, sort_by_length=True)
+    )
+
+    # Sorted by length and token-budget packed: [5,4] then [3,2]
+    idx_lists = [idx for _, idx in batches]
+    assert idx_lists == [[0, 1], [2, 3]]
+
+    # Each batch should satisfy padded-token budget
+    for _, idx in batches:
+        lengths = tokens.lengths[idx]
+        padded_tokens = int(lengths.max().item()) * len(idx)
+        assert padded_tokens <= 10
+
+
+def test_transformers_iter_batches_preserves_order_when_unsorted():
+    tokens = _make_varlen_tokens([2, 5, 4, 3])
+
+    batches = list(
+        _iter_batches(tokens, batch_size=4, batch_token_budget=10, sort_by_length=False)
+    )
+    idx_lists = [idx for _, idx in batches]
+    assert idx_lists == [[0, 1], [2, 3]]
+
+
+def test_transformers_iter_batches_allows_singleton_over_budget():
+    tokens = _make_varlen_tokens([12, 2, 2])
+
+    batches = list(
+        _iter_batches(tokens, batch_size=4, batch_token_budget=10, sort_by_length=True)
+    )
+    idx_lists = [idx for _, idx in batches]
+    assert idx_lists[0] == [0]
+    assert idx_lists[1] == [1, 2]
+
+
+def test_transformers_iter_batches_rejects_nonpositive_token_budget():
+    tokens = _make_varlen_tokens([3, 2, 1])
+    with pytest.raises(ValueError):
+        _ = list(_iter_batches(tokens, batch_size=4, batch_token_budget=0))
