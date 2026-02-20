@@ -114,10 +114,8 @@ class GatedBipolar(BaseProbe):
             self.device = str(X.data.device)
 
         y_tensor = self._to_labels(y)
-        sequences = X.data.detach()
-        mask = X.mask.detach()
         labels = y_tensor.float()
-        d_model = sequences.shape[-1]
+        d_model = X.hidden_size
 
         # Fresh state every fit()
         self.net = _GatedBipolarNetwork(
@@ -126,8 +124,6 @@ class GatedBipolar(BaseProbe):
             gate_dim=self.gate_dim,
             dropout=self.dropout,
         ).to(self.device)
-        if sequences.dtype != torch.float32:
-            self.net = self.net.to(sequences.dtype)
 
         optimizer = AdamW(
             self.net.parameters(),
@@ -137,11 +133,18 @@ class GatedBipolar(BaseProbe):
         )
 
         # Train/validation split
-        n_samples = len(sequences)
+        n_samples = X.batch_size
         n_val = max(1, int(0.2 * n_samples))
         indices = torch.randperm(n_samples)
-        train_idx, val_idx = indices[n_val:], indices[:n_val]
+        train_idx, val_idx = indices[n_val:].tolist(), indices[:n_val].tolist()
         batch_size = min(32, len(train_idx))
+
+        # Pre-pad validation
+        val_seq, val_mask = X.pad_batch(val_idx)
+
+        # Check dtype for network
+        if val_seq.dtype != torch.float32:
+            self.net = self.net.to(val_seq.dtype)
 
         best_val_loss = float("inf")
         patience_counter = 0
@@ -149,12 +152,13 @@ class GatedBipolar(BaseProbe):
         self.net.train()
         for epoch in range(self.n_epochs):
             perm = torch.randperm(len(train_idx))
-            shuffled = train_idx[perm]
+            shuffled = [train_idx[p] for p in perm.tolist()]
 
             for i in range(0, len(shuffled), batch_size):
                 batch_idx = shuffled[i : i + batch_size]
-                batch_seq = sequences[batch_idx].to(self.device)
-                batch_mask = mask[batch_idx].to(self.device)
+                batch_seq, batch_mask = X.pad_batch(batch_idx)
+                batch_seq = batch_seq.to(self.device)
+                batch_mask = batch_mask.to(self.device)
                 batch_y = labels[batch_idx].to(self.device)
 
                 optimizer.zero_grad()
@@ -168,7 +172,7 @@ class GatedBipolar(BaseProbe):
             self.net.eval()
             with torch.no_grad():
                 val_loss = F.binary_cross_entropy_with_logits(
-                    self.net(sequences[val_idx].to(self.device), mask[val_idx].to(self.device)),
+                    self.net(val_seq.to(self.device), val_mask.to(self.device)),
                     labels[val_idx].to(self.device)
                 )
             self.net.train()
@@ -217,8 +221,9 @@ class GatedBipolar(BaseProbe):
         if "s" not in X.dims:
             raise ValueError("GatedBipolar probe requires SEQ axis")
 
-        sequences = X.data.to(self.device)
-        mask = X.mask.to(self.device)
+        sequences, mask = X.to_padded()
+        sequences = sequences.to(self.device)
+        mask = mask.to(self.device)
 
         with torch.no_grad():
             return torch.sigmoid(self(sequences, mask))

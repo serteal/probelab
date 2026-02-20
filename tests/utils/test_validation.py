@@ -12,21 +12,21 @@ class TestCheckActivations:
 
     @pytest.fixture
     def activations_4d(self):
-        """Create 4D activations [batch, layer, seq, hidden]."""
-        return Activations(
+        """Create 4D activations [batch, layer, seq, hidden] via from_padded."""
+        return Activations.from_padded(
             data=torch.randn(4, 2, 10, 32),
+            detection_mask=torch.ones(4, 10),
             dims="blsh",
-            mask=torch.ones(4, 10),
             layers=(0, 1),
         )
 
     @pytest.fixture
     def activations_3d(self):
         """Create 3D activations [batch, seq, hidden] (single layer, axis removed)."""
-        acts_4d = Activations(
+        acts_4d = Activations.from_padded(
             data=torch.randn(4, 1, 10, 32),
+            detection_mask=torch.ones(4, 10),
             dims="blsh",
-            mask=torch.ones(4, 10),
             layers=(0,),
         )
         return acts_4d.select_layers(0)  # Remove LAYER axis
@@ -34,10 +34,10 @@ class TestCheckActivations:
     @pytest.fixture
     def activations_no_seq(self):
         """Create activations without SEQ axis."""
-        acts = Activations(
+        acts = Activations.from_padded(
             data=torch.randn(4, 10, 32),
+            detection_mask=torch.ones(4, 10),
             dims="bsh",
-            mask=torch.ones(4, 10),
         )
         return acts.mean_pool()
 
@@ -115,7 +115,10 @@ class TestCheckActivations:
         """ensure_finite=True fails when NaN present."""
         tensor = torch.randn(4, 2, 10, 32)
         tensor[0, 0, 0, 0] = float("nan")
-        acts = Activations(data=tensor, dims="blsh", mask=torch.ones(4, 10), layers=(0, 1))
+        acts = Activations.from_padded(
+            data=tensor, detection_mask=torch.ones(4, 10),
+            dims="blsh", layers=(0, 1),
+        )
         with pytest.raises(ValueError, match="non-finite values"):
             check_activations(acts, ensure_finite=True)
 
@@ -123,7 +126,10 @@ class TestCheckActivations:
         """ensure_finite=True fails when Inf present."""
         tensor = torch.randn(4, 2, 10, 32)
         tensor[0, 0, 0, 0] = float("inf")
-        acts = Activations(data=tensor, dims="blsh", mask=torch.ones(4, 10), layers=(0, 1))
+        acts = Activations.from_padded(
+            data=tensor, detection_mask=torch.ones(4, 10),
+            dims="blsh", layers=(0, 1),
+        )
         with pytest.raises(ValueError, match="non-finite values"):
             check_activations(acts, ensure_finite=True)
 

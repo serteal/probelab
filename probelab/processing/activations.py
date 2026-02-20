@@ -6,17 +6,21 @@ activations from language models using hooks.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generator, Iterator
+from typing import TYPE_CHECKING, Any, Generator, Iterator
 
 import torch
 
+from ..backends import get_context_defaults, resolve_backend
 from .. import pool as P
-from ..models import HookedModel
+
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover - optional dependency fallback
+    tqdm = None
 
 if TYPE_CHECKING:
-    from transformers import PreTrainedModel
-
     from .tokenization import Tokens
 
 
@@ -27,33 +31,124 @@ DIMS = {"bh", "bsh", "blh", "blsh"}
 class Activations:
     """Activation tensor with explicit dimension labels.
 
-    Axis order is always [batch, layer?, seq?, hidden].
+    When ``"s"`` is in *dims* the sequence dimension is stored in a
+    **flat+offsets** layout:
+
+    * ``data`` – ``[total_tokens, hidden]`` (dims ``"bsh"``) or
+      ``[total_tokens, n_layers, hidden]`` (dims ``"blsh"``).  The leading
+      axis concatenates all samples; the physical ``ndim`` is therefore
+      ``len(dims) - 1`` (the batch dimension is implicit).
+    * ``offsets`` – ``[batch+1]`` ``int64`` cumulative token counts.
+      Sample *i* spans ``data[offsets[i]:offsets[i+1]]``.
+    * ``det`` – ``[total_tokens]`` ``bool`` per-real-token detection mask.
+
+    When ``"s"`` is **not** in *dims* the container behaves exactly as
+    before (``offsets=None``, ``det=None``).
 
     Args:
         data: Activation tensor
-        dims: Dimension format - one of "bh", "bsh", "blh", "blsh"
-        mask: Detection mask [batch, seq], required if "s" in dims
-        layers: Layer indices tuple, required if "l" in dims
+        dims: Dimension format – one of ``"bh"``, ``"bsh"``, ``"blh"``, ``"blsh"``
+        offsets: ``[batch+1]`` int64 cumulative token counts (required when ``"s"`` in dims)
+        det: ``[total_tokens]`` bool detection mask (required when ``"s"`` in dims)
+        layers: Layer indices tuple (required when ``"l"`` in dims)
     """
 
     data: torch.Tensor
     dims: str
-    mask: torch.Tensor | None = None
+    offsets: torch.Tensor | None = None
+    det: torch.Tensor | None = None
     layers: tuple[int, ...] | None = None
 
     def __post_init__(self):
         if self.dims not in DIMS:
             raise ValueError(f"dims must be one of {DIMS}, got {self.dims!r}")
-        if len(self.data.shape) != len(self.dims):
-            raise ValueError(f"data has {self.data.ndim}D but dims={self.dims!r}")
-        if "s" in self.dims and self.mask is None:
-            raise ValueError("mask required when dims contains 's'")
-        if "s" not in self.dims and self.mask is not None:
-            raise ValueError("mask provided but dims has no 's'")
+
+        if "s" in self.dims:
+            # Flat+offsets: physical ndim is len(dims) - 1
+            expected_ndim = len(self.dims) - 1
+            if self.data.ndim != expected_ndim:
+                raise ValueError(
+                    f"data has {self.data.ndim}D but dims={self.dims!r} "
+                    f"requires {expected_ndim}D (flat+offsets layout)"
+                )
+            if self.offsets is None:
+                raise ValueError("offsets required when dims contains 's'")
+            if self.det is None:
+                raise ValueError("det required when dims contains 's'")
+        else:
+            if self.data.ndim != len(self.dims):
+                raise ValueError(
+                    f"data has {self.data.ndim}D but dims={self.dims!r}"
+                )
+            if self.offsets is not None:
+                raise ValueError("offsets provided but dims has no 's'")
+            if self.det is not None:
+                raise ValueError("det provided but dims has no 's'")
+
         if "l" in self.dims and self.layers is None:
             raise ValueError("layers required when dims contains 'l'")
         if not self.data.is_floating_point():
             self.data = self.data.float()
+
+    # -------------------------------------------------------------------------
+    # Construction helpers
+    # -------------------------------------------------------------------------
+
+    @classmethod
+    def from_padded(
+        cls,
+        data: torch.Tensor,
+        detection_mask: torch.Tensor,
+        dims: str,
+        layers: tuple[int, ...] | None = None,
+        attention_mask: torch.Tensor | None = None,
+    ) -> "Activations":
+        """Build flat+offsets Activations from padded rectangular tensors.
+
+        Args:
+            data: Padded activation tensor (``[batch, seq, hidden]`` or
+                ``[batch, layer, seq, hidden]``).
+            detection_mask: ``[batch, seq]`` bool/float – which tokens are
+                detection-relevant.
+            dims: Dimension string (must contain ``"s"``).
+            layers: Layer indices (required when ``"l"`` in dims).
+            attention_mask: ``[batch, seq]`` bool/float – which tokens are
+                real (attended). If *None*, ``detection_mask`` is used instead
+                (i.e. only detection tokens are kept).
+
+        Returns:
+            Flat+offsets ``Activations``.
+        """
+        if "s" not in dims:
+            raise ValueError("from_padded requires dims with 's'")
+
+        det_bool = detection_mask.bool()
+        keep = attention_mask.bool() if attention_mask is not None else det_bool
+
+        batch = data.shape[0]
+        seq_dim = dims.index("s")
+        lengths = keep.sum(dim=1)  # [batch]
+
+        # Build flat data and det
+        flat_chunks: list[torch.Tensor] = []
+        det_chunks: list[torch.Tensor] = []
+        for i in range(batch):
+            mask_i = keep[i]  # [seq]
+            if seq_dim == 1:
+                # dims "bsh": data is [batch, seq, hidden]
+                flat_chunks.append(data[i][mask_i])
+            elif seq_dim == 2:
+                # dims "blsh": data is [batch, layer, seq, hidden]
+                flat_chunks.append(data[i][:, mask_i].transpose(0, 1))
+            det_chunks.append(det_bool[i][mask_i])
+
+        flat_data = torch.cat(flat_chunks, dim=0) if flat_chunks else data.new_empty(0, *data.shape[2:])
+        flat_det = torch.cat(det_chunks, dim=0) if det_chunks else torch.empty(0, dtype=torch.bool)
+
+        offsets = torch.zeros(batch + 1, dtype=torch.int64)
+        offsets[1:] = lengths.cumsum(0)
+
+        return cls(data=flat_data, dims=dims, offsets=offsets, det=flat_det, layers=layers)
 
     # -------------------------------------------------------------------------
     # Properties
@@ -65,6 +160,8 @@ class Activations:
 
     @property
     def batch_size(self) -> int:
+        if "s" in self.dims:
+            return self.offsets.shape[0] - 1
         return self.data.shape[0]
 
     @property
@@ -73,11 +170,117 @@ class Activations:
 
     @property
     def seq_len(self) -> int | None:
-        return self.data.shape[self.dims.index("s")] if "s" in self.dims else None
+        if "s" not in self.dims:
+            return None
+        lengths = self.offsets[1:] - self.offsets[:-1]
+        return int(lengths.max().item()) if lengths.numel() > 0 else 0
+
+    @property
+    def total_tokens(self) -> int | None:
+        if "s" not in self.dims:
+            return None
+        return self.data.shape[0]
 
     @property
     def n_layers(self) -> int | None:
-        return self.data.shape[self.dims.index("l")] if "l" in self.dims else None
+        if "l" not in self.dims:
+            return None
+        if "s" in self.dims:
+            # "blsh" → data is [total_tokens, n_layers, hidden], layer dim=1
+            return self.data.shape[1]
+        return self.data.shape[self.dims.index("l")]
+
+    # -------------------------------------------------------------------------
+    # Materialization helpers
+    # -------------------------------------------------------------------------
+
+    def to_padded(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Materialize padded ``[batch, (layer,) max_seq, hidden]`` + detection mask.
+
+        Returns:
+            ``(padded_data, padded_det)`` where *padded_det* is ``[batch, max_seq]`` bool.
+        """
+        if "s" not in self.dims:
+            raise ValueError("to_padded requires 's' in dims")
+
+        batch = self.batch_size
+        max_seq = self.seq_len
+        hidden = self.hidden_size
+
+        if "l" in self.dims:
+            # data: [T, n_layers, hidden] → padded [batch, n_layers, max_seq, hidden]
+            n_layers = self.n_layers
+            padded = self.data.new_zeros(batch, n_layers, max_seq, hidden)
+            padded_det = torch.zeros(batch, max_seq, dtype=torch.bool, device=self.data.device)
+            for i in range(batch):
+                s, e = int(self.offsets[i]), int(self.offsets[i + 1])
+                length = e - s
+                if length > 0:
+                    # data[s:e] is [length, n_layers, hidden] → transpose to [n_layers, length, hidden]
+                    padded[i, :, :length] = self.data[s:e].transpose(0, 1)
+                    padded_det[i, :length] = self.det[s:e]
+        else:
+            # data: [T, hidden] → padded [batch, max_seq, hidden]
+            padded = self.data.new_zeros(batch, max_seq, hidden)
+            padded_det = torch.zeros(batch, max_seq, dtype=torch.bool, device=self.data.device)
+            for i in range(batch):
+                s, e = int(self.offsets[i]), int(self.offsets[i + 1])
+                length = e - s
+                if length > 0:
+                    padded[i, :length] = self.data[s:e]
+                    padded_det[i, :length] = self.det[s:e]
+
+        return padded, padded_det
+
+    def pad_batch(self, indices: list[int] | torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Materialize padded tensors for a subset of samples.
+
+        Pads to the LOCAL max sequence length of the selected samples, which is
+        more memory-efficient than ``to_padded()`` for mini-batching.
+
+        Args:
+            indices: Sample indices to extract.
+
+        Returns:
+            ``(padded_data, padded_det)`` – same format as ``to_padded()`` but
+            only for the requested samples and padded to local max.
+        """
+        if "s" not in self.dims:
+            raise ValueError("pad_batch requires 's' in dims")
+
+        if isinstance(indices, torch.Tensor):
+            indices = indices.tolist()
+
+        hidden = self.hidden_size
+        # Compute local max
+        local_max = 0
+        for i in indices:
+            length = int(self.offsets[i + 1]) - int(self.offsets[i])
+            local_max = max(local_max, length)
+
+        sub_batch = len(indices)
+
+        if "l" in self.dims:
+            n_layers = self.n_layers
+            padded = self.data.new_zeros(sub_batch, n_layers, local_max, hidden)
+            padded_det = torch.zeros(sub_batch, local_max, dtype=torch.bool, device=self.data.device)
+            for j, i in enumerate(indices):
+                s, e = int(self.offsets[i]), int(self.offsets[i + 1])
+                length = e - s
+                if length > 0:
+                    padded[j, :, :length] = self.data[s:e].transpose(0, 1)
+                    padded_det[j, :length] = self.det[s:e]
+        else:
+            padded = self.data.new_zeros(sub_batch, local_max, hidden)
+            padded_det = torch.zeros(sub_batch, local_max, dtype=torch.bool, device=self.data.device)
+            for j, i in enumerate(indices):
+                s, e = int(self.offsets[i]), int(self.offsets[i + 1])
+                length = e - s
+                if length > 0:
+                    padded[j, :length] = self.data[s:e]
+                    padded_det[j, :length] = self.det[s:e]
+
+        return padded, padded_det
 
     # -------------------------------------------------------------------------
     # Pooling (delegates to pl.pool.*)
@@ -98,10 +301,10 @@ class Activations:
     def _pool(self, pool_fn) -> "Activations":
         if "s" not in self.dims:
             raise ValueError("No sequence dimension to pool")
-        idx = self.dims.index("s")
-        pooled = pool_fn(self.data, self.mask, dim=idx)
+
+        pooled = pool_fn(self.data, self.det, offsets=self.offsets)
         new_dims = self.dims.replace("s", "")
-        return Activations(pooled, new_dims, mask=None, layers=self.layers)
+        return Activations(pooled, new_dims, offsets=None, det=None, layers=self.layers)
 
     # -------------------------------------------------------------------------
     # Layer selection
@@ -112,20 +315,22 @@ class Activations:
         if "l" not in self.dims:
             raise ValueError("No layer axis to select from")
 
-        dim = self.dims.index("l")
+        if "s" in self.dims:
+            # data is [T, n_layers, hidden], layer dim = 1
+            dim = 1
+        else:
+            dim = self.dims.index("l")
 
         if isinstance(layer_or_layers, int):
-            # Single layer: remove axis (returns view)
             idx = self.layers.index(layer_or_layers)
             selected = self.data.select(dim, idx)
             new_dims = self.dims.replace("l", "")
-            return Activations(selected, new_dims, mask=self.mask, layers=None)
+            return Activations(selected, new_dims, offsets=self.offsets, det=self.det, layers=None)
         else:
-            # Multiple layers: keep axis
             indices = [self.layers.index(l) for l in layer_or_layers]
             idx_tensor = torch.tensor(indices, device=self.data.device)
             selected = self.data.index_select(dim, idx_tensor)
-            return Activations(selected, self.dims, mask=self.mask, layers=tuple(layer_or_layers))
+            return Activations(selected, self.dims, offsets=self.offsets, det=self.det, layers=tuple(layer_or_layers))
 
     # -------------------------------------------------------------------------
     # Iteration
@@ -155,12 +360,18 @@ class Activations:
         if "l" in self.dims and self.n_layers != 1:
             raise ValueError("Must select single layer before extracting tokens")
 
-        tensor = self.data.squeeze(self.dims.index("l")) if "l" in self.dims else self.data
-        bool_mask = self.mask.bool()
-        tokens_per_sample = bool_mask.sum(dim=1)
-        features = tensor[bool_mask]
+        data = self.data.squeeze(1) if "l" in self.dims else self.data
+        det_bool = self.det.bool()
+        features = data[det_bool]
 
-        return features, tokens_per_sample.to(device=self.data.device)
+        # Compute tokens_per_sample via offsets
+        batch = self.batch_size
+        tokens_per_sample = torch.zeros(batch, dtype=torch.long, device=self.data.device)
+        for i in range(batch):
+            s, e = int(self.offsets[i]), int(self.offsets[i + 1])
+            tokens_per_sample[i] = det_bool[s:e].sum()
+
+        return features, tokens_per_sample
 
     # -------------------------------------------------------------------------
     # Device / dtype
@@ -170,7 +381,8 @@ class Activations:
         return Activations(
             self.data.to(device),
             self.dims,
-            self.mask.to(device) if self.mask is not None else None,
+            self.offsets.to(device) if self.offsets is not None else None,
+            self.det.to(device) if self.det is not None else None,
             self.layers,
         )
 
@@ -200,12 +412,10 @@ class Activations:
 
             if self.layers is not None:
                 f.create_dataset("layers", data=list(self.layers))
-            if self.mask is not None:
-                f.create_dataset(
-                    "mask", data=self.mask.cpu().numpy(),
-                    compression=compression,
-                    compression_opts=compression_opts if compression == "gzip" else None,
-                )
+            if self.offsets is not None:
+                f.create_dataset("offsets", data=self.offsets.cpu().numpy())
+            if self.det is not None:
+                f.create_dataset("det", data=self.det.cpu().numpy())
 
     @classmethod
     def load(cls, path: str, device: str = "cpu") -> "Activations":
@@ -219,51 +429,20 @@ class Activations:
             data = torch.tensor(f["data"][:], device=device).float()
             dims = f.attrs["dims"]
             layers = tuple(f["layers"][:]) if "layers" in f else None
-            mask = torch.tensor(f["mask"][:], device=device).float() if "mask" in f else None
+            offsets = torch.tensor(f["offsets"][:], dtype=torch.int64, device=device) if "offsets" in f else None
+            det = torch.tensor(f["det"][:], dtype=torch.bool, device=device) if "det" in f else None
 
-        return cls(data=data, dims=dims, mask=mask, layers=layers)
+            # Legacy backward compat: old files have "mask" instead of offsets/det
+            if "s" in dims and offsets is None and "mask" in f:
+                return cls._load_legacy_padded(f, data, dims, layers, device)
 
+        return cls(data=data, dims=dims, offsets=offsets, det=det, layers=layers)
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _batches(
-    tokens: "Tokens", batch_size: int
-) -> Generator[tuple[dict[str, torch.Tensor], list[int]], None, None]:
-    """Yield (batch_dict, indices) sorted by length for efficiency."""
-    seq_lens = tokens.attention_mask.sum(1)
-    order = seq_lens.argsort(descending=True)
-    for i in range(0, len(order), batch_size):
-        idx = order[i : i + batch_size]
-        max_len = int(seq_lens[idx].max())
-        if tokens.padding_side == "right":
-            sl = slice(None, max_len)
-        else:
-            sl = slice(-max_len, None)
-        yield {
-            "input_ids": tokens.input_ids[idx][..., sl],
-            "attention_mask": tokens.attention_mask[idx][..., sl],
-            "detection_mask": tokens.detection_mask[idx][..., sl],
-        }, idx.tolist()
-
-
-def _extract(model: "PreTrainedModel", batch: dict, layers: list[int]) -> torch.Tensor:
-    """Extract activations [layers, batch, seq, hidden] from one batch."""
-    batch_gpu = {k: v.to(model.device) for k, v in batch.items() if k != "detection_mask"}
-    with HookedModel(model, layers, detach_activations=True) as h:
-        return h.get_activations(batch_gpu).cpu()
-
-
-def _hidden_dim(model: "PreTrainedModel") -> int:
-    """Get hidden dimension from model config."""
-    cfg = model.config
-    if hasattr(cfg, "hidden_size"):
-        return cfg.hidden_size
-    if hasattr(cfg, "text_config") and hasattr(cfg.text_config, "hidden_size"):
-        return cfg.text_config.hidden_size
-    raise ValueError(f"Cannot determine hidden dimension for {type(model)}")
+    @classmethod
+    def _load_legacy_padded(cls, f, data, dims, layers, device):
+        """Load old-format HDF5 files with padded data and mask."""
+        mask = torch.tensor(f["mask"][:], device=device).float()
+        return cls.from_padded(data, mask, dims, layers)
 
 
 # ---------------------------------------------------------------------------
@@ -272,54 +451,121 @@ def _hidden_dim(model: "PreTrainedModel") -> int:
 
 
 def stream_activations(
-    model: "PreTrainedModel",
+    model: object,
     tokens: "Tokens",
     layers: list[int] | int,
     batch_size: int = 32,
-) -> Generator[tuple[torch.Tensor, list[int], int], None, None]:
-    """Yield (activations, indices, seq_len) per batch.
+    *,
+    backend: str = "auto",
+    **backend_kwargs: Any,
+) -> Generator[tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[int]], None, None]:
+    """Yield (flat_data, det, offsets, indices) per batch.
 
     Args:
-        model: Model to extract activations from.
+        model: Loaded model object (HF model or vLLM activation engine).
         tokens: Tokenized inputs from tokenize_dialogues().
         layers: Layer index or list of indices.
         batch_size: Batch size for extraction.
+        backend: Backend override ("auto", "transformers", "vllm").
+        **backend_kwargs: Backend-specific extraction options.
 
     Yields:
-        (acts, indices, seq_len) where:
-        - acts: [n_layers, batch, seq, hidden] tensor
+        (flat_data, det, offsets, indices) where:
+        - flat_data: [total_batch_tokens, n_layers, hidden] tensor
+        - det: [total_batch_tokens] bool detection mask
+        - offsets: [batch_chunk+1] int64 cumulative token counts
         - indices: original sample indices for this batch
-        - seq_len: sequence length for this batch
     """
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
     layers = [layers] if isinstance(layers, int) else list(layers)
-    for batch, idx in _batches(tokens, batch_size):
-        yield _extract(model, batch, layers), idx, batch["input_ids"].shape[1]
+    merged_kwargs = get_context_defaults()
+    merged_kwargs.update(backend_kwargs)
+    selected_backend = backend
+    if selected_backend == "auto":
+        context_backend = merged_kwargs.pop("backend", "auto")
+        if isinstance(context_backend, str):
+            selected_backend = context_backend
+    else:
+        merged_kwargs.pop("backend", None)
+
+    backend_impl = resolve_backend(model, backend=selected_backend)
+
+    for flat_data, det, offsets, idx in backend_impl.stream_raw(
+        model_obj=model,
+        tokens=tokens,
+        layers=layers,
+        batch_size=batch_size,
+        **merged_kwargs,
+    ):
+        yield flat_data, det, offsets, idx
 
 
 def collect_activations(
-    model: "PreTrainedModel",
+    model: object,
     tokens: "Tokens",
     layers: list[int] | int,
     batch_size: int = 32,
     pool: str | None = None,
+    *,
+    backend: str = "auto",
+    progress: bool = False,
+    progress_desc: str | None = None,
+    progress_leave: bool = False,
+    **backend_kwargs: Any,
 ) -> Activations:
     """Collect all activations into single Activations object.
 
     Args:
-        model: Model to extract activations from.
+        model: Loaded model object (HF model or vLLM activation engine).
         tokens: Tokenized inputs from tokenize_dialogues().
         layers: Layer index or list of indices.
         batch_size: Batch size for extraction.
         pool: Optional pooling over sequence ("mean", "max", "last_token").
+        backend: Backend override ("auto", "transformers", "vllm").
+        **backend_kwargs: Backend-specific extraction options.
 
     Returns:
         Activations with shape:
-        - Single layer: [batch, seq, hidden] or [batch, hidden] if pooled
-        - Multiple layers: [batch, layer, seq, hidden] or [batch, layer, hidden] if pooled
+        - Single layer, no pool: flat [total_tokens, hidden] with offsets
+        - Multiple layers, no pool: flat [total_tokens, n_layers, hidden] with offsets
+        - Pooled: [batch, hidden] or [batch, n_layers, hidden]
     """
     layers = [layers] if isinstance(layers, int) else list(layers)
     single_layer = len(layers) == 1
-    n, max_seq, d = len(tokens), tokens.seq_len, _hidden_dim(model)
+    n = len(tokens)
+    stream_kwargs = dict(backend_kwargs)
+    if (
+        pool in {"mean", "last_token"}
+        and "vllm_pool_mode" not in stream_kwargs
+    ):
+        try:
+            backend_impl = resolve_backend(model, backend=backend)
+            if (
+                getattr(backend_impl, "name", None) == "vllm"
+                and bool(tokens.detection_mask.bool().all().item())
+            ):
+                # Native vLLM pooled capture avoids exporting full token streams
+                # when pooling over all tokens.
+                stream_kwargs["vllm_pool_mode"] = pool
+        except Exception:
+            pass
+
+    def _iter_stream():
+        iterator = stream_activations(
+            model,
+            tokens,
+            layers,
+            batch_size,
+            backend=backend,
+            **stream_kwargs,
+        )
+        if progress and tqdm is not None:
+            desc = progress_desc or ("collect+pool" if pool else "collect")
+            total_batches = math.ceil(n / batch_size) if n > 0 else 0
+            return tqdm(iterator, total=total_batches, desc=desc, leave=progress_leave)
+        return iterator
 
     if pool:
         pool_fn = getattr(P, pool, None)
@@ -328,51 +574,86 @@ def collect_activations(
             raise ValueError(f"Unknown pooling method: {pool}. Available: {available}")
 
         # Collect as [batch, layer, hidden]
-        out = torch.zeros(n, len(layers), d, dtype=model.dtype)
-        for acts, idx, sl in stream_activations(model, tokens, layers, batch_size):
-            # acts is [layer, batch_chunk, seq, hidden], transpose to [batch_chunk, layer, seq, hidden]
-            acts_t = acts.transpose(0, 1)
-            if tokens.padding_side == "right":
-                mask = tokens.detection_mask[idx, :sl]
-            else:
-                mask = tokens.detection_mask[idx, -sl:]
-            # Pool over seq (dim=2)
-            out[idx] = pool_fn(acts_t, mask, dim=2)
+        out: torch.Tensor | None = None
+        for flat_data, det, offsets, idx in _iter_stream():
+            # flat_data: [T, n_layers, hidden]
+            if out is None:
+                out = torch.zeros(
+                    n,
+                    len(layers),
+                    flat_data.shape[-1],
+                    dtype=flat_data.dtype,
+                    device=flat_data.device,
+                )
+
+            # Vectorized pooling over all layers at once: [T, L, H] -> [B, L, H]
+            pooled = pool_fn(flat_data, det, offsets=offsets)
+            out_idx = torch.tensor(idx, dtype=torch.long, device=pooled.device)
+            out[out_idx] = pooled
+
+        if out is None:
+            out = torch.zeros(n, len(layers), 0, dtype=torch.float32)
+        elif out.is_cuda:
+            # Keep all reduction work on GPU, move to CPU only once at the end.
+            out = out.cpu()
+        if out.dtype != torch.float32:
+            # Backends may stream lower-precision activations for throughput.
+            # Cast once at the boundary instead of per-batch/per-token.
+            out = out.float()
 
         if single_layer:
-            return Activations(
-                data=out.squeeze(1),
-                dims="bh",
-                mask=None,
-                layers=None,
-            )
-        return Activations(
-            data=out,
-            dims="blh",
-            mask=None,
-            layers=tuple(layers),
-        )
+            return Activations(data=out.squeeze(1), dims="bh", layers=None)
+        return Activations(data=out, dims="blh", layers=tuple(layers))
 
-    # Collect as [batch, layer, seq, hidden]
-    out = torch.zeros(n, len(layers), max_seq, d, dtype=model.dtype)
-    for acts, idx, sl in stream_activations(model, tokens, layers, batch_size):
-        # acts is [layer, batch_chunk, seq, hidden], transpose to [batch_chunk, layer, seq, hidden]
-        acts_t = acts.transpose(0, 1)
-        if tokens.padding_side == "right":
-            out[idx, :, :sl] = acts_t
-        else:
-            out[idx, :, -sl:] = acts_t
+    # No pooling: collect flat data per sample, then concatenate in order
+    per_sample: list[tuple[torch.Tensor, torch.Tensor] | None] = [None] * n
+    for flat_data, det, offsets, idx in _iter_stream():
+        batch_chunk = offsets.shape[0] - 1
+        for j in range(batch_chunk):
+            s, e = int(offsets[j]), int(offsets[j + 1])
+            per_sample[idx[j]] = (flat_data[s:e], det[s:e])
+
+    # Build global flat tensor and offsets
+    all_data: list[torch.Tensor] = []
+    all_det: list[torch.Tensor] = []
+    global_offsets = torch.zeros(n + 1, dtype=torch.int64)
+    running = 0
+    for i in range(n):
+        if per_sample[i] is not None:
+            d, dt = per_sample[i]
+            all_data.append(d)
+            all_det.append(dt)
+            running += d.shape[0]
+        global_offsets[i + 1] = running
+
+    if all_data:
+        cat_data = torch.cat(all_data, dim=0)
+        cat_det = torch.cat(all_det, dim=0)
+        if cat_data.is_cuda:
+            # Build flat representation on GPU, transfer once after concatenation.
+            cat_data = cat_data.cpu()
+            cat_det = cat_det.cpu()
+    else:
+        cat_data = torch.zeros(0, len(layers), 0, dtype=torch.float32)
+        cat_det = torch.empty(0, dtype=torch.bool)
 
     if single_layer:
+        # Squeeze layer dim: [T, 1, hidden] → [T, hidden]
+        if cat_data.ndim == 2:
+            pass  # already [T, hidden]
+        else:
+            cat_data = cat_data.squeeze(1)
         return Activations(
-            data=out.squeeze(1),
+            data=cat_data,
             dims="bsh",
-            mask=tokens.detection_mask,
+            offsets=global_offsets,
+            det=cat_det,
             layers=None,
         )
     return Activations(
-        data=out,
+        data=cat_data,
         dims="blsh",
-        mask=tokens.detection_mask,
+        offsets=global_offsets,
+        det=cat_det,
         layers=tuple(layers),
     )

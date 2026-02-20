@@ -156,3 +156,24 @@ def stem_qa() -> Dataset:
         metadata["topic"].append(item.get("topic") or item.get("subject"))
 
     return Dataset(dialogues, labels, "stem_qa", metadata).shuffle()
+
+
+@_register_dataset("wmdp_bio", Topic.SCIENCE, "WMDP biosecurity MC questions")
+def wmdp_bio() -> Dataset:
+    """WMDP-bio: 1273 multiple-choice biosecurity questions from CAIS."""
+    data = load_dataset("cais/wmdp", "wmdp-bio")["test"]
+
+    dialogues, labels = [], []
+
+    for item in data:
+        question = item["question"]
+        choices = item["choices"]
+        answer_idx = item["answer"]
+        formatted = question + "\n\n" + "\n".join(
+            f"{chr(65 + i)}. {c}" for i, c in enumerate(choices)
+        )
+        answer_text = f"The answer is {chr(65 + answer_idx)}: {choices[answer_idx]}"
+        dialogues.append([Message("user", formatted), Message("assistant", answer_text)])
+        labels.append(Label.POSITIVE)
+
+    return Dataset(dialogues, labels, "wmdp_bio").shuffle()

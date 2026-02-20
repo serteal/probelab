@@ -88,7 +88,9 @@ class MLP(BaseProbe):
             if y_tensor.ndim == 1:
                 labels = torch.repeat_interleave(y_tensor, tokens_per_sample.to(y_tensor.device))
             elif y_tensor.ndim == 2:
-                labels = y_tensor[X.mask.cpu().bool()]
+                # 2D token-level labels: extract via det mask
+                det_bool = X.det.bool()
+                labels = y_tensor.view(-1)[det_bool[:y_tensor.numel()]] if y_tensor.numel() > 0 else y_tensor.new_empty(0)
             else:
                 raise ValueError(f"Invalid label shape: {y_tensor.shape}")
         else:
@@ -168,10 +170,10 @@ class MLP(BaseProbe):
                 features, _ = X.extract_tokens()
                 flat_probs = torch.sigmoid(self(features))
 
-                # Scatter back to [batch, seq]
-                mask = X.mask.bool()
-                probs = torch.zeros_like(mask, dtype=flat_probs.dtype)
-                probs[mask] = flat_probs
+                # Scatter back to [batch, seq] via to_padded()
+                padded_data, padded_det = X.to_padded()
+                probs = torch.zeros_like(padded_det, dtype=flat_probs.dtype)
+                probs[padded_det] = flat_probs
                 return probs
             else:
                 return torch.sigmoid(self(X.data))
