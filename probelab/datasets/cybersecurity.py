@@ -1,7 +1,10 @@
 """Cybersecurity and defensive security datasets."""
 
+import json
 from typing import Any
+from urllib.request import urlopen
 
+import pandas as pd
 from datasets import load_dataset
 
 from ..types import Label, Message
@@ -80,3 +83,171 @@ def defensive_cybersecurity() -> Dataset:
         labels.append(Label.NEGATIVE)
 
     return Dataset(dialogues, labels, "defensive_cybersecurity").shuffle()
+
+
+@_register_dataset("wmdp_cyber", Topic.CYBERSECURITY, "WMDP cybersecurity MC questions")
+def wmdp_cyber() -> Dataset:
+    """WMDP-cyber: 1987 multiple-choice cybersecurity questions from CAIS."""
+    data = load_dataset("cais/wmdp", "wmdp-cyber")["test"]
+
+    dialogues, labels = [], []
+
+    for item in data:
+        question = item["question"]
+        choices = item["choices"]
+        answer_idx = item["answer"]
+        formatted = question + "\n\n" + "\n".join(
+            f"{chr(65 + i)}. {c}" for i, c in enumerate(choices)
+        )
+        answer_text = f"The answer is {chr(65 + answer_idx)}: {choices[answer_idx]}"
+        dialogues.append([Message("user", formatted), Message("assistant", answer_text)])
+        labels.append(Label.POSITIVE)
+
+    return Dataset(dialogues, labels, "wmdp_cyber").shuffle()
+
+
+@_register_dataset("bigcodebench", Topic.CYBERSECURITY, "BigCodeBench coding tasks")
+def bigcodebench(split: str = "v0.1.4") -> Dataset:
+    """BigCodeBench: ~1140 coding tasks with tests.
+
+    Args:
+        split: Version split (default 'v0.1.4').
+    """
+    data = load_dataset("bigcode/bigcodebench", split=split)
+
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"task_id": [], "libs": []}
+
+    for item in data:
+        prompt = item.get("instruct_prompt") or item.get("complete_prompt", "")
+        solution = item.get("canonical_solution", "")
+        if not prompt:
+            continue
+
+        dialogue = [Message("user", prompt)]
+        if solution:
+            dialogue.append(Message("assistant", solution))
+
+        dialogues.append(dialogue)
+        labels.append(Label.NEGATIVE)
+        metadata["task_id"].append(item.get("task_id"))
+        metadata["libs"].append(item.get("libs"))
+
+    return Dataset(dialogues, labels, "bigcodebench", metadata).shuffle()
+
+
+@_register_dataset("cyberseceval", Topic.CYBERSECURITY, "CyberSecEval vulnerability detection")
+def cyberseceval(config: str = "instruct") -> Dataset:
+    """Meta CyberSecEval: code with CWE vulnerabilities.
+
+    Args:
+        config: 'autocomplete' or 'instruct' (default 'instruct').
+    """
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"cwe_identifier": [], "language": []}
+
+    for lang in ["python", "php", "javascript", "rust", "java", "cpp", "c", "csharp"]:
+        try:
+            data = load_dataset("walledai/CyberSecEval", config, split=lang)
+        except Exception:
+            continue
+
+        for item in data:
+            prompt = item.get("prompt", "")
+            if not prompt:
+                continue
+
+            dialogue = [Message("user", prompt)]
+            dialogues.append(dialogue)
+            labels.append(Label.POSITIVE)
+            metadata["cwe_identifier"].append(item.get("cwe_identifier"))
+            metadata["language"].append(lang)
+
+    return Dataset(dialogues, labels, f"cyberseceval:{config}", metadata).shuffle()
+
+
+@_register_dataset("cysecbench", Topic.CYBERSECURITY, "CySecBench cybersecurity prompts")
+def cysecbench() -> Dataset:
+    """CySecBench: 12K+ cybersecurity jailbreaking prompts from GitHub."""
+    import io
+    url = "https://raw.githubusercontent.com/cysecbench/dataset/main/Dataset/Full%20dataset/cysecbench.csv"
+    csv_data = urlopen(url).read().decode("utf-8")
+    df = pd.read_csv(io.StringIO(csv_data))
+
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"category": []}
+
+    # Try common column names for the prompt text
+    text_col = None
+    for col in ["prompt", "text", "question", "instruction"]:
+        if col in df.columns:
+            text_col = col
+            break
+    if text_col is None:
+        text_col = df.columns[0]
+
+    cat_col = None
+    for col in ["category", "type", "class"]:
+        if col in df.columns:
+            cat_col = col
+            break
+
+    for _, row in df.iterrows():
+        text = str(row[text_col]).strip()
+        if not text:
+            continue
+        dialogues.append([Message("user", text)])
+        labels.append(Label.POSITIVE)
+        metadata["category"].append(str(row[cat_col]) if cat_col else "")
+
+    return Dataset(dialogues, labels, "cysecbench", metadata).shuffle()
+
+
+@_register_dataset("intercode_ctf", Topic.CYBERSECURITY, "InterCode CTF challenges")
+def intercode_ctf() -> Dataset:
+    """InterCode CTF: 100 CTF challenges from picoCTF (GitHub)."""
+    url = "https://raw.githubusercontent.com/princeton-nlp/intercode/master/data/ctf/ic_ctf.json"
+    data = json.loads(urlopen(url).read())
+
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"task_id": [], "tags": []}
+
+    for item in data:
+        query = item.get("query", "")
+        if not query:
+            continue
+
+        dialogues.append([Message("user", query)])
+        labels.append(Label.NEGATIVE)
+        metadata["task_id"].append(item.get("task_id"))
+        metadata["tags"].append(item.get("tags", []))
+
+    return Dataset(dialogues, labels, "intercode_ctf", metadata).shuffle()
+
+
+@_register_dataset("hackaprompt", Topic.CYBERSECURITY, "HackAPrompt adversarial prompts")
+def hackaprompt() -> Dataset:
+    """HackAPrompt: 600K+ adversarial prompt injection attempts."""
+    data = load_dataset("hackaprompt/hackaprompt-dataset")["train"]
+
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"level": [], "model": [], "correct": []}
+
+    for item in data:
+        user_input = item.get("user_input", "")
+        if not user_input or not user_input.strip():
+            continue
+
+        dialogue = [Message("user", user_input)]
+        completion = item.get("completion", "")
+        if completion:
+            dialogue.append(Message("assistant", completion))
+
+        dialogues.append(dialogue)
+        correct = item.get("correct", False)
+        labels.append(Label.POSITIVE if correct else Label.NEGATIVE)
+        metadata["level"].append(item.get("level"))
+        metadata["model"].append(item.get("model"))
+        metadata["correct"].append(correct)
+
+    return Dataset(dialogues, labels, "hackaprompt", metadata).shuffle()

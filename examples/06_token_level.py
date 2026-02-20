@@ -55,12 +55,12 @@ probe = pl.probes.Logistic().fit(train_acts, train_ds.labels)
 
 print(f"Probe: {probe}")
 
-# Predict on test tokens - returns [batch, seq] directly!
+# Predict on test tokens - returns [batch, max_seq] padded
 token_probs = probe.predict(test_acts)
 print(f"Token-level probs shape: {token_probs.shape}")
 
-# Get mask from activations
-mask = test_acts.detection_mask.bool()
+# Get detection mask via to_padded()
+_, mask = test_acts.to_padded()
 
 print("\n" + "=" * 55)
 print(f"{'Aggregation':<15} {'AUROC':<12} {'Recall@5%':<12}")

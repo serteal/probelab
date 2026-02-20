@@ -76,6 +76,7 @@ class Attention(BaseProbe):
         weight_decay: float = 1e-3,
         n_epochs: int = 1000,
         patience: int = 20,
+        batch_size: int = 32,
         device: str | None = None,
     ):
         super().__init__(device=device)
@@ -86,6 +87,7 @@ class Attention(BaseProbe):
         self.weight_decay = weight_decay
         self.n_epochs = n_epochs
         self.patience = patience
+        self.batch_size = batch_size
         self.net = None
         self.attention_weights = None
 
@@ -107,10 +109,8 @@ class Attention(BaseProbe):
             self.device = str(X.data.device)
 
         y_tensor = self._to_labels(y)
-        sequences = X.data.clone().to(self.device)
-        mask = X.mask.to(self.device)
         labels = y_tensor.to(self.device).float()
-        d_model = sequences.shape[-1]
+        d_model = X.hidden_size
 
         # Fresh state every fit()
         self.net = _AttentionNetwork(
@@ -119,8 +119,6 @@ class Attention(BaseProbe):
             dropout=self.dropout,
             temperature=self.temperature,
         ).to(self.device)
-        if sequences.dtype != torch.float32:
-            self.net = self.net.to(sequences.dtype)
 
         optimizer = AdamW(
             self.net.parameters(),
@@ -130,23 +128,41 @@ class Attention(BaseProbe):
         )
 
         # Train/validation split
-        n_samples = len(sequences)
+        n_samples = X.batch_size
         n_val = max(1, int(0.2 * n_samples))
-        indices = torch.randperm(n_samples, device=self.device)
-        train_idx, val_idx = indices[n_val:], indices[:n_val]
+        indices = torch.randperm(n_samples, device="cpu")
+        train_idx, val_idx = indices[n_val:].tolist(), indices[:n_val].tolist()
+        batch_size = min(self.batch_size, len(train_idx))
 
-        train_seq, train_mask, train_y = sequences[train_idx], mask[train_idx], labels[train_idx]
-        val_seq, val_mask, val_y = sequences[val_idx], mask[val_idx], labels[val_idx]
+        # Pre-pad validation set
+        val_seq, val_mask = X.pad_batch(val_idx)
+        val_seq = val_seq.to(self.device)
+        val_mask = val_mask.to(self.device)
+        val_y = labels[val_idx]
+
+        # Check dtype
+        if val_seq.dtype != torch.float32:
+            self.net = self.net.to(val_seq.dtype)
 
         best_val_loss = float("inf")
         patience_counter = 0
 
         self.net.train()
         for epoch in range(self.n_epochs):
-            optimizer.zero_grad()
-            logits, _ = self.net(train_seq, train_mask)
-            F.binary_cross_entropy_with_logits(logits, train_y).backward()
-            optimizer.step()
+            perm = torch.randperm(len(train_idx))
+            shuffled = [train_idx[p] for p in perm.tolist()]
+
+            for i in range(0, len(shuffled), batch_size):
+                batch_idx = shuffled[i : i + batch_size]
+                batch_seq, batch_mask = X.pad_batch(batch_idx)
+                batch_seq = batch_seq.to(self.device)
+                batch_mask = batch_mask.to(self.device)
+                batch_y = labels[batch_idx]
+
+                optimizer.zero_grad()
+                logits, _ = self.net(batch_seq, batch_mask)
+                F.binary_cross_entropy_with_logits(logits, batch_y).backward()
+                optimizer.step()
 
             if epoch % 10 == 0:
                 self.net.eval()
@@ -202,8 +218,9 @@ class Attention(BaseProbe):
         if "s" not in X.dims:
             raise ValueError("Attention probe requires SEQ axis")
 
-        sequences = X.data.to(self.device)
-        mask = X.mask.to(self.device)
+        sequences, mask = X.to_padded()
+        sequences = sequences.to(self.device)
+        mask = mask.to(self.device)
 
         with torch.no_grad():
             logits, attn_weights = self(sequences, mask)
@@ -222,6 +239,7 @@ class Attention(BaseProbe):
             "weight_decay": self.weight_decay,
             "n_epochs": self.n_epochs,
             "patience": self.patience,
+            "batch_size": self.batch_size,
             "device": self.device,
             "network_state_dict": self.net.state_dict(),
         }, path)
@@ -237,6 +255,7 @@ class Attention(BaseProbe):
             weight_decay=state["weight_decay"],
             n_epochs=state["n_epochs"],
             patience=state["patience"],
+            batch_size=state.get("batch_size", 32),
             device=device,
         )
         # Infer d_model from saved weights

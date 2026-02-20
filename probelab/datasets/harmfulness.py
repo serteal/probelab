@@ -99,3 +99,23 @@ def clearharm_mistral() -> Dataset:
     labels = [Label.POSITIVE] * len(dialogues)
 
     return Dataset(dialogues, labels, "clearharm_mistral").shuffle()
+
+
+@_register_dataset("or_bench", Topic.HARMFULNESS, "OR-Bench over-refusal benchmark")
+def or_bench(config: str = "or-bench-80k") -> Dataset:
+    """Load OR-Bench dataset (over-refusal benchmark).
+
+    Args:
+        config: HF config name. One of:
+            - 'or-bench-80k': 80K safe prompts (Label.NEGATIVE)
+            - 'or-bench-hard-1k': 1K hard safe prompts (Label.NEGATIVE)
+            - 'or-bench-toxic': 655 toxic prompts (Label.POSITIVE)
+    """
+    data = load_dataset("bench-llms/or-bench", config)["train"]
+
+    label = Label.POSITIVE if config == "or-bench-toxic" else Label.NEGATIVE
+    dialogues = [[Message("user", str(row["prompt"]))] for row in data]
+    labels = [label] * len(dialogues)
+    metadata = {"category": [row.get("category", "") for row in data]}
+
+    return Dataset(dialogues, labels, f"or_bench:{config}", metadata).shuffle()

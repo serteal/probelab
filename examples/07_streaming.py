@@ -52,21 +52,15 @@ train_features = torch.zeros(len(train_ds), d_model)
 train_indices_seen = set()
 
 # Stream through training data
-for batch_acts, indices, seq_len in pl.processing.stream_activations(
+for flat_data, det, offsets, indices in pl.processing.stream_activations(
     model, train_tokens, layers=[LAYER], batch_size=BATCH_SIZE
 ):
-    # batch_acts: [1, batch, seq, hidden] (1 layer)
-    acts = batch_acts.squeeze(0)  # [batch, seq, hidden]
+    # flat_data: [total_batch_tokens, 1, hidden] (1 layer)
+    # Squeeze layer dim for single-layer
+    data = flat_data.squeeze(1)  # [total_batch_tokens, hidden]
 
-    # Get detection mask for this batch
-    if train_tokens.padding_side == "right":
-        mask = train_tokens.detection_mask[indices, :seq_len]
-    else:
-        mask = train_tokens.detection_mask[indices, -seq_len:]
-
-    # Mean pool over sequence (manual for demonstration)
-    mask_expanded = mask.unsqueeze(-1).float()
-    pooled = (acts * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1).clamp(min=1)
+    # Mean pool over sequence using flat+offsets
+    pooled = pl.pool.mean(data, det, offsets=offsets)  # [batch_chunk, hidden]
 
     # Store in pre-allocated tensor
     for i, idx in enumerate(indices):

@@ -3,12 +3,16 @@ import sys
 import time
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from vllm.activations import ActivationEngine
 
 import probelab as pl
 
 # Force unbuffered output
 print = lambda *a, **kw: (sys.stdout.write(" ".join(str(x) for x in a) + "\n"), sys.stdout.flush())
+
+MODEL = "google/gemma-3-27b-it"
+LAYER = 40
+BATCH_SIZE = 32
 
 print("Loading datasets...")
 t0 = time.time()
@@ -18,10 +22,40 @@ test_dataset = pl.datasets.load("wildguard_mix", split="test")
 print(f"Datasets loaded in {time.time() - t0:.1f}s")
 print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
 
-# Tokenize (no truncation, masks.all)
+# Load model first, tokenizer comes from ActivationEngine
+print("\nLoading model (vLLM ActivationEngine)...")
+t0 = time.time()
+try:
+    model = ActivationEngine(
+        model=MODEL,
+        layers=[LAYER],
+        dtype="bfloat16",
+        gpu_memory_utilization=0.9,
+        enforce_eager=False,
+        prefill_cudagraph=True,
+        max_model_len=4096,
+        max_num_batched_tokens=65536,
+        prefill_only=True,
+        staged_export=True,
+        static_shape_bucketing=True,
+        activation_only=True,
+        tp_rank0_only=True,
+        flat_output=True,
+        activation_export_device="cuda",
+    )
+except Exception as exc:
+    msg = str(exc)
+    if "set_activation_capture_layers" in msg:
+        raise RuntimeError(
+            "This model is not activation-capture compatible in the current vLLM build. "
+            "ActivationEngine currently supports capture for Llama-family models in this repo state."
+        ) from exc
+    raise
+print(f"Model loaded in {time.time() - t0:.1f}s")
+
+# Tokenize (no truncation, masks.all) using engine tokenizer
 mask = pl.masks.all()
-layer = 40
-tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-27b-it")
+tokenizer = model.tokenizer
 
 print("\nTokenizing train...")
 t0 = time.time()
@@ -33,24 +67,14 @@ t0 = time.time()
 test_tokens = pl.tokenize_dataset(test_dataset, tokenizer, mask=mask)
 print(f"Test tokenized in {time.time() - t0:.1f}s: {len(test_tokens)} samples, {test_tokens.total_tokens:,} tokens, max_seq={test_tokens.seq_len}")
 
-# Load model
-print("\nLoading model...")
-t0 = time.time()
-model = AutoModelForCausalLM.from_pretrained(
-    "google/gemma-3-27b-it", dtype=torch.bfloat16, device_map="auto"
-).eval()
-for param in model.parameters():
-    param.requires_grad = False
-print(f"Model loaded in {time.time() - t0:.1f}s")
-
-# Collect activations with inline mean pooling (avoids storing all tokens)
+# Collect activations with inline mean pooling (same as original)
 print("\nCollecting + pooling train activations...")
 t0 = time.time()
 train_prepared = pl.collect_activations(
     model,
     train_tokens,
-    layers=[layer],
-    batch_size=4,
+    layers=[LAYER],
+    batch_size=BATCH_SIZE,
     pool="mean",
     progress=True,
     progress_desc="train collect+pool",
@@ -63,8 +87,8 @@ t0 = time.time()
 test_prepared = pl.collect_activations(
     model,
     test_tokens,
-    layers=[layer],
-    batch_size=4,
+    layers=[LAYER],
+    batch_size=BATCH_SIZE,
     pool="mean",
     progress=True,
     progress_desc="test collect+pool",
@@ -74,7 +98,11 @@ print(f"Test done in {elapsed:.0f}s: {test_prepared.data.shape}")
 
 # Free the model
 print("Freeing model...")
-del model; gc.collect(); torch.cuda.empty_cache()
+model.close()
+del model
+gc.collect()
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
 
 # Train logistic probe (C=0.01, on GPU since model is freed)
 print("\nTraining logistic probe (C=0.01)...")

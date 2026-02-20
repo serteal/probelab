@@ -135,10 +135,11 @@ for epoch in range(NUM_EPOCHS):
     for i in range(0, len(harmful_indices), BATCH_SIZE):
         batch_indices = harmful_indices[i : i + BATCH_SIZE]
 
-        # Get input tensors
-        input_ids = train_tokens.input_ids[batch_indices].to(peft_model.device)
-        attention_mask = train_tokens.attention_mask[batch_indices].to(peft_model.device)
-        detection_mask = train_tokens.detection_mask[batch_indices].to(peft_model.device)
+        # Get input tensors (materialise padded batch from flat+offsets storage)
+        batch_dict = train_tokens.pad_batch(batch_indices, padding_side=train_tokens.padding_side)
+        input_ids = batch_dict["input_ids"].to(peft_model.device)
+        attention_mask = batch_dict["attention_mask"].to(peft_model.device)
+        detection_mask = batch_dict["detection_mask"].to(peft_model.device)
         labels = torch.tensor([train_ds.labels[j].value for j in batch_indices])
 
         # Forward pass with output_hidden_states

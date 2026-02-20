@@ -125,3 +125,33 @@ def math_instruct_enhanced() -> Dataset:
         metadata["source"].append(item.get("source"))
 
     return Dataset(dialogues, labels, "math_instruct_enhanced", metadata).shuffle()
+
+
+@_register_dataset("math_hendrycks", Topic.REASONING, "MATH competition problems (Hendrycks)")
+def math_hendrycks(split: str = "test") -> Dataset:
+    """Hendrycks MATH dataset - 12.5K competition math problems.
+
+    Args:
+        split: 'train' (7500) or 'test' (5000).
+    """
+    data = load_dataset("DigitalLearningGmbH/MATH-lighteval")[split]
+
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"level": [], "type": []}
+
+    for item in data:
+        problem = item.get("problem", "")
+        solution = item.get("solution", "")
+        if not problem:
+            continue
+
+        dialogue = [Message("user", problem)]
+        if solution:
+            dialogue.append(Message("assistant", solution))
+
+        dialogues.append(dialogue)
+        labels.append(Label.NEGATIVE)
+        metadata["level"].append(item.get("level"))
+        metadata["type"].append(item.get("type"))
+
+    return Dataset(dialogues, labels, "math_hendrycks", metadata).shuffle()

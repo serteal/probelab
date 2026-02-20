@@ -112,7 +112,17 @@ class HookedModel:
             model_inputs = {
                 k: v for k, v in batch_inputs.items() if k != "detection_mask"
             }
-            _ = self.model(**model_inputs)  # type: ignore
+            # Activation extraction does not reuse KV cache across calls.
+            # Disabling it avoids unnecessary allocation/work in CausalLM wrappers.
+            model_inputs.setdefault("use_cache", False)
+            try:
+                _ = self.model(**model_inputs)  # type: ignore
+            except TypeError as exc:
+                # Fallback for architectures that do not accept use_cache.
+                if "use_cache" not in str(exc):
+                    raise
+                model_inputs.pop("use_cache", None)
+                _ = self.model(**model_inputs)  # type: ignore
             result = torch.stack([self.cache[layer] for layer in self.layers], dim=0)
             # Clear cache to free GPU memory immediately
             self.cache.clear()
@@ -130,7 +140,3 @@ class HookedModel:
 
         # Clear cache to free any remaining references
         self.cache.clear()
-
-        # Clear GPU cache when exiting context
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()

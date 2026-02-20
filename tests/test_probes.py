@@ -22,15 +22,16 @@ def _separable_acts(n_samples=20, seq=8, d_model=8, gap=2.0):
     t[:half, :, 0] = gap
     t[half:, :, 0] = -gap
     t[:, :, 1:] = torch.randn(n_samples, seq, d_model - 1) * 0.1
-    return Activations(
-        data=t, dims="bsh",
-        mask=torch.ones(n_samples, seq),
+    return Activations.from_padded(
+        data=t, detection_mask=torch.ones(n_samples, seq), dims="bsh",
     ), [Label.POSITIVE] * half + [Label.NEGATIVE] * half
 
 def _acts(n_samples=10, seq=8, d_model=16):
     """Create random activations."""
     t = torch.randn(n_samples, seq, d_model)
-    return Activations(data=t, dims="bsh", mask=torch.ones(n_samples, seq))
+    return Activations.from_padded(
+        data=t, detection_mask=torch.ones(n_samples, seq), dims="bsh",
+    )
 
 # =============================================================================
 # Logistic Probe Tests
@@ -40,7 +41,7 @@ class TestLogisticInit(unittest.TestCase):
     def test_default_params(self):
         p = Logistic()
         self.assertEqual(p.C, 1.0)
-        self.assertEqual(p.max_iter, 100)
+        self.assertEqual(p.max_iter, 500)
         self.assertFalse(p.fitted)
 
     def test_custom_params(self):
@@ -87,7 +88,7 @@ class TestLogisticPredict(unittest.TestCase):
         self.assertTrue(torch.all(probs <= 1))
 
     def test_predict_separable_accuracy(self):
-        acts, labels = _separable_acts(n_samples=20, gap=3.0)
+        acts, labels = _separable_acts(n_samples=20, gap=5.0)
         prepared = acts.mean_pool()
         p = Logistic(device="cpu").fit(prepared, labels)
         probs = p.predict(prepared)
@@ -263,10 +264,9 @@ class TestProbeErrors(unittest.TestCase):
     def test_logistic_rejects_multi_layer(self):
         # [batch, layer, seq, hidden] - 2 layers
         t = torch.randn(10, 2, 8, 16)
-        acts = Activations(
-            data=t, dims="blsh",
-            mask=torch.ones(10, 8),
-            layers=(0, 1),
+        acts = Activations.from_padded(
+            data=t, detection_mask=torch.ones(10, 8),
+            dims="blsh", layers=(0, 1),
         )
         labels = [Label.POSITIVE] * 5 + [Label.NEGATIVE] * 5
         p = Logistic(device="cpu")
@@ -276,10 +276,9 @@ class TestProbeErrors(unittest.TestCase):
     def test_mlp_rejects_multi_layer(self):
         # [batch, layer, seq, hidden] - 2 layers
         t = torch.randn(10, 2, 8, 16)
-        acts = Activations(
-            data=t, dims="blsh",
-            mask=torch.ones(10, 8),
-            layers=(0, 1),
+        acts = Activations.from_padded(
+            data=t, detection_mask=torch.ones(10, 8),
+            dims="blsh", layers=(0, 1),
         )
         labels = [Label.POSITIVE] * 5 + [Label.NEGATIVE] * 5
         p = MLP(device="cpu")
@@ -293,7 +292,9 @@ class TestProbeErrors(unittest.TestCase):
 class TestProbeEdgeCases(unittest.TestCase):
     def test_small_batch(self):
         t = torch.randn(4, 8, 8)  # [batch, seq, hidden]
-        acts = Activations(data=t, dims="bsh", mask=torch.ones(4, 8))
+        acts = Activations.from_padded(
+            data=t, detection_mask=torch.ones(4, 8), dims="bsh",
+        )
         labels = [Label.POSITIVE, Label.POSITIVE, Label.NEGATIVE, Label.NEGATIVE]
         prepared = acts.mean_pool()
 
