@@ -175,6 +175,25 @@ class VLLMBackend:
                 offsets if offsets.device == stream_device else offsets.to(stream_device, non_blocking=True),
             )
 
+        # Some chunked payloads can miss activation value tensors while still
+        # reporting token lengths. Keep a stable hidden-size fallback so those
+        # chunks can be represented as zero activations instead of crashing.
+        fallback_hidden: int | None = None
+        fallback_dtype: torch.dtype = torch.float32
+        fallback_device: torch.device = torch.device("cpu")
+        try:
+            llm = getattr(model_obj, "llm", None)
+            llm_engine = getattr(llm, "llm_engine", None)
+            model_cfg = getattr(llm_engine, "model_config", None)
+            hidden = getattr(model_cfg, "hidden_size", None)
+            if hidden is None:
+                hf_cfg = getattr(model_cfg, "hf_config", None)
+                hidden = getattr(hf_cfg, "hidden_size", None)
+            if hidden is not None and int(hidden) > 0:
+                fallback_hidden = int(hidden)
+        except Exception:
+            fallback_hidden = None
+
         cursor = 0
         for flat_result in _iter_flat_results():
             layers_payload = getattr(flat_result, "layers", {})
@@ -212,8 +231,17 @@ class VLLMBackend:
                                 layer_vals = torch.as_tensor(layer_vals)
                         else:
                             layer_vals = torch.empty((0, 0), dtype=torch.float32)
-                        hidden = int(layer_vals.shape[-1]) if layer_vals.ndim == 2 else 0
-                        dtype = layer_vals.dtype if layer_vals.ndim == 2 else torch.float32
+                        if layer_vals.ndim == 2 and layer_vals.shape[-1] > 0:
+                            hidden = int(layer_vals.shape[-1])
+                            dtype = layer_vals.dtype
+                            data_device = layer_vals.device
+                            fallback_hidden = hidden
+                            fallback_dtype = dtype
+                            fallback_device = data_device
+                        else:
+                            hidden = int(fallback_hidden or 0)
+                            dtype = fallback_dtype
+                            data_device = fallback_device
                         if total_tokens > 0:
                             rows = min(int(layer_vals.shape[0]), total_tokens)
                             if rows == total_tokens:
@@ -224,7 +252,7 @@ class VLLMBackend:
                                     1,
                                     hidden,
                                     dtype=dtype,
-                                    device=layer_vals.device,
+                                    device=data_device,
                                 )
                                 if rows > 0:
                                     flat_data[:rows, 0, :] = layer_vals[:rows]
@@ -234,12 +262,12 @@ class VLLMBackend:
                                 1,
                                 hidden,
                                 dtype=dtype,
-                                device=layer_vals.device,
+                                device=data_device,
                             )
                     else:
-                        hidden = 0
-                        dtype = torch.float32
-                        data_device = torch.device("cpu")
+                        hidden = int(fallback_hidden or 0)
+                        dtype = fallback_dtype
+                        data_device = fallback_device
                         for layer in layers:
                             payload = layers_payload.get(layer)
                             if payload is None:
@@ -252,6 +280,9 @@ class VLLMBackend:
                                 hidden = int(vals.shape[-1])
                                 dtype = vals.dtype
                                 data_device = vals.device
+                                fallback_hidden = hidden
+                                fallback_dtype = dtype
+                                fallback_device = data_device
                                 break
                         flat_data = torch.zeros(
                             total_tokens,

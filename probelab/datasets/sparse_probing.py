@@ -1,4 +1,4 @@
-"""Sparse Probing Datasets (155 binary classification tasks).
+"""Sparse Probing Datasets (113 binary classification tasks).
 
 From: "Are Sparse Autoencoders Useful? A Case Study in Sparse Probing" (arXiv:2502.16681)
 Source: https://github.com/EleutherAI/sae-probes
@@ -208,6 +208,20 @@ SPARSE_PROBING_DATASETS: list[tuple[int, str, str, str]] = [
     (161, "agnews_0", "moderation", "AG News category 0"),
     (162, "agnews_1", "moderation", "AG News category 1"),
     (163, "agnews_2", "moderation", "AG News category 2"),
+]
+
+# Keep only the binary-label subset from serteal/sparse-probing.
+# These 42 dataset IDs have non-binary labels (multiclass/regression-style),
+# so they are excluded from the binary sparse-probing registry.
+NON_BINARY_DATASET_IDS: set[int] = {
+    2, 3, 4, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    25, 27, 28, 29, 30, 37, 38, 39, 40, 43, 45, 46, 55, 86, 88, 93,
+    97, 98, 99, 101, 102, 103, 108, 109, 111, 112,
+}
+
+SPARSE_PROBING_DATASETS = [
+    row for row in SPARSE_PROBING_DATASETS
+    if row[0] not in NON_BINARY_DATASET_IDS
 ]
 
 
