@@ -89,8 +89,9 @@ class GatedBipolar(BaseProbe):
         scheduler_fn: Callable | None = None,
         seed: int | None = None,
         device: str | None = None,
+        cast: str | None = None,
     ):
-        super().__init__(device=device, seed=seed, optimizer_fn=optimizer_fn, scheduler_fn=scheduler_fn)
+        super().__init__(device=device, seed=seed, optimizer_fn=optimizer_fn, scheduler_fn=scheduler_fn, cast=cast)
         self.mlp_hidden_dim = mlp_hidden_dim
         self.gate_dim = gate_dim
         self.dropout = dropout
@@ -122,8 +123,11 @@ class GatedBipolar(BaseProbe):
             self.device = str(X.data.device)
 
         y_tensor = self._to_labels(y)
-        labels = y_tensor.float()
         d_model = X.hidden_size
+
+        working_dtype = self._resolve_dtype(X.data.dtype)
+        self._training_dtype = working_dtype
+        labels = y_tensor.to(dtype=working_dtype)
 
         # Fresh state every fit()
         g = self._seed_everything()
@@ -132,7 +136,7 @@ class GatedBipolar(BaseProbe):
             mlp_hidden_dim=self.mlp_hidden_dim,
             gate_dim=self.gate_dim,
             dropout=self.dropout,
-        ).to(self.device)
+        ).to(self.device, dtype=working_dtype)
 
         optimizer = self._make_optimizer(
             self.net.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
@@ -148,10 +152,6 @@ class GatedBipolar(BaseProbe):
 
         # Pre-pad validation
         val_seq, val_mask = X.pad_batch(val_idx)
-
-        # Check dtype for network
-        if val_seq.dtype != torch.float32:
-            self.net = self.net.to(val_seq.dtype)
 
         best_val_loss = float("inf")
         patience_counter = 0
@@ -231,8 +231,9 @@ class GatedBipolar(BaseProbe):
         if "s" not in X.dims:
             raise ValueError("GatedBipolar probe requires SEQ axis")
 
+        net_dtype = next(self.net.parameters()).dtype
         sequences, mask = X.to_padded()
-        sequences = sequences.to(self.device)
+        sequences = sequences.to(self.device, dtype=net_dtype)
         mask = mask.to(self.device)
 
         with torch.no_grad():
@@ -256,6 +257,8 @@ class GatedBipolar(BaseProbe):
             "val_split": self.val_split,
             "seed": self.seed,
             "device": self.device,
+            "cast": self.cast,
+            "training_dtype": str(self._training_dtype),
             "network_state_dict": self.net.state_dict(),
         }, path)
 
@@ -276,7 +279,12 @@ class GatedBipolar(BaseProbe):
             val_split=state.get("val_split", 0.2),
             seed=state.get("seed"),
             device=device,
+            cast=state.get("cast"),
         )
+        dtype_str = state.get("training_dtype")
+        stored_dtype = getattr(torch, dtype_str.split(".")[-1]) if dtype_str else torch.float32
+        probe._training_dtype = stored_dtype
+
         # Infer d_model from saved weights
         d_model = state["network_state_dict"]["norm.weight"].shape[0]
         probe.net = _GatedBipolarNetwork(
@@ -284,7 +292,7 @@ class GatedBipolar(BaseProbe):
             mlp_hidden_dim=probe.mlp_hidden_dim,
             gate_dim=probe.gate_dim,
             dropout=probe.dropout,
-        ).to(probe.device)
+        ).to(probe.device, dtype=stored_dtype)
         probe.net.load_state_dict(state["network_state_dict"])
         probe.net.eval()
         return probe

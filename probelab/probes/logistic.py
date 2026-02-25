@@ -42,8 +42,9 @@ class Logistic(BaseProbe):
         scheduler_fn: Callable | None = None,
         seed: int | None = None,
         device: str | None = None,
+        cast: str | None = None,
     ):
-        super().__init__(device=device, seed=seed, optimizer_fn=optimizer_fn, scheduler_fn=scheduler_fn)
+        super().__init__(device=device, seed=seed, optimizer_fn=optimizer_fn, scheduler_fn=scheduler_fn, cast=cast)
         self.C = C
         self.max_iter = max_iter
         self.n_epochs = n_epochs
@@ -79,13 +80,16 @@ class Logistic(BaseProbe):
         if features.shape[0] == 0:
             return self
 
-        features = features.to(self.device, dtype=torch.float32)
-        labels = labels.to(self.device).float()
+        working_dtype = self._resolve_dtype(features.dtype)
+        self._training_dtype = working_dtype
+
+        features = features.to(self.device, dtype=working_dtype)
+        labels = labels.to(self.device, dtype=working_dtype)
         d_model = features.shape[1]
 
         # Fresh state every fit()
         self._seed_everything()  # seeds weight init; no local generator needed
-        self.net = _LogisticNetwork(d_model).to(self.device).to(torch.float32)
+        self.net = _LogisticNetwork(d_model).to(self.device, dtype=working_dtype)
 
         # Standardize (clone to avoid mutating input data)
         self.scaler_mean = features.mean(0)
@@ -138,7 +142,7 @@ class Logistic(BaseProbe):
             Logits tensor [batch] or [n_tokens] (not probabilities)
         """
         self._check_fitted()
-        x = x.to(self.device, dtype=torch.float32)
+        x = x.to(self.device)
         x_scaled = (x - self.scaler_mean) / self.scaler_std
         return self.net(x_scaled)
 
@@ -158,10 +162,12 @@ class Logistic(BaseProbe):
         if "l" in X.dims:
             raise ValueError(f"Logistic expects no LAYER axis. Current dims: {X.dims}")
 
+        net_dtype = next(self.net.parameters()).dtype
+
         with torch.no_grad():
             if "s" in X.dims:
                 features, _ = X.extract_tokens()
-                flat_probs = torch.sigmoid(self(features))
+                flat_probs = torch.sigmoid(self(features.to(dtype=net_dtype)))
 
                 # Scatter back to [batch, seq] via to_padded()
                 padded_data, padded_det = X.to_padded()
@@ -169,7 +175,7 @@ class Logistic(BaseProbe):
                 probs[padded_det] = flat_probs
                 return probs
             else:
-                return torch.sigmoid(self(X.data))
+                return torch.sigmoid(self(X.data.to(dtype=net_dtype)))
 
     def save(self, path: Path | str) -> None:
         self._check_fitted()
@@ -181,6 +187,8 @@ class Logistic(BaseProbe):
             "n_epochs": self.n_epochs,
             "seed": self.seed,
             "device": self.device,
+            "cast": self.cast,
+            "training_dtype": str(self._training_dtype),
             "network_state": self.net.state_dict(),
             "scaler_mean": self.scaler_mean,
             "scaler_std": self.scaler_std,
@@ -195,13 +203,19 @@ class Logistic(BaseProbe):
             n_epochs=state.get("n_epochs", 100),
             seed=state.get("seed"),
             device=device,
+            cast=state.get("cast"),
         )
+        # Backward compat: old checkpoints without training_dtype default to float32
+        dtype_str = state.get("training_dtype")
+        stored_dtype = getattr(torch, dtype_str.split(".")[-1]) if dtype_str else torch.float32
+        probe._training_dtype = stored_dtype
+
         d_model = state["scaler_mean"].shape[0]
-        probe.net = _LogisticNetwork(d_model).to(probe.device)
+        probe.net = _LogisticNetwork(d_model).to(probe.device, dtype=stored_dtype)
         probe.net.load_state_dict(state["network_state"])
         probe.net.eval()
-        probe.scaler_mean = state["scaler_mean"].to(probe.device)
-        probe.scaler_std = state["scaler_std"].to(probe.device)
+        probe.scaler_mean = state["scaler_mean"].to(probe.device, dtype=stored_dtype)
+        probe.scaler_std = state["scaler_std"].to(probe.device, dtype=stored_dtype)
         return probe
 
     def __repr__(self) -> str:

@@ -84,8 +84,9 @@ class Attention(BaseProbe):
         scheduler_fn: Callable | None = None,
         seed: int | None = None,
         device: str | None = None,
+        cast: str | None = None,
     ):
-        super().__init__(device=device, seed=seed, optimizer_fn=optimizer_fn, scheduler_fn=scheduler_fn)
+        super().__init__(device=device, seed=seed, optimizer_fn=optimizer_fn, scheduler_fn=scheduler_fn, cast=cast)
         self.hidden_dim = hidden_dim
         self.dropout = dropout
         self.temperature = temperature
@@ -117,8 +118,11 @@ class Attention(BaseProbe):
             self.device = str(X.data.device)
 
         y_tensor = self._to_labels(y)
-        labels = y_tensor.to(self.device).float()
         d_model = X.hidden_size
+
+        working_dtype = self._resolve_dtype(X.data.dtype)
+        self._training_dtype = working_dtype
+        labels = y_tensor.to(self.device, dtype=working_dtype)
 
         # Fresh state every fit()
         g = self._seed_everything()
@@ -127,7 +131,7 @@ class Attention(BaseProbe):
             hidden_dim=self.hidden_dim,
             dropout=self.dropout,
             temperature=self.temperature,
-        ).to(self.device)
+        ).to(self.device, dtype=working_dtype)
 
         optimizer = self._make_optimizer(
             self.net.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
@@ -146,10 +150,6 @@ class Attention(BaseProbe):
         val_seq = val_seq.to(self.device)
         val_mask = val_mask.to(self.device)
         val_y = labels[val_idx]
-
-        # Check dtype
-        if val_seq.dtype != torch.float32:
-            self.net = self.net.to(val_seq.dtype)
 
         best_val_loss = float("inf")
         patience_counter = 0
@@ -228,8 +228,9 @@ class Attention(BaseProbe):
         if "s" not in X.dims:
             raise ValueError("Attention probe requires SEQ axis")
 
+        net_dtype = next(self.net.parameters()).dtype
         sequences, mask = X.to_padded()
-        sequences = sequences.to(self.device)
+        sequences = sequences.to(self.device, dtype=net_dtype)
         mask = mask.to(self.device)
 
         with torch.no_grad():
@@ -254,6 +255,8 @@ class Attention(BaseProbe):
             "eval_interval": self.eval_interval,
             "seed": self.seed,
             "device": self.device,
+            "cast": self.cast,
+            "training_dtype": str(self._training_dtype),
             "network_state_dict": self.net.state_dict(),
         }, path)
 
@@ -273,7 +276,12 @@ class Attention(BaseProbe):
             eval_interval=state.get("eval_interval", 10),
             seed=state.get("seed"),
             device=device,
+            cast=state.get("cast"),
         )
+        dtype_str = state.get("training_dtype")
+        stored_dtype = getattr(torch, dtype_str.split(".")[-1]) if dtype_str else torch.float32
+        probe._training_dtype = stored_dtype
+
         # Infer d_model from saved weights
         d_model = state["network_state_dict"]["attention_norm.weight"].shape[0]
         probe.net = _AttentionNetwork(
@@ -281,7 +289,7 @@ class Attention(BaseProbe):
             hidden_dim=probe.hidden_dim,
             dropout=probe.dropout,
             temperature=probe.temperature,
-        ).to(probe.device)
+        ).to(probe.device, dtype=stored_dtype)
         probe.net.load_state_dict(state["network_state_dict"])
         probe.net.eval()
         return probe

@@ -488,5 +488,130 @@ class TestExposedParams(unittest.TestCase):
         self.assertEqual(p.val_split, 0.1)
 
 
+# =============================================================================
+# Dtype Policy Tests
+# =============================================================================
+
+def _bf16_separable_acts(n_samples=20, seq=8, d_model=8, gap=2.0):
+    """Create linearly separable activations in bfloat16."""
+    half = n_samples // 2
+    t = torch.zeros(n_samples, seq, d_model, dtype=torch.bfloat16)
+    t[:half, :, 0] = gap
+    t[half:, :, 0] = -gap
+    t[:, :, 1:] = torch.randn(n_samples, seq, d_model - 1, dtype=torch.bfloat16) * 0.1
+    return Activations.from_padded(
+        data=t, detection_mask=torch.ones(n_samples, seq), dims="bsh",
+    ), [Label.POSITIVE] * half + [Label.NEGATIVE] * half
+
+
+class TestDtypePolicy(unittest.TestCase):
+    """Test unified dtype policy across probes."""
+
+    def test_mlp_cast_none_preserves_bf16(self):
+        """bf16 activations + MLP cast=None → network is bf16, predict returns bf16."""
+        acts, labels = _bf16_separable_acts()
+        prepared = acts.mean("s")
+        p = MLP(hidden_dim=16, n_epochs=5, device="cpu").fit(prepared, labels)
+        net_dtype = next(p.net.parameters()).dtype
+        self.assertEqual(net_dtype, torch.bfloat16)
+        probs = p.predict(prepared)
+        self.assertEqual(probs.dtype, torch.bfloat16)
+
+    def test_mlp_cast_float32(self):
+        """bf16 activations + MLP cast='float32' → network is float32."""
+        acts, labels = _bf16_separable_acts()
+        prepared = acts.mean("s")
+        p = MLP(hidden_dim=16, n_epochs=5, device="cpu", cast="float32").fit(prepared, labels)
+        net_dtype = next(p.net.parameters()).dtype
+        self.assertEqual(net_dtype, torch.float32)
+
+    def test_logistic_lbfgs_preserves_bf16(self):
+        """bf16 activations + Logistic (LBFGS) → preserves bf16."""
+        acts, labels = _bf16_separable_acts()
+        prepared = acts.mean("s")
+        p = Logistic(device="cpu").fit(prepared, labels)
+        net_dtype = next(p.net.parameters()).dtype
+        self.assertEqual(net_dtype, torch.bfloat16)
+
+    def test_logistic_custom_optimizer_preserves_bf16(self):
+        """bf16 activations + Logistic (custom optimizer, cast=None) → network is bf16."""
+        acts, labels = _bf16_separable_acts()
+        prepared = acts.mean("s")
+        p = Logistic(
+            n_epochs=50,
+            optimizer_fn=lambda params: torch.optim.Adam(params, lr=0.01),
+            device="cpu",
+        ).fit(prepared, labels)
+        net_dtype = next(p.net.parameters()).dtype
+        self.assertEqual(net_dtype, torch.bfloat16)
+
+    def test_predict_autocasts_mismatched_dtype(self):
+        """Train float32, predict bf16 input → works (predict auto-casts)."""
+        acts, labels = _separable_acts()  # float32
+        prepared = acts.mean("s")
+        p = MLP(hidden_dim=16, n_epochs=5, device="cpu").fit(prepared, labels)
+        # Verify network is float32
+        self.assertEqual(next(p.net.parameters()).dtype, torch.float32)
+
+        # Create bf16 test acts — predict() should auto-cast to float32
+        bf16_acts, _ = _bf16_separable_acts()
+        bf16_prepared = bf16_acts.mean("s")
+        probs = p.predict(bf16_prepared)
+        self.assertEqual(probs.shape[0], 20)
+        self.assertTrue(torch.all(probs >= 0))
+        self.assertTrue(torch.all(probs <= 1))
+
+    def test_save_load_preserves_training_dtype(self):
+        """Train bf16, save, load → still bf16."""
+        acts, labels = _bf16_separable_acts()
+        prepared = acts.mean("s")
+        p = MLP(hidden_dim=16, n_epochs=5, device="cpu").fit(prepared, labels)
+        self.assertEqual(p._training_dtype, torch.bfloat16)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "probe.pt"
+            p.save(path)
+            loaded = MLP.load(path)
+
+        self.assertEqual(loaded._training_dtype, torch.bfloat16)
+        net_dtype = next(loaded.net.parameters()).dtype
+        self.assertEqual(net_dtype, torch.bfloat16)
+
+    def test_old_checkpoint_defaults_to_float32(self):
+        """Old checkpoint without training_dtype key → loads as float32."""
+        acts, labels = _separable_acts()
+        prepared = acts.mean("s")
+        p = MLP(hidden_dim=16, n_epochs=5, device="cpu").fit(prepared, labels)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "probe.pt"
+            p.save(path)
+            # Simulate old checkpoint by removing the new keys
+            state = torch.load(path, map_location="cpu")
+            del state["training_dtype"]
+            del state["cast"]
+            torch.save(state, path)
+            loaded = MLP.load(path)
+
+        self.assertEqual(loaded._training_dtype, torch.float32)
+        net_dtype = next(loaded.net.parameters()).dtype
+        self.assertEqual(net_dtype, torch.float32)
+
+    def test_attention_bf16_trains_and_predicts(self):
+        """Attention with bf16 activations → trains and predicts correctly."""
+        acts, labels = _bf16_separable_acts(n_samples=20, seq=8)
+        p = Attention(
+            hidden_dim=16, n_epochs=20,
+            device="cpu",
+        ).fit(acts, labels)
+        self.assertTrue(p.fitted)
+        net_dtype = next(p.net.parameters()).dtype
+        self.assertEqual(net_dtype, torch.bfloat16)
+        probs = p.predict(acts)
+        self.assertEqual(probs.shape, (20,))
+        self.assertTrue(torch.all(probs >= 0))
+        self.assertTrue(torch.all(probs <= 1))
+
+
 if __name__ == '__main__':
     unittest.main()

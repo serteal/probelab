@@ -29,7 +29,15 @@ class BaseProbe(ABC):
         seed: Random seed for reproducibility. If None, no seeding is done.
         optimizer_fn: Factory ``fn(params) -> optimizer``. If None, uses AdamW.
         scheduler_fn: Factory ``fn(optimizer) -> scheduler``. If None, no scheduler.
+        cast: Dtype policy. ``None`` preserves input dtype (default).
+            ``"float32"``/``"float16"``/``"bfloat16"`` forces that dtype.
     """
+
+    _CAST_MAP = {
+        "float32": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+    }
 
     def __init__(
         self,
@@ -37,11 +45,20 @@ class BaseProbe(ABC):
         seed: int | None = None,
         optimizer_fn: Callable | None = None,
         scheduler_fn: Callable | None = None,
+        cast: str | None = None,
     ):
         self.device = device
         self.seed = seed
         self._optimizer_fn = optimizer_fn
         self._scheduler_fn = scheduler_fn
+        self.cast = cast
+        self._training_dtype: torch.dtype | None = None
+
+    def _resolve_dtype(self, input_dtype: torch.dtype) -> torch.dtype:
+        """Resolve working dtype from cast policy and input dtype."""
+        if self.cast is not None:
+            return self._CAST_MAP[self.cast]
+        return input_dtype
 
     def _seed_everything(self) -> torch.Generator | None:
         """Seed all RNGs for reproducibility.

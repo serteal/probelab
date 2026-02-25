@@ -151,6 +151,77 @@ class Activations:
 
         return cls(data=flat_data, dims=dims, offsets=offsets, det=flat_det, layers=layers)
 
+    @classmethod
+    def cat(cls, items: list["Activations"]) -> "Activations":
+        """Concatenate multiple Activations along the batch dimension.
+
+        Follows the ``torch.cat`` convention.  Works with all four dim
+        combinations (``"bh"``, ``"blh"``, ``"bsh"``, ``"blsh"``).
+
+        For flat+offsets layouts (``"s"`` in dims) the token streams and
+        offset arrays are merged so that the result is a single contiguous
+        Activations object.
+
+        Args:
+            items: List of Activations to concatenate.
+
+        Returns:
+            A single Activations containing all samples.
+
+        Raises:
+            ValueError: If *items* is empty, or if dims / hidden_size /
+                layers are inconsistent across items.
+        """
+        if not items:
+            raise ValueError("cat() requires at least one Activations item")
+        if len(items) == 1:
+            return items[0]
+
+        first = items[0]
+
+        # Validate consistency
+        for i, a in enumerate(items[1:], 1):
+            if a.dims != first.dims:
+                raise ValueError(
+                    f"dims mismatch: items[0] has dims={first.dims!r}, "
+                    f"items[{i}] has dims={a.dims!r}"
+                )
+            if a.hidden_size != first.hidden_size:
+                raise ValueError(
+                    f"hidden_size mismatch: items[0] has {first.hidden_size}, "
+                    f"items[{i}] has {a.hidden_size}"
+                )
+            if "l" in first.dims and a.layers != first.layers:
+                raise ValueError(
+                    f"layers mismatch: items[0] has layers={first.layers}, "
+                    f"items[{i}] has layers={a.layers}"
+                )
+
+        if "s" not in first.dims:
+            # Simple path: "bh" or "blh" — just cat along dim 0
+            cat_data = torch.cat([a.data for a in items], dim=0)
+            return cls(data=cat_data, dims=first.dims, layers=first.layers)
+
+        # Flat+offsets path: "bsh" or "blsh"
+        cat_data = torch.cat([a.data for a in items], dim=0)
+        cat_det = torch.cat([a.det for a in items], dim=0)
+
+        # Merge offsets: shift each item's offsets by cumulative token count
+        parts = [items[0].offsets]
+        running = int(items[0].offsets[-1].item())
+        for a in items[1:]:
+            parts.append(a.offsets[1:] + running)
+            running += int(a.offsets[-1].item())
+        cat_offsets = torch.cat(parts, dim=0)
+
+        return cls(
+            data=cat_data,
+            dims=first.dims,
+            offsets=cat_offsets,
+            det=cat_det,
+            layers=first.layers,
+        )
+
     # -------------------------------------------------------------------------
     # Properties
     # -------------------------------------------------------------------------
@@ -284,54 +355,157 @@ class Activations:
         return padded, padded_det
 
     # -------------------------------------------------------------------------
-    # Pooling (delegates to pl.pool.*)
+    # Internal reduction helpers
     # -------------------------------------------------------------------------
 
-    def mean_pool(self) -> "Activations":
-        """Pool sequence dimension by mean over valid tokens."""
-        return self._pool(P.mean)
+    def _reduce_seq(self, pool_fn, **kwargs) -> "Activations":
+        """Reduce the sequence dimension using *pool_fn*.
 
-    def max_pool(self) -> "Activations":
-        """Pool sequence dimension by max over valid tokens."""
-        return self._pool(P.max)
-
-    def last_pool(self) -> "Activations":
-        """Pool sequence dimension by taking last valid token."""
-        return self._pool(P.last_token)
-
-    def _pool(self, pool_fn) -> "Activations":
+        Handles the flat+offsets layout. Extra *kwargs* are forwarded to
+        the pool function (e.g. ``alpha`` for EMA, ``window_size`` for rolling).
+        """
         if "s" not in self.dims:
-            raise ValueError("No sequence dimension to pool")
+            raise ValueError("No sequence dimension to reduce")
 
-        pooled = pool_fn(self.data, self.det, offsets=self.offsets)
+        pooled = pool_fn(self.data, self.det, offsets=self.offsets, **kwargs)
         new_dims = self.dims.replace("s", "")
         return Activations(pooled, new_dims, offsets=None, det=None, layers=self.layers)
 
+    def _reduce_layer(self, reduce_fn) -> "Activations":
+        """Reduce the layer dimension using *reduce_fn* (``torch.mean`` or ``torch.max``)."""
+        if "l" not in self.dims:
+            raise ValueError("No layer dimension to reduce")
+
+        if "s" in self.dims:
+            # data: [T, n_layers, hidden] → reduce over dim 1
+            dim = 1
+        else:
+            dim = self.dims.index("l")
+
+        if reduce_fn is torch.max:
+            reduced = self.data.max(dim=dim).values
+        else:
+            reduced = reduce_fn(self.data, dim=dim)
+
+        new_dims = self.dims.replace("l", "")
+        return Activations(reduced, new_dims, offsets=self.offsets, det=self.det, layers=None)
+
     # -------------------------------------------------------------------------
-    # Layer selection
+    # Reductions — tinygrad-style dim-passing API
     # -------------------------------------------------------------------------
 
-    def select_layers(self, layer_or_layers: int | list[int]) -> "Activations":
+    def mean(self, dim: str) -> "Activations":
+        """Mean reduction over *dim* (``"s"`` for sequence, ``"l"`` for layer)."""
+        if dim == "s":
+            return self._reduce_seq(P.mean)
+        if dim == "l":
+            return self._reduce_layer(torch.mean)
+        raise ValueError(f"dim must be 's' or 'l', got {dim!r}")
+
+    def max(self, dim: str) -> "Activations":
+        """Max reduction over *dim* (``"s"`` for sequence, ``"l"`` for layer)."""
+        if dim == "s":
+            return self._reduce_seq(P.max)
+        if dim == "l":
+            return self._reduce_layer(torch.max)
+        raise ValueError(f"dim must be 's' or 'l', got {dim!r}")
+
+    # -------------------------------------------------------------------------
+    # Selection
+    # -------------------------------------------------------------------------
+
+    def select(self, dim: str, idx: int | list[int]) -> "Activations":
+        """Select along *dim*.
+
+        * ``dim="l"``: layer selection (int removes axis, list keeps it).
+        * ``dim="s"``: token selection (int only — removes sequence axis).
+        """
+        if dim == "l":
+            return self._select_layer(idx)
+        if dim == "s":
+            return self._select_seq(idx)
+        raise ValueError(f"dim must be 's' or 'l', got {dim!r}")
+
+    def _select_layer(self, layer_or_layers: int | list[int]) -> "Activations":
         """Select layer(s). Single int removes layer axis."""
         if "l" not in self.dims:
             raise ValueError("No layer axis to select from")
 
         if "s" in self.dims:
             # data is [T, n_layers, hidden], layer dim = 1
-            dim = 1
+            ax = 1
         else:
-            dim = self.dims.index("l")
+            ax = self.dims.index("l")
 
         if isinstance(layer_or_layers, int):
-            idx = self.layers.index(layer_or_layers)
-            selected = self.data.select(dim, idx)
+            pos = self.layers.index(layer_or_layers)
+            selected = self.data.select(ax, pos)
             new_dims = self.dims.replace("l", "")
             return Activations(selected, new_dims, offsets=self.offsets, det=self.det, layers=None)
         else:
             indices = [self.layers.index(l) for l in layer_or_layers]
             idx_tensor = torch.tensor(indices, device=self.data.device)
-            selected = self.data.index_select(dim, idx_tensor)
+            selected = self.data.index_select(ax, idx_tensor)
             return Activations(selected, self.dims, offsets=self.offsets, det=self.det, layers=tuple(layer_or_layers))
+
+    def _select_seq(self, idx: int) -> "Activations":
+        """Select a single token per sample from the sequence dimension.
+
+        Negative indices are relative to each sample's end (``-1`` = last token).
+        """
+        if "s" not in self.dims:
+            raise ValueError("No sequence dimension to select from")
+        if not isinstance(idx, int):
+            raise ValueError("select('s', ...) only supports a single int index")
+
+        if idx == -1:
+            # Fast path: reuse existing last-token pooling
+            return self._reduce_seq(P.last_token)
+
+        batch = self.batch_size
+        extra_dims = self.data.shape[1:]  # e.g. (hidden,) or (n_layers, hidden)
+        result = self.data.new_zeros(batch, *extra_dims)
+
+        for i in range(batch):
+            s, e = int(self.offsets[i]), int(self.offsets[i + 1])
+            length = e - s
+            if length == 0:
+                continue
+            actual_idx = idx if idx >= 0 else length + idx
+            if 0 <= actual_idx < length:
+                result[i] = self.data[s + actual_idx]
+
+        new_dims = self.dims.replace("s", "")
+        return Activations(result, new_dims, offsets=None, det=None, layers=self.layers)
+
+    # -------------------------------------------------------------------------
+    # Sequence-specific sugar
+    # -------------------------------------------------------------------------
+
+    def last(self) -> "Activations":
+        """Select the last token per sample (sugar for ``select("s", -1)``)."""
+        return self.select("s", -1)
+
+    def ema(self, alpha: float = 0.5) -> "Activations":
+        """EMA + max over the sequence dimension."""
+        return self._reduce_seq(P.ema, alpha=alpha)
+
+    def rolling(self, window: int = 10) -> "Activations":
+        """Rolling mean + max over the sequence dimension."""
+        return self._reduce_seq(P.rolling, window_size=window)
+
+    # -------------------------------------------------------------------------
+    # Layer-specific
+    # -------------------------------------------------------------------------
+
+    def flatten(self) -> "Activations":
+        """Concatenate layers into the hidden dimension, removing ``"l"``."""
+        if "l" not in self.dims:
+            raise ValueError("No layer dimension to flatten")
+        # data: [T, n_layers, hidden] or [batch, n_layers, hidden] → [*, n_layers*hidden]
+        data = self.data.reshape(self.data.shape[0], -1)
+        new_dims = self.dims.replace("l", "")
+        return Activations(data, new_dims, offsets=self.offsets, det=self.det)
 
     # -------------------------------------------------------------------------
     # Iteration
@@ -344,7 +518,7 @@ class Activations:
             yield layer_idx, self
             return
         for layer in self.layers:
-            yield layer, self.select_layers(layer)
+            yield layer, self.select("l", layer)
 
     # -------------------------------------------------------------------------
     # Token extraction (for probe training)
@@ -457,6 +631,7 @@ class Activations:
         *,
         device: str = "cpu",
         layers: int | list[int] | None = None,
+        cast: str | None = None,
     ) -> "Activations":
         """Load activations from HDF5 file.
 
@@ -466,20 +641,31 @@ class Activations:
             layers: Layer(s) to keep. ``int`` removes the layer axis,
                 ``list[int]`` keeps it with only the selected layers.
                 *None* loads all layers as stored.
+            cast: Dtype to cast loaded data to. ``None`` preserves on-disk
+                dtype (bf16 stays bf16). ``"float32"`` upcasts to float32.
         """
         try:
             import h5py
         except ImportError:
             raise ImportError("h5py is required for loading. Install with: pip install probelab[storage]")
 
+        _CAST_MAP = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
+        target_dtype = _CAST_MAP[cast] if cast else None
+
         with h5py.File(path, "r") as f:
             stored_dtype = f.attrs.get("dtype", "")
             if "bfloat16" in stored_dtype:
                 # uint16 bit pattern → int16 (same bits) → view as bfloat16
                 raw_np = np.asarray(f["data"][:], dtype=np.int16)
-                data = torch.from_numpy(raw_np).view(torch.bfloat16).float().to(device)
+                data = torch.from_numpy(raw_np).view(torch.bfloat16)
+                if target_dtype is not None:
+                    data = data.to(target_dtype)
+                data = data.to(device)
             else:
-                data = torch.tensor(f["data"][:]).float().to(device)
+                data = torch.tensor(f["data"][:])
+                if target_dtype is not None:
+                    data = data.to(target_dtype)
+                data = data.to(device)
             dims = str(f.attrs["dims"])
             stored_layers = tuple(int(x) for x in f["layers"][:]) if "layers" in f else None
             offsets = torch.tensor(f["offsets"][:], dtype=torch.int64, device=device) if "offsets" in f else None
@@ -493,7 +679,7 @@ class Activations:
 
         # Layer selection
         if layers is not None and "l" in dims:
-            acts = acts.select_layers(layers)
+            acts = acts.select("l", layers)
 
         return acts
 
@@ -503,6 +689,7 @@ class Activations:
         path: str,
         *,
         chunk_tokens: int = 100_000,
+        cast: str | None = None,
     ) -> Generator[tuple["Activations", list[int]], None, None]:
         """Yield ``(chunk, indices)`` from an HDF5 file without loading it all.
 
@@ -513,6 +700,8 @@ class Activations:
         Args:
             path: HDF5 file path.
             chunk_tokens: Approx. token budget per chunk (controls peak RAM).
+            cast: Dtype to cast chunk data to. ``None`` preserves on-disk
+                dtype. ``"float32"`` upcasts to float32.
 
         Yields:
             ``(activations, indices)`` where *indices* are the sample positions
@@ -522,6 +711,9 @@ class Activations:
             import h5py
         except ImportError:
             raise ImportError("h5py is required for streaming. Install with: pip install probelab[storage]")
+
+        _CAST_MAP = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
+        target_dtype = _CAST_MAP[cast] if cast else None
 
         with h5py.File(path, "r") as f:
             offsets_np = f["offsets"][:]
@@ -554,9 +746,11 @@ class Activations:
                 raw = data_ds[tok_start:tok_end]
                 raw_tensor = torch.from_numpy(np.asarray(raw, dtype=np.int16))
                 if "bfloat16" in stored_dtype:
-                    chunk_data = raw_tensor.view(torch.bfloat16).float()
+                    chunk_data = raw_tensor.view(torch.bfloat16)
                 else:
-                    chunk_data = torch.from_numpy(np.asarray(raw)).float()
+                    chunk_data = torch.from_numpy(np.asarray(raw))
+                if target_dtype is not None:
+                    chunk_data = chunk_data.to(target_dtype)
 
                 if det_ds is not None:
                     chunk_det = torch.from_numpy(np.asarray(det_ds[tok_start:tok_end], dtype=bool))
@@ -737,10 +931,6 @@ def collect_activations(
         elif out.is_cuda:
             # Keep all reduction work on GPU, move to CPU only once at the end.
             out = out.cpu()
-        if out.dtype != torch.float32:
-            # Backends may stream lower-precision activations for throughput.
-            # Cast once at the boundary instead of per-batch/per-token.
-            out = out.float()
 
         if single_layer:
             return Activations(data=out.squeeze(1), dims="bh", layers=None)
