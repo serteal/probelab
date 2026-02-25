@@ -4,10 +4,15 @@ import unittest
 from pathlib import Path
 
 import torch
+from torch.optim import SGD
+from torch.optim.lr_scheduler import StepLR
 
 from probelab.processing.activations import Activations
 from probelab.probes.logistic import Logistic
 from probelab.probes.mlp import MLP
+from probelab.probes.attention import Attention
+from probelab.probes.multimax import MultiMax
+from probelab.probes.gated_bipolar import GatedBipolar
 from probelab.types import Label
 
 # =============================================================================
@@ -53,7 +58,7 @@ class TestLogisticInit(unittest.TestCase):
 class TestLogisticFit(unittest.TestCase):
     def test_fit_sequence_level(self):
         acts, labels = _separable_acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = Logistic(device="cpu").fit(prepared, labels)
         self.assertTrue(p.fitted)
         self.assertIsNotNone(p.net)
@@ -66,7 +71,7 @@ class TestLogisticFit(unittest.TestCase):
 
     def test_fit_returns_self(self):
         acts, labels = _separable_acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = Logistic(device="cpu")
         result = p.fit(prepared, labels)
         self.assertIs(result, p)
@@ -74,14 +79,14 @@ class TestLogisticFit(unittest.TestCase):
 class TestLogisticPredict(unittest.TestCase):
     def test_predict_returns_scores(self):
         acts, labels = _separable_acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = Logistic(device="cpu").fit(prepared, labels)
         scores = p.predict(prepared)
         self.assertEqual(scores.shape, (20,))  # [batch] for sequence-level
 
     def test_predict_valid_probabilities(self):
         acts, labels = _separable_acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = Logistic(device="cpu").fit(prepared, labels)
         probs = p.predict(prepared)
         self.assertTrue(torch.all(probs >= 0))
@@ -89,7 +94,7 @@ class TestLogisticPredict(unittest.TestCase):
 
     def test_predict_separable_accuracy(self):
         acts, labels = _separable_acts(n_samples=20, gap=5.0)
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = Logistic(device="cpu").fit(prepared, labels)
         probs = p.predict(prepared)
         pos_correct = (probs[:10] > 0.5).sum()  # Positive class should have high prob
@@ -98,7 +103,7 @@ class TestLogisticPredict(unittest.TestCase):
 
     def test_predict_before_fit_raises(self):
         acts = _acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = Logistic(device="cpu")
         with self.assertRaises(RuntimeError):
             p.predict(prepared)
@@ -106,7 +111,7 @@ class TestLogisticPredict(unittest.TestCase):
 class TestLogisticSaveLoad(unittest.TestCase):
     def test_save_load_roundtrip(self):
         acts, labels = _separable_acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = Logistic(C=2.0, device="cpu").fit(prepared, labels)
         probs_before = p.predict(prepared)
 
@@ -148,7 +153,7 @@ class TestMLPInit(unittest.TestCase):
 class TestMLPFit(unittest.TestCase):
     def test_fit_sequence_level(self):
         acts, labels = _separable_acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
         self.assertTrue(p.fitted)
         self.assertIsNotNone(p.net)
@@ -161,27 +166,27 @@ class TestMLPFit(unittest.TestCase):
 
     def test_fit_with_dropout(self):
         acts, labels = _separable_acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = MLP(hidden_dim=32, dropout=0.2, n_epochs=10, device="cpu").fit(prepared, labels)
         self.assertTrue(p.fitted)
 
     def test_fit_gelu_activation(self):
         acts, labels = _separable_acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = MLP(hidden_dim=32, activation="gelu", n_epochs=10, device="cpu").fit(prepared, labels)
         self.assertTrue(p.fitted)
 
 class TestMLPPredict(unittest.TestCase):
     def test_predict_returns_scores(self):
         acts, labels = _separable_acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
         scores = p.predict(prepared)
         self.assertEqual(scores.shape, (20,))  # [batch] for sequence-level
 
     def test_predict_valid_probabilities(self):
         acts, labels = _separable_acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
         probs = p.predict(prepared)
         self.assertTrue(torch.all(probs >= 0))
@@ -189,7 +194,7 @@ class TestMLPPredict(unittest.TestCase):
 
     def test_predict_before_fit_raises(self):
         acts = _acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = MLP(device="cpu")
         with self.assertRaises(RuntimeError):
             p.predict(prepared)
@@ -197,7 +202,7 @@ class TestMLPPredict(unittest.TestCase):
 class TestMLPSaveLoad(unittest.TestCase):
     def test_save_load_roundtrip(self):
         acts, labels = _separable_acts()
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
         probs_before = p.predict(prepared)
 
@@ -227,7 +232,7 @@ class TestProbeInterface(unittest.TestCase):
 
     def _test_probe_interface(self, ProbeClass, **init_kwargs):
         acts, labels = _separable_acts(n_samples=20)
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
 
         # Test fit returns self
         p = ProbeClass(device="cpu", **init_kwargs)
@@ -296,7 +301,7 @@ class TestProbeEdgeCases(unittest.TestCase):
             data=t, detection_mask=torch.ones(4, 8), dims="bsh",
         )
         labels = [Label.POSITIVE, Label.POSITIVE, Label.NEGATIVE, Label.NEGATIVE]
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
 
         p = Logistic(device="cpu").fit(prepared, labels)
         scores = p.predict(prepared)
@@ -304,14 +309,14 @@ class TestProbeEdgeCases(unittest.TestCase):
 
     def test_integer_labels(self):
         acts, _ = _separable_acts(n_samples=10)
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         labels = [1, 1, 1, 1, 1, 0, 0, 0, 0, 0]  # int labels
         p = Logistic(device="cpu").fit(prepared, labels)
         self.assertTrue(p.fitted)
 
     def test_tensor_labels(self):
         acts, _ = _separable_acts(n_samples=10)
-        prepared = acts.mean_pool()
+        prepared = acts.mean("s")
         labels = torch.tensor([1, 1, 1, 1, 1, 0, 0, 0, 0, 0])
         p = Logistic(device="cpu").fit(prepared, labels)
         self.assertTrue(p.fitted)
@@ -353,6 +358,135 @@ class TestProbeDeviceHandling(unittest.TestCase):
 
         # If device handling is wrong, this would fail during fit
         self.assertTrue(p.fitted)
+
+# =============================================================================
+# Seed Reproducibility Tests
+# =============================================================================
+
+class TestSeedReproducibility(unittest.TestCase):
+    def test_mlp_same_seed_same_predictions(self):
+        acts, labels = _separable_acts()
+        prepared = acts.mean("s")
+        p1 = MLP(hidden_dim=16, n_epochs=5, seed=42, device="cpu").fit(prepared, labels)
+        p2 = MLP(hidden_dim=16, n_epochs=5, seed=42, device="cpu").fit(prepared, labels)
+        self.assertTrue(torch.allclose(p1.predict(prepared), p2.predict(prepared), atol=1e-5))
+
+    def test_logistic_same_seed_same_predictions(self):
+        acts, labels = _separable_acts()
+        prepared = acts.mean("s")
+        p1 = Logistic(seed=42, device="cpu").fit(prepared, labels)
+        p2 = Logistic(seed=42, device="cpu").fit(prepared, labels)
+        self.assertTrue(torch.allclose(p1.predict(prepared), p2.predict(prepared), atol=1e-5))
+
+    def test_different_seed_different_predictions(self):
+        acts, labels = _separable_acts()
+        prepared = acts.mean("s")
+        p1 = MLP(hidden_dim=16, n_epochs=20, seed=42, device="cpu").fit(prepared, labels)
+        p2 = MLP(hidden_dim=16, n_epochs=20, seed=99, device="cpu").fit(prepared, labels)
+        self.assertFalse(torch.allclose(p1.predict(prepared), p2.predict(prepared), atol=1e-6))
+
+# =============================================================================
+# Optimizer Factory Tests
+# =============================================================================
+
+class TestOptimizerFactory(unittest.TestCase):
+    def test_mlp_custom_sgd(self):
+        acts, labels = _separable_acts()
+        prepared = acts.mean("s")
+        p = MLP(
+            hidden_dim=16, n_epochs=10,
+            optimizer_fn=lambda params: SGD(params, lr=0.01),
+            device="cpu",
+        ).fit(prepared, labels)
+        self.assertTrue(p.fitted)
+
+    def test_mlp_with_scheduler(self):
+        acts, labels = _separable_acts()
+        prepared = acts.mean("s")
+        p = MLP(
+            hidden_dim=16, n_epochs=10,
+            optimizer_fn=lambda params: SGD(params, lr=0.01),
+            scheduler_fn=lambda opt: StepLR(opt, step_size=5, gamma=0.5),
+            device="cpu",
+        ).fit(prepared, labels)
+        self.assertTrue(p.fitted)
+
+    def test_logistic_custom_adam(self):
+        acts, labels = _separable_acts()
+        prepared = acts.mean("s")
+        p = Logistic(
+            n_epochs=50,
+            optimizer_fn=lambda params: torch.optim.Adam(params, lr=0.01),
+            device="cpu",
+        ).fit(prepared, labels)
+        self.assertTrue(p.fitted)
+
+    def test_save_load_roundtrip_custom_optimizer(self):
+        """Custom optimizer not serialized; loaded probe still works for predict."""
+        acts, labels = _separable_acts()
+        prepared = acts.mean("s")
+        p = MLP(
+            hidden_dim=16, n_epochs=10, seed=42,
+            optimizer_fn=lambda params: SGD(params, lr=0.01),
+            device="cpu",
+        ).fit(prepared, labels)
+        probs_before = p.predict(prepared)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "probe.pt"
+            p.save(path)
+            loaded = MLP.load(path)
+
+        self.assertTrue(loaded.fitted)
+        self.assertEqual(loaded.seed, 42)
+        self.assertIsNone(loaded._optimizer_fn)
+        probs_after = loaded.predict(prepared)
+        self.assertTrue(torch.allclose(probs_before, probs_after, atol=1e-5))
+
+    def test_attention_custom_optimizer(self):
+        acts, labels = _separable_acts(n_samples=20, seq=8)
+        p = Attention(
+            hidden_dim=16, n_epochs=20,
+            optimizer_fn=lambda params: SGD(params, lr=0.01),
+            device="cpu",
+        ).fit(acts, labels)
+        self.assertTrue(p.fitted)
+
+# =============================================================================
+# Exposed Params Tests
+# =============================================================================
+
+class TestExposedParams(unittest.TestCase):
+    def test_attention_val_split_eval_interval(self):
+        acts, labels = _separable_acts(n_samples=20, seq=8)
+        p = Attention(
+            hidden_dim=16, n_epochs=20, val_split=0.3, eval_interval=5,
+            device="cpu",
+        ).fit(acts, labels)
+        self.assertTrue(p.fitted)
+        self.assertEqual(p.val_split, 0.3)
+        self.assertEqual(p.eval_interval, 5)
+
+    def test_multimax_batch_size_val_split(self):
+        acts, labels = _separable_acts(n_samples=20, seq=8)
+        p = MultiMax(
+            n_epochs=5, batch_size=8, val_split=0.1,
+            device="cpu",
+        ).fit(acts, labels)
+        self.assertTrue(p.fitted)
+        self.assertEqual(p.batch_size, 8)
+        self.assertEqual(p.val_split, 0.1)
+
+    def test_gated_bipolar_batch_size_val_split(self):
+        acts, labels = _separable_acts(n_samples=20, seq=8)
+        p = GatedBipolar(
+            n_epochs=5, batch_size=4, val_split=0.1,
+            device="cpu",
+        ).fit(acts, labels)
+        self.assertTrue(p.fitted)
+        self.assertEqual(p.batch_size, 4)
+        self.assertEqual(p.val_split, 0.1)
+
 
 if __name__ == '__main__':
     unittest.main()

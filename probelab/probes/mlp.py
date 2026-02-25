@@ -1,12 +1,11 @@
 """Multi-layer perceptron probe."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import AdamW
 
 from ..processing.activations import Activations
 from .base import BaseProbe
@@ -54,9 +53,13 @@ class MLP(BaseProbe):
         weight_decay: float = 0.01,
         n_epochs: int = 100,
         batch_size: int = 32,
+        *,
+        optimizer_fn: Callable | None = None,
+        scheduler_fn: Callable | None = None,
+        seed: int | None = None,
         device: str | None = None,
     ):
-        super().__init__(device=device)
+        super().__init__(device=device, seed=seed, optimizer_fn=optimizer_fn, scheduler_fn=scheduler_fn)
         self.hidden_dim = hidden_dim
         self.dropout = dropout
         self.activation = activation
@@ -74,7 +77,7 @@ class MLP(BaseProbe):
         if "l" in X.dims:
             raise ValueError(
                 f"MLP expects no LAYER axis. "
-                f"Call select_layers() first. Current dims: {X.dims}"
+                f"Call select(\"l\", layer) first. Current dims: {X.dims}"
             )
 
         # Auto-detect device from input if not specified
@@ -105,6 +108,7 @@ class MLP(BaseProbe):
         d_model = features.shape[1]
 
         # Fresh state every fit()
+        g = self._seed_everything()
         self.net = _MLPNetwork(
             d_model=d_model,
             hidden_dim=self.hidden_dim,
@@ -112,15 +116,14 @@ class MLP(BaseProbe):
             activation=self.activation,
         ).to(self.device).to(torch.float32)
 
-        optimizer = AdamW(
-            self.net.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay,
+        optimizer = self._make_optimizer(
+            self.net.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
         )
+        scheduler = self._make_scheduler(optimizer)
 
         dataset = torch.utils.data.TensorDataset(features, labels)
         dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=self.batch_size, shuffle=True
+            dataset, batch_size=self.batch_size, shuffle=True, generator=g
         )
 
         self.net.train()
@@ -132,6 +135,8 @@ class MLP(BaseProbe):
                 )
                 loss.backward()
                 optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
 
         self.net.eval()
         return self
@@ -190,6 +195,7 @@ class MLP(BaseProbe):
             "weight_decay": self.weight_decay,
             "n_epochs": self.n_epochs,
             "batch_size": self.batch_size,
+            "seed": self.seed,
             "device": self.device,
             "network_state": self.net.state_dict(),
         }, path)
@@ -201,10 +207,11 @@ class MLP(BaseProbe):
             hidden_dim=state["hidden_dim"],
             dropout=state.get("dropout"),
             activation=state["activation"],
-            learning_rate=state["learning_rate"],
-            weight_decay=state["weight_decay"],
+            learning_rate=state.get("learning_rate", 0.001),
+            weight_decay=state.get("weight_decay", 0.01),
             n_epochs=state["n_epochs"],
             batch_size=state["batch_size"],
+            seed=state.get("seed"),
             device=device,
         )
         # Infer d_model from saved weights

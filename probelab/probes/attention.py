@@ -1,11 +1,11 @@
 """Attention-based probe."""
 
 from pathlib import Path
+from typing import Callable
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import AdamW
 
 from ..processing.activations import Activations
 from .base import BaseProbe
@@ -77,9 +77,15 @@ class Attention(BaseProbe):
         n_epochs: int = 1000,
         patience: int = 20,
         batch_size: int = 32,
+        val_split: float = 0.2,
+        eval_interval: int = 10,
+        *,
+        optimizer_fn: Callable | None = None,
+        scheduler_fn: Callable | None = None,
+        seed: int | None = None,
         device: str | None = None,
     ):
-        super().__init__(device=device)
+        super().__init__(device=device, seed=seed, optimizer_fn=optimizer_fn, scheduler_fn=scheduler_fn)
         self.hidden_dim = hidden_dim
         self.dropout = dropout
         self.temperature = temperature
@@ -88,6 +94,8 @@ class Attention(BaseProbe):
         self.n_epochs = n_epochs
         self.patience = patience
         self.batch_size = batch_size
+        self.val_split = val_split
+        self.eval_interval = eval_interval
         self.net = None
         self.attention_weights = None
 
@@ -99,7 +107,7 @@ class Attention(BaseProbe):
         if "l" in X.dims:
             raise ValueError(
                 f"Attention expects no LAYER axis. "
-                f"Call select_layers() first. Current dims: {X.dims}"
+                f"Call select(\"l\", layer) first. Current dims: {X.dims}"
             )
         if "s" not in X.dims:
             raise ValueError("Attention probe requires SEQ axis")
@@ -113,6 +121,7 @@ class Attention(BaseProbe):
         d_model = X.hidden_size
 
         # Fresh state every fit()
+        g = self._seed_everything()
         self.net = _AttentionNetwork(
             d_model=d_model,
             hidden_dim=self.hidden_dim,
@@ -120,17 +129,15 @@ class Attention(BaseProbe):
             temperature=self.temperature,
         ).to(self.device)
 
-        optimizer = AdamW(
-            self.net.parameters(),
-            lr=self.learning_rate,
-            weight_decay=self.weight_decay,
-            fused=self.device.startswith("cuda") if isinstance(self.device, str) else False,
+        optimizer = self._make_optimizer(
+            self.net.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
         )
+        scheduler = self._make_scheduler(optimizer)
 
         # Train/validation split
         n_samples = X.batch_size
-        n_val = max(1, int(0.2 * n_samples))
-        indices = torch.randperm(n_samples, device="cpu")
+        n_val = max(1, int(self.val_split * n_samples))
+        indices = torch.randperm(n_samples, device="cpu", generator=g)
         train_idx, val_idx = indices[n_val:].tolist(), indices[:n_val].tolist()
         batch_size = min(self.batch_size, len(train_idx))
 
@@ -149,7 +156,7 @@ class Attention(BaseProbe):
 
         self.net.train()
         for epoch in range(self.n_epochs):
-            perm = torch.randperm(len(train_idx))
+            perm = torch.randperm(len(train_idx), generator=g)
             shuffled = [train_idx[p] for p in perm.tolist()]
 
             for i in range(0, len(shuffled), batch_size):
@@ -164,13 +171,16 @@ class Attention(BaseProbe):
                 F.binary_cross_entropy_with_logits(logits, batch_y).backward()
                 optimizer.step()
 
-            if epoch % 10 == 0:
+            if epoch % self.eval_interval == 0:
                 self.net.eval()
                 with torch.no_grad():
                     val_loss = F.binary_cross_entropy_with_logits(
                         self.net(val_seq, val_mask)[0], val_y
                     )
                 self.net.train()
+
+                if scheduler is not None:
+                    scheduler.step()
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
@@ -240,6 +250,9 @@ class Attention(BaseProbe):
             "n_epochs": self.n_epochs,
             "patience": self.patience,
             "batch_size": self.batch_size,
+            "val_split": self.val_split,
+            "eval_interval": self.eval_interval,
+            "seed": self.seed,
             "device": self.device,
             "network_state_dict": self.net.state_dict(),
         }, path)
@@ -251,11 +264,14 @@ class Attention(BaseProbe):
             hidden_dim=state["hidden_dim"],
             dropout=state.get("dropout", 0.2),
             temperature=state.get("temperature", 2.0),
-            learning_rate=state["learning_rate"],
-            weight_decay=state["weight_decay"],
+            learning_rate=state.get("learning_rate", 5e-4),
+            weight_decay=state.get("weight_decay", 1e-3),
             n_epochs=state["n_epochs"],
             patience=state["patience"],
             batch_size=state.get("batch_size", 32),
+            val_split=state.get("val_split", 0.2),
+            eval_interval=state.get("eval_interval", 10),
+            seed=state.get("seed"),
             device=device,
         )
         # Infer d_model from saved weights

@@ -1,6 +1,7 @@
 """L2-regularized logistic regression probe."""
 
 from pathlib import Path
+from typing import Callable
 
 import torch
 import torch.nn as nn
@@ -31,10 +32,21 @@ class Logistic(BaseProbe):
     - If X has no SEQ axis: Trains on sequences, returns sequence-level scores
     """
 
-    def __init__(self, C: float = 1.0, max_iter: int = 500, device: str | None = None):
-        super().__init__(device=device)
+    def __init__(
+        self,
+        C: float = 1.0,
+        max_iter: int = 500,
+        n_epochs: int = 100,
+        *,
+        optimizer_fn: Callable | None = None,
+        scheduler_fn: Callable | None = None,
+        seed: int | None = None,
+        device: str | None = None,
+    ):
+        super().__init__(device=device, seed=seed, optimizer_fn=optimizer_fn, scheduler_fn=scheduler_fn)
         self.C = C
         self.max_iter = max_iter
+        self.n_epochs = n_epochs
         self.net = None
         self.scaler_mean = None
         self.scaler_std = None
@@ -47,7 +59,7 @@ class Logistic(BaseProbe):
         if "l" in X.dims:
             raise ValueError(
                 f"Logistic expects no LAYER axis. "
-                f"Call select_layers() first. Current dims: {X.dims}"
+                f"Call select(\"l\", layer) first. Current dims: {X.dims}"
             )
 
         # Auto-detect device from input if not specified
@@ -72,6 +84,7 @@ class Logistic(BaseProbe):
         d_model = features.shape[1]
 
         # Fresh state every fit()
+        self._seed_everything()  # seeds weight init; no local generator needed
         self.net = _LogisticNetwork(d_model).to(self.device).to(torch.float32)
 
         # Standardize (clone to avoid mutating input data)
@@ -79,22 +92,40 @@ class Logistic(BaseProbe):
         self.scaler_std = features.std(0).clamp(min=1e-8)
         features = (features - self.scaler_mean) / self.scaler_std
 
-        # Train with LBFGS
-        optimizer = torch.optim.LBFGS(
-            self.net.parameters(), max_iter=self.max_iter, line_search_fn="strong_wolfe"
-        )
         l2_weight = 1.0 / (2.0 * self.C * len(labels)) if self.C > 0 else 0.0
         weight_param = self.net.linear.weight
 
-        def closure():
-            optimizer.zero_grad()
-            loss = F.binary_cross_entropy_with_logits(self.net(features), labels)
-            if l2_weight > 0:
-                loss = loss + l2_weight * weight_param.pow(2).sum()
-            loss.backward()
-            return loss
+        if self._optimizer_fn is not None:
+            # Custom optimizer: epoch-based training loop
+            optimizer = self._optimizer_fn(self.net.parameters())
+            scheduler = self._make_scheduler(optimizer)
+            self.net.train()
+            for _ in range(self.n_epochs):
+                optimizer.zero_grad()
+                loss = F.binary_cross_entropy_with_logits(self.net(features), labels)
+                if l2_weight > 0:
+                    loss = loss + l2_weight * weight_param.pow(2).sum()
+                loss.backward()
+                optimizer.step()
+                if scheduler is not None:
+                    scheduler.step()
+            self.net.eval()
+        else:
+            # Default: single-step LBFGS
+            optimizer = torch.optim.LBFGS(
+                self.net.parameters(), max_iter=self.max_iter, line_search_fn="strong_wolfe"
+            )
 
-        optimizer.step(closure)
+            def closure():
+                optimizer.zero_grad()
+                loss = F.binary_cross_entropy_with_logits(self.net(features), labels)
+                if l2_weight > 0:
+                    loss = loss + l2_weight * weight_param.pow(2).sum()
+                loss.backward()
+                return loss
+
+            optimizer.step(closure)
+
         return self
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
@@ -147,6 +178,8 @@ class Logistic(BaseProbe):
         torch.save({
             "C": self.C,
             "max_iter": self.max_iter,
+            "n_epochs": self.n_epochs,
+            "seed": self.seed,
             "device": self.device,
             "network_state": self.net.state_dict(),
             "scaler_mean": self.scaler_mean,
@@ -156,7 +189,13 @@ class Logistic(BaseProbe):
     @classmethod
     def load(cls, path: Path | str, device: str = "cpu") -> "Logistic":
         state = torch.load(Path(path), map_location="cpu")
-        probe = cls(C=state["C"], max_iter=state["max_iter"], device=device)
+        probe = cls(
+            C=state["C"],
+            max_iter=state["max_iter"],
+            n_epochs=state.get("n_epochs", 100),
+            seed=state.get("seed"),
+            device=device,
+        )
         d_model = state["scaler_mean"].shape[0]
         probe.net = _LogisticNetwork(d_model).to(probe.device)
         probe.net.load_state_dict(state["network_state"])
