@@ -10,6 +10,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generator, Iterator
 
+import numpy as np
 import torch
 
 from ..backends import get_context_defaults, resolve_backend
@@ -390,24 +391,56 @@ class Activations:
     # Save / Load (HDF5)
     # -------------------------------------------------------------------------
 
-    def save(self, path: str, compression: str | None = "gzip", compression_opts: int = 4) -> None:
-        """Save activations to HDF5 file with compression."""
+    def save(
+        self,
+        path: str,
+        *,
+        dtype: str = "bfloat16",
+        compression: str | None = None,
+        compression_opts: int | None = None,
+    ) -> None:
+        """Save activations to HDF5 file.
+
+        Default stores as bfloat16 (uint16 bit pattern on disk) — 2x smaller
+        than float32 and lossless for models that compute in bf16.
+
+        Args:
+            path: Output HDF5 file path.
+            dtype: Storage dtype — ``"bfloat16"`` (default) or ``"float32"``.
+            compression: h5py compression filter (e.g. ``"gzip"``).
+            compression_opts: Compression level (gzip: 0-9).
+        """
         try:
             import h5py
         except ImportError:
             raise ImportError("h5py is required for saving. Install with: pip install probelab[storage]")
 
-        data_cpu = self.data.cpu().numpy()
-        chunk_shape = (1,) + data_cpu.shape[1:] if "l" in self.dims else None
+        data_cpu = self.data.cpu()
+        if dtype == "bfloat16":
+            data_np = data_cpu.bfloat16().view(torch.uint16).numpy()
+            dtype_str = "torch.bfloat16"
+        elif dtype == "float32":
+            data_np = data_cpu.float().numpy()
+            dtype_str = "torch.float32"
+        else:
+            raise ValueError(f"dtype must be 'bfloat16' or 'float32', got {dtype!r}")
+
+        # Chunk layout: (min(4096, total), ...) for seq files, None otherwise
+        if "s" in self.dims:
+            chunk_shape = (min(4096, data_np.shape[0]),) + data_np.shape[1:]
+        else:
+            chunk_shape = None
+
+        comp_kwargs = {}
+        if compression:
+            comp_kwargs["compression"] = compression
+            if compression_opts is not None:
+                comp_kwargs["compression_opts"] = compression_opts
 
         with h5py.File(path, "w") as f:
-            f.create_dataset(
-                "data", data=data_cpu, compression=compression,
-                compression_opts=compression_opts if compression == "gzip" else None,
-                chunks=chunk_shape,
-            )
+            f.create_dataset("data", data=data_np, chunks=chunk_shape, **comp_kwargs)
             f.attrs["dims"] = self.dims
-            f.attrs["dtype"] = str(self.data.dtype)
+            f.attrs["dtype"] = dtype_str
             f.attrs["probelab_version"] = "0.0.1"
 
             if self.layers is not None:
@@ -418,25 +451,133 @@ class Activations:
                 f.create_dataset("det", data=self.det.cpu().numpy())
 
     @classmethod
-    def load(cls, path: str, device: str = "cpu") -> "Activations":
-        """Load activations from HDF5 file."""
+    def load(
+        cls,
+        path: str,
+        *,
+        device: str = "cpu",
+        layers: int | list[int] | None = None,
+    ) -> "Activations":
+        """Load activations from HDF5 file.
+
+        Args:
+            path: HDF5 file path.
+            device: Target device.
+            layers: Layer(s) to keep. ``int`` removes the layer axis,
+                ``list[int]`` keeps it with only the selected layers.
+                *None* loads all layers as stored.
+        """
         try:
             import h5py
         except ImportError:
             raise ImportError("h5py is required for loading. Install with: pip install probelab[storage]")
 
         with h5py.File(path, "r") as f:
-            data = torch.tensor(f["data"][:], device=device).float()
-            dims = f.attrs["dims"]
-            layers = tuple(f["layers"][:]) if "layers" in f else None
+            stored_dtype = f.attrs.get("dtype", "")
+            if "bfloat16" in stored_dtype:
+                # uint16 bit pattern → int16 (same bits) → view as bfloat16
+                raw_np = np.asarray(f["data"][:], dtype=np.int16)
+                data = torch.from_numpy(raw_np).view(torch.bfloat16).float().to(device)
+            else:
+                data = torch.tensor(f["data"][:]).float().to(device)
+            dims = str(f.attrs["dims"])
+            stored_layers = tuple(int(x) for x in f["layers"][:]) if "layers" in f else None
             offsets = torch.tensor(f["offsets"][:], dtype=torch.int64, device=device) if "offsets" in f else None
             det = torch.tensor(f["det"][:], dtype=torch.bool, device=device) if "det" in f else None
 
             # Legacy backward compat: old files have "mask" instead of offsets/det
             if "s" in dims and offsets is None and "mask" in f:
-                return cls._load_legacy_padded(f, data, dims, layers, device)
+                return cls._load_legacy_padded(f, data, dims, stored_layers, device)
 
-        return cls(data=data, dims=dims, offsets=offsets, det=det, layers=layers)
+        acts = cls(data=data, dims=dims, offsets=offsets, det=det, layers=stored_layers)
+
+        # Layer selection
+        if layers is not None and "l" in dims:
+            acts = acts.select_layers(layers)
+
+        return acts
+
+    @classmethod
+    def stream(
+        cls,
+        path: str,
+        *,
+        chunk_tokens: int = 100_000,
+    ) -> Generator[tuple["Activations", list[int]], None, None]:
+        """Yield ``(chunk, indices)`` from an HDF5 file without loading it all.
+
+        Reads in token-budget chunks, yielding one ``Activations`` per chunk
+        with ``dims="blsh"`` (or ``"bsh"`` for single-layer files). Callers
+        can pool/select layers on each chunk to build up results incrementally.
+
+        Args:
+            path: HDF5 file path.
+            chunk_tokens: Approx. token budget per chunk (controls peak RAM).
+
+        Yields:
+            ``(activations, indices)`` where *indices* are the sample positions
+            within the full file (for writing into a pre-allocated output).
+        """
+        try:
+            import h5py
+        except ImportError:
+            raise ImportError("h5py is required for streaming. Install with: pip install probelab[storage]")
+
+        with h5py.File(path, "r") as f:
+            offsets_np = f["offsets"][:]
+            stored_dtype = f.attrs.get("dtype", "")
+            dims = str(f.attrs["dims"])
+            stored_layers = tuple(int(x) for x in f["layers"][:]) if "layers" in f else None
+            data_ds = f["data"]
+            det_ds = f["det"] if "det" in f else None
+            n_samples = len(offsets_np) - 1
+
+            sample_idx = 0
+            while sample_idx < n_samples:
+                # Determine chunk bounds by token budget
+                chunk_start = sample_idx
+                tok_start = int(offsets_np[chunk_start])
+                chunk_end = chunk_start
+                while chunk_end < n_samples:
+                    next_tok = int(offsets_np[chunk_end + 1])
+                    if next_tok - tok_start > chunk_tokens and chunk_end > chunk_start:
+                        break
+                    chunk_end += 1
+
+                tok_end = int(offsets_np[chunk_end])
+                n_tok = tok_end - tok_start
+                if n_tok == 0:
+                    sample_idx = chunk_end
+                    continue
+
+                # Read chunk from h5
+                raw = data_ds[tok_start:tok_end]
+                raw_tensor = torch.from_numpy(np.asarray(raw, dtype=np.int16))
+                if "bfloat16" in stored_dtype:
+                    chunk_data = raw_tensor.view(torch.bfloat16).float()
+                else:
+                    chunk_data = torch.from_numpy(np.asarray(raw)).float()
+
+                if det_ds is not None:
+                    chunk_det = torch.from_numpy(np.asarray(det_ds[tok_start:tok_end], dtype=bool))
+                else:
+                    chunk_det = torch.ones(n_tok, dtype=torch.bool)
+
+                # Build local offsets relative to this chunk
+                local_offsets = torch.zeros(chunk_end - chunk_start + 1, dtype=torch.int64)
+                for i in range(chunk_start, chunk_end):
+                    local_offsets[i - chunk_start + 1] = int(offsets_np[i + 1]) - tok_start
+
+                indices = list(range(chunk_start, chunk_end))
+                chunk_acts = cls(
+                    data=chunk_data,
+                    dims=dims,
+                    offsets=local_offsets,
+                    det=chunk_det,
+                    layers=stored_layers,
+                )
+                yield chunk_acts, indices
+                sample_idx = chunk_end
 
     @classmethod
     def _load_legacy_padded(cls, f, data, dims, layers, device):

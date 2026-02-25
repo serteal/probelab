@@ -82,8 +82,9 @@ def xstest_response() -> Dataset:
 
 
 @_register_dataset("clearharm_llama3", Topic.HARMFULNESS, "ClearHarm Llama3")
-def clearharm_llama3() -> Dataset:
-    df = pd.read_json(REPO_ROOT / "data" / "harmfulness" / "outputs_huihui-ai_Meta-Llama-3.json")
+def clearharm_llama3(path: str | None = None) -> Dataset:
+    json_path = Path(path) if path else REPO_ROOT / "data" / "harmfulness" / "outputs_huihui-ai_Meta-Llama-3.json"
+    df = pd.read_json(json_path)
 
     dialogues = [[Message("user", str(row["prompt"])), Message("assistant", str(row["generated_text"]))] for _, row in df.iterrows()]
     labels = [Label.POSITIVE] * len(dialogues)
@@ -92,13 +93,25 @@ def clearharm_llama3() -> Dataset:
 
 
 @_register_dataset("clearharm_mistral", Topic.HARMFULNESS, "ClearHarm Mistral")
-def clearharm_mistral() -> Dataset:
-    df = pd.read_json(REPO_ROOT / "data" / "harmfulness" / "outputs_huihui-ai_Mistral-Small-24B-Instruct-2501-abliterated_20250702_233538.json")
+def clearharm_mistral(path: str | None = None) -> Dataset:
+    json_path = Path(path) if path else REPO_ROOT / "data" / "harmfulness" / "outputs_huihui-ai_Mistral-Small-24B-Instruct-2501-abliterated_20250702_233538.json"
+    df = pd.read_json(json_path)
 
     dialogues = [[Message("user", str(row["prompt"])), Message("assistant", str(row["generated_text"]))] for _, row in df.iterrows()]
     labels = [Label.POSITIVE] * len(dialogues)
 
     return Dataset(dialogues, labels, "clearharm_mistral").shuffle()
+
+
+@_register_dataset("clearharm_qwen3", Topic.HARMFULNESS, "ClearHarm Qwen3")
+def clearharm_qwen3(path: str | None = None) -> Dataset:
+    json_path = Path(path) if path else REPO_ROOT / "data" / "harmfulness" / "outputs_huihui-ai_Huihui-Qwen3-14B-abliterated-v2_20250702_212758_cleaned.json"
+    df = pd.read_json(json_path)
+
+    dialogues = [[Message("user", str(row["prompt"])), Message("assistant", str(row["generated_text"]))] for _, row in df.iterrows()]
+    labels = [Label.POSITIVE] * len(dialogues)
+
+    return Dataset(dialogues, labels, "clearharm_qwen3").shuffle()
 
 
 @_register_dataset("or_bench", Topic.HARMFULNESS, "OR-Bench over-refusal benchmark")

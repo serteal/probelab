@@ -31,6 +31,7 @@ class HookedModel:
         layers: list[int],
         detach_activations: bool = False,
         hook_point: HookPoint = HookPoint.POST_BLOCK,
+        target_device: str | torch.device | None = None,
     ):
         self.model = model
         self.layers = layers
@@ -41,11 +42,27 @@ class HookedModel:
         self.original_layers = None
         self.detach_activations = detach_activations
         self.hook_point = hook_point
+        self.target_device = torch.device(target_device) if isinstance(target_device, str) else target_device
+        self._resolved_device: torch.device | None = None
 
         # For PEFT models, we need to work with the base model for layer access
         self.base_model = model
         if hasattr(model, "get_base_model"):
             self.base_model = model.get_base_model()  # type: ignore
+
+    def _resolve_target_device(self) -> torch.device:
+        """Determine the device to consolidate activations onto.
+
+        - If ``target_device`` was set explicitly, use it.
+        - If all cached layers live on the same device, use that (single-GPU path).
+        - Otherwise fall back to CPU to avoid slow GPU-to-GPU transfers.
+        """
+        if self.target_device is not None:
+            return self.target_device
+        devices = {self.cache[layer].device for layer in self.layers}
+        if len(devices) == 1:
+            return devices.pop()  # single GPU — backward compatible
+        return torch.device("cpu")  # multi GPU — skip GPU↔GPU transfers
 
     def _create_shared_hook(self) -> Callable:
         """Create a single shared hook function for all layers.
@@ -123,7 +140,18 @@ class HookedModel:
                     raise
                 model_inputs.pop("use_cache", None)
                 _ = self.model(**model_inputs)  # type: ignore
-            result = torch.stack([self.cache[layer] for layer in self.layers], dim=0)
+            # Normalize devices — with device_map="auto" layers may live on
+            # different GPUs.  Lazily resolve the target once so we avoid
+            # slow GPU↔GPU transfers (consolidate on CPU when multi-GPU).
+            if self._resolved_device is None:
+                self._resolved_device = self._resolve_target_device()
+            dev = self._resolved_device
+            is_cpu = dev.type == "cpu"
+            moved = [
+                self.cache[layer].to(dev, non_blocking=not is_cpu)
+                for layer in self.layers
+            ]
+            result = torch.stack(moved, dim=0)
             # Clear cache to free GPU memory immediately
             self.cache.clear()
             return result

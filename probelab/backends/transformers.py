@@ -83,10 +83,11 @@ def _extract_batch(
         for k, v in batch.items()
     }
     result = hooked.get_activations(batch_gpu)
+    dev = result.device
     return (
         result,
-        batch_gpu["attention_mask"].bool(),
-        batch_gpu["detection_mask"].bool(),
+        batch_gpu["attention_mask"].to(dev).bool(),
+        batch_gpu["detection_mask"].to(dev).bool(),
     )
 
 
@@ -110,6 +111,10 @@ class TransformersBackend:
         if isinstance(hook_point, str):
             hook_point = HookPoint(hook_point)
 
+        target_device = kwargs.get(
+            "transformers_target_device", kwargs.get("target_device")
+        )
+
         batch_token_budget = kwargs.get(
             "transformers_batch_token_budget",
             kwargs.get("batch_token_budget"),
@@ -125,6 +130,7 @@ class TransformersBackend:
             layers,
             detach_activations=True,
             hook_point=hook_point,
+            target_device=target_device,
         ) as hooked:
             for batch, idx in _iter_batches(
                 tokens,
