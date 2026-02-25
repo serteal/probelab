@@ -53,8 +53,8 @@ test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 train_acts = pl.collect_activations(model, train_tokens, layers=[LAYER])
 test_acts = pl.collect_activations(model, test_tokens, layers=[LAYER])
 
-train_prepared = train_acts.mean_pool()
-test_prepared = test_acts.mean_pool()
+train_prepared = train_acts.mean("s")
+test_prepared = test_acts.mean("s")
 
 probe = pl.probes.Logistic().fit(train_prepared, train_ds.labels)
 
@@ -176,7 +176,7 @@ peft_model.eval()
 
 # Collect new activations from fine-tuned model (single layer, no LAYER axis)
 test_acts_new = pl.collect_activations(peft_model, test_tokens, layers=[LAYER])
-test_prepared_new = test_acts_new.mean_pool()
+test_prepared_new = test_acts_new.mean("s")
 
 # Evaluate with same probe
 probs_new = probe.predict(test_prepared_new)

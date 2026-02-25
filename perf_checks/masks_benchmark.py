@@ -55,7 +55,7 @@ def benchmark_probe_training_with_masks(
             )
 
             # Direct API: select layer, pool, train probe
-            prepared = acts.select(layer=layer).pool("sequence", "mean")
+            prepared = acts.select("l", layer).mean("s")
             probe = pl.probes.Logistic().fit(prepared, dataset.labels)
             return probe
 
@@ -88,8 +88,8 @@ def benchmark_probe_training_with_masks(
         )
 
         # Train multiple probe types
-        prepared_pooled = acts.select(layer=layer).pool("sequence", "mean")
-        prepared_tokens = acts.select(layer=layer)
+        prepared_pooled = acts.select("l", layer).mean("s")
+        prepared_tokens = acts.select("l", layer)
 
         probes = {
             "logistic": pl.probes.Logistic().fit(prepared_pooled, dataset.labels),

@@ -44,8 +44,8 @@ train_acts = pl.collect_activations(model, train_tokens, layers=[LAYER])
 test_acts = pl.collect_activations(model, test_tokens, layers=[LAYER])
 
 # Pool for probes that don't need sequence dimension
-train_pooled = train_acts.mean_pool()
-test_pooled = test_acts.mean_pool()
+train_pooled = train_acts.mean("s")
+test_pooled = test_acts.mean("s")
 
 print("Activation shapes:")
 print(f"  With SEQ axis: {train_acts.shape}")

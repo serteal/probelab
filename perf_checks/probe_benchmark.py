@@ -155,8 +155,8 @@ def benchmark_probe_training(
     )
 
     # Prepare pooled activations
-    pre_collected_pooled = pre_collected.select(layer=layer).pool("sequence", "mean")
-    pre_collected_tokens = pre_collected.select(layer=layer)
+    pre_collected_pooled = pre_collected.select("l", layer).mean("s")
+    pre_collected_tokens = pre_collected.select("l", layer)
 
     # Benchmark probe training ONLY with pre-collected pooled activations
     def train_probe_only_pooled():
@@ -213,7 +213,7 @@ def benchmark_probe_training(
             batch_size=batch_size,
             verbose=False,
         )
-        prepared = acts.select(layer=layer).pool("sequence", "mean")
+        prepared = acts.select("l", layer).mean("s")
         probe = pl.probes.Logistic().fit(prepared, dataset.labels)
         return probe
 
@@ -235,7 +235,7 @@ def benchmark_probe_training(
             batch_size=batch_size,
             verbose=False,
         )
-        prepared = acts.select(layer=layer)  # Keep tokens
+        prepared = acts.select("l", layer)  # Keep tokens
         probe = pl.probes.Logistic().fit(prepared, dataset.labels)
         return probe
 
@@ -257,7 +257,7 @@ def benchmark_probe_training(
             batch_size=batch_size,
             verbose=False,
         )
-        prepared = acts.select(layer=layer).pool("sequence", "mean")
+        prepared = acts.select("l", layer).mean("s")
         probe = pl.probes.MLP().fit(prepared, dataset.labels)
         return probe
 
@@ -279,7 +279,7 @@ def benchmark_probe_training(
             batch_size=batch_size,
             verbose=False,
         )
-        prepared = acts.select(layer=layer)  # Keep tokens for attention
+        prepared = acts.select("l", layer)  # Keep tokens for attention
         probe = pl.probes.Attention().fit(prepared, dataset.labels)
         return probe
 
@@ -302,7 +302,7 @@ def benchmark_probe_training(
             batch_size=batch_size,
             verbose=False,
         )
-        prepared = acts.select(layer=layer).pool("sequence", "mean")
+        prepared = acts.select("l", layer).mean("s")
 
         probes = {}
         for i in range(10):

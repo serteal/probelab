@@ -67,8 +67,8 @@ train_acts = pl.collect_activations(model, train_tokens, layers=[LAYER])
 test_acts = pl.collect_activations(model, test_tokens, layers=[LAYER])
 
 # Prepare
-train_prepared = train_acts.mean_pool()
-test_prepared = test_acts.mean_pool()
+train_prepared = train_acts.mean("s")
+test_prepared = test_acts.mean("s")
 
 # Train probe
 probe = pl.probes.Logistic().fit(train_prepared, train_ds.labels)
@@ -93,7 +93,7 @@ for name, ds in datasets_to_eval:
     test_sample = ds.sample(30, stratified=True, seed=123)
     tokens = pl.tokenize_dataset(test_sample, tokenizer, mask=mask)
     acts = pl.collect_activations(model, tokens, layers=[LAYER])
-    prepared = acts.mean_pool()
+    prepared = acts.mean("s")
     probs = probe.predict(prepared)
     auroc = pl.metrics.auroc(test_sample.labels, probs)
     print(f"  {name}: AUROC = {auroc:.4f}")

@@ -34,7 +34,7 @@ tokens = pl.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
 acts = pl.collect_activations(model, tokens, layers=[16])
 
 # Train probe (auto-detects device from input)
-probe = pl.probes.Logistic().fit(acts.mean_pool(), labels)
+probe = pl.probes.Logistic().fit(acts.mean("s"), labels)
 
 # Evaluate - predict() returns tensor directly
 probs = probe.predict(test_acts)  # [batch]
@@ -143,7 +143,7 @@ tokens = pl.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
 acts = pl.collect_activations(model, tokens, layers=[16])
 
 # 3. Pool sequence dimension
-prepared = acts.mean_pool()
+prepared = acts.mean("s")
 
 # 4. Train probe and predict (chained)
 probs = pl.probes.Logistic().fit(prepared, labels).predict(test_prepared)
@@ -174,12 +174,22 @@ len(tokens)             # Batch size
 # - Single layer (layers=[16]): returns [batch, seq, hidden] - no LAYER axis
 # - Multiple layers (layers=[8, 16, 20]): returns [batch, layer, seq, hidden]
 
-# Methods
-acts.select(layer=16)           # Select single layer from multi-layer, removes LAYER axis
-acts.select(layers=[8, 16])     # Select multiple layers, keeps LAYER axis
-acts.mean_pool()                # Pool sequence dimension by mean
-acts.last_pool()                # Pool sequence dimension by last token
+# Methods — tinygrad-style dim-passing API
+acts.mean("s")                  # Mean over sequence dimension
+acts.max("s")                   # Max over sequence dimension
+acts.last()                     # Last token per sample (sugar for select("s", -1))
+acts.select("l", 16)            # Select single layer, removes LAYER axis
+acts.select("l", [8, 16])       # Select multiple layers, keeps LAYER axis
+acts.select("s", 3)             # Select nth token per sample, removes SEQ axis
+acts.mean("l")                  # Mean over layer dimension
+acts.max("l")                   # Max over layer dimension
+acts.flatten()                  # Concat layers into hidden dim, removes LAYER axis
+acts.ema(alpha=0.5)             # EMA + max over sequence
+acts.rolling(window=10)         # Rolling mean + max over sequence
 acts.to("cuda")                 # Move to device
+
+# Concatenation
+Activations.cat([acts1, acts2])  # Concatenate along batch dimension
 
 # Properties
 acts.shape                      # Tensor shape
@@ -230,8 +240,8 @@ train_acts = pl.collect_activations(model, train_tokens, layers=[16])
 test_acts = pl.collect_activations(model, test_tokens, layers=[16])
 
 # Pool and train
-train_prepared = train_acts.mean_pool()
-test_prepared = test_acts.mean_pool()
+train_prepared = train_acts.mean("s")
+test_prepared = test_acts.mean("s")
 probe = pl.probes.Logistic().fit(train_prepared, train_ds.labels)
 
 # Evaluate
@@ -248,7 +258,7 @@ acts = pl.collect_activations(model, tokens, layers=[8, 12, 16, 20])
 # Train probe on each layer
 results = {}
 for layer in [8, 12, 16, 20]:
-    prepared = acts.select(layer=layer).mean_pool()
+    prepared = acts.select("l", layer).mean("s")
     probe = pl.probes.Logistic().fit(prepared, labels)
     probs = probe.predict(test_prepared)
     results[layer] = pl.metrics.auroc(test_labels, probs)
@@ -274,10 +284,20 @@ mask = pl.masks.assistant() & pl.masks.nth_message(-1)
 
 tokens = pl.tokenize_dataset(dataset, tokenizer, mask=mask)
 acts = pl.collect_activations(model, tokens, layers=[16])
-prepared = acts.mean_pool()
+prepared = acts.mean("s")
 ```
 
-**5. Streaming for Large Datasets**
+**5. Combining Pre-Collected Activations**
+```python
+# Concatenate activations from separate collection runs
+acts_a = pl.collect_activations(model, tokens_a, layers=[16])
+acts_b = pl.collect_activations(model, tokens_b, layers=[16])
+combined = Activations.cat([acts_a, acts_b])
+prepared = combined.mean("s")
+probe = pl.probes.Logistic().fit(prepared, labels_a + labels_b)
+```
+
+**6. Streaming for Large Datasets**
 ```python
 # Stream activations to avoid OOM
 tokens = pl.tokenize_dataset(large_dataset, tokenizer, mask=pl.masks.all())
@@ -287,7 +307,7 @@ for acts_batch, indices, seq_len in pl.processing.stream_activations(model, toke
     # ... accumulate results
 ```
 
-**6. Differentiable Probe for Fine-tuning**
+**7. Differentiable Probe for Fine-tuning**
 ```python
 # Use probe(x) for gradient-based training
 hidden_states = model(..., output_hidden_states=True).hidden_states[layer]

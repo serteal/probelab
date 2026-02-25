@@ -29,7 +29,7 @@ class TestCheckActivations:
             dims="blsh",
             layers=(0,),
         )
-        return acts_4d.select_layers(0)  # Remove LAYER axis
+        return acts_4d.select("l", 0)  # Remove LAYER axis
 
     @pytest.fixture
     def activations_no_seq(self):
@@ -39,7 +39,7 @@ class TestCheckActivations:
             detection_mask=torch.ones(4, 10),
             dims="bsh",
         )
-        return acts.mean_pool()
+        return acts.mean("s")
 
     def test_valid_activations_passes(self, activations_4d):
         """Basic validation passes for valid activations."""
@@ -73,7 +73,7 @@ class TestCheckActivations:
 
     def test_forbid_layer_error_message_includes_hint(self, activations_4d):
         """Error message includes helpful hint about SelectLayer."""
-        with pytest.raises(ValueError, match="select_layers\\(layer_idx\\)"):
+        with pytest.raises(ValueError, match='select\\("l", layer_idx\\)'):
             check_activations(activations_4d, forbid_layer=True)
 
     def test_require_seq_passes(self, activations_3d):

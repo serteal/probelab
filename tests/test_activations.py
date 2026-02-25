@@ -135,7 +135,7 @@ class TestActivationsSelect(unittest.TestCase):
 
     def test_select_single_layer(self):
         a = self._acts([0, 5, 10, 15])
-        s = a.select_layers(5)
+        s = a.select("l", 5)
         self.assertFalse("l" in s.dims)
         self.assertIsNone(s.layers)
         # data should be [T=32, hidden=16] (flat, no layer dim)
@@ -143,21 +143,21 @@ class TestActivationsSelect(unittest.TestCase):
 
     def test_select_multiple_layers(self):
         a = self._acts([0, 5, 10, 15])
-        s = a.select_layers([5, 15])
+        s = a.select("l", [5, 15])
         self.assertEqual(s.n_layers, 2)
         self.assertEqual(s.layers, (5, 15))
         self.assertTrue("l" in s.dims)
 
     def test_select_preserves_offsets(self):
         a = self._acts([0, 5])
-        s = a.select_layers(5)
+        s = a.select("l", 5)
         self.assertTrue(torch.equal(s.offsets, a.offsets))
         self.assertTrue(torch.equal(s.det, a.det))
 
     def test_select_invalid_layer_raises(self):
         a = self._acts([0, 5, 10])
         with self.assertRaises(ValueError):
-            a.select_layers(7)
+            a.select("l", 7)
 
 
 class TestActivationsPool(unittest.TestCase):
@@ -169,13 +169,13 @@ class TestActivationsPool(unittest.TestCase):
 
     def test_mean_pool_removes_seq(self):
         a = self._acts()
-        p = a.mean_pool()
+        p = a.mean("s")
         self.assertFalse("s" in p.dims)
         self.assertEqual(p.shape, (2, 4))
 
     def test_last_pool_removes_seq(self):
         a = self._acts()
-        p = a.last_pool()
+        p = a.last()
         self.assertFalse("s" in p.dims)
         self.assertEqual(p.shape, (2, 4))
 
@@ -183,7 +183,7 @@ class TestActivationsPool(unittest.TestCase):
         det = torch.tensor([[1, 1, 0, 0, 0, 0, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]]).float()
         t = torch.arange(64).reshape(2, 8, 4).float()
         a = Activations.from_padded(t, det, dims="bsh")
-        p = a.mean_pool()
+        p = a.mean("s")
         # First sample: mean of tokens 0,1
         expected_0 = t[0, :2].mean(dim=0)
         self.assertTrue(torch.allclose(p.data[0], expected_0))
@@ -195,7 +195,7 @@ class TestActivationsPool(unittest.TestCase):
         det = torch.tensor([[1, 1, 1, 0, 0, 0, 0, 0], [1, 1, 1, 1, 1, 0, 0, 0]]).float()
         t = torch.arange(64).reshape(2, 8, 4).float()
         a = Activations.from_padded(t, det, dims="bsh")
-        p = a.last_pool()
+        p = a.last()
         # First sample: last valid at index 2
         self.assertTrue(torch.allclose(p.data[0], t[0, 2]))
         # Second sample: last valid at index 4
@@ -204,14 +204,14 @@ class TestActivationsPool(unittest.TestCase):
     def test_mean_pool_multi_layer(self):
         t = torch.randn(2, 3, 8, 4)  # [batch, layer, seq, hidden]
         a = _make_flat_blsh(t, torch.ones(2, 8), layers=(0, 5, 10))
-        p = a.mean_pool()
+        p = a.mean("s")
         self.assertEqual(p.shape, (2, 3, 4))
         self.assertTrue("l" in p.dims)
 
     def test_mean_pool_empty_mask_returns_zeros(self):
         det = torch.zeros(2, 8)
         a = self._acts(det_mask=det)
-        p = a.mean_pool()
+        p = a.mean("s")
         self.assertTrue(torch.allclose(p.data, torch.zeros(2, 4)))
 
 
@@ -271,14 +271,14 @@ class TestActivationsEdgeCases(unittest.TestCase):
         t = torch.randn(1, 8, 16)
         a = Activations.from_padded(t, torch.ones(1, 8), dims="bsh")
         self.assertEqual(a.batch_size, 1)
-        p = a.mean_pool()
+        p = a.mean("s")
         self.assertEqual(p.shape, (1, 16))
 
     def test_single_token(self):
         t = torch.randn(2, 1, 16)
         a = Activations.from_padded(t, torch.ones(2, 1), dims="bsh")
         self.assertEqual(a.seq_len, 1)
-        p = a.mean_pool()
+        p = a.mean("s")
         self.assertEqual(p.shape, (2, 16))
 
     def test_partial_detection_mask(self):
@@ -289,7 +289,7 @@ class TestActivationsEdgeCases(unittest.TestCase):
             [1, 1, 0, 0, 0, 0, 0, 0],
         ]).float()
         a = Activations.from_padded(t, det, dims="bsh")
-        p = a.mean_pool()
+        p = a.mean("s")
         self.assertEqual(p.shape, (3, 4))
         # Second sample should be zeros (no valid tokens)
         self.assertTrue(torch.allclose(p.data[1], torch.zeros(4)))
@@ -348,19 +348,19 @@ class TestActivationsDtypes(unittest.TestCase):
     def test_mean_pool_preserves_dtype_float16(self):
         t = torch.randn(1, 4, 8, dtype=torch.float16)
         a = self._make_acts(t)
-        p = a.mean_pool()
+        p = a.mean("s")
         self.assertEqual(p.data.dtype, torch.float16)
 
     def test_mean_pool_preserves_dtype_float64(self):
         t = torch.randn(1, 4, 8, dtype=torch.float64)
         a = self._make_acts(t)
-        p = a.mean_pool()
+        p = a.mean("s")
         self.assertEqual(p.data.dtype, torch.float64)
 
     def test_select_preserves_dtype(self):
         t = torch.randn(2, 2, 4, 8, dtype=torch.float16)
         a = _make_flat_blsh(t, torch.ones(2, 4), layers=(0, 1))
-        s = a.select_layers(0)
+        s = a.select("l", 0)
         self.assertEqual(s.data.dtype, torch.float16)
 
     def test_extract_tokens_preserves_dtype(self):
@@ -476,6 +476,360 @@ class TestTotalTokens(unittest.TestCase):
     def test_total_tokens_none_for_bh(self):
         a = Activations(data=torch.randn(4, 8), dims="bh")
         self.assertIsNone(a.total_tokens)
+
+
+class TestMeanLayer(unittest.TestCase):
+    """Tests for mean("l") — mean over layer dimension."""
+
+    def test_mean_layer_blh(self):
+        t = torch.randn(4, 3, 16)
+        a = Activations(data=t, dims="blh", layers=(0, 5, 10))
+        m = a.mean("l")
+        self.assertEqual(m.dims, "bh")
+        self.assertEqual(m.shape, (4, 16))
+        self.assertTrue(torch.allclose(m.data, t.mean(dim=1)))
+
+    def test_mean_layer_blsh(self):
+        t = torch.randn(2, 3, 8, 16)
+        a = _make_flat_blsh(t, torch.ones(2, 8), layers=(0, 5, 10))
+        # data: [T=16, 3, 16]
+        m = a.mean("l")
+        self.assertEqual(m.dims, "bsh")
+        self.assertIsNone(m.layers)
+        self.assertEqual(m.data.shape[1], 16)  # hidden
+
+    def test_mean_layer_no_layer_raises(self):
+        a = Activations(data=torch.randn(4, 16), dims="bh")
+        with self.assertRaises(ValueError):
+            a.mean("l")
+
+
+class TestMaxLayer(unittest.TestCase):
+    """Tests for max("l") — max over layer dimension."""
+
+    def test_max_layer_blh(self):
+        t = torch.randn(4, 3, 16)
+        a = Activations(data=t, dims="blh", layers=(0, 5, 10))
+        m = a.max("l")
+        self.assertEqual(m.dims, "bh")
+        self.assertEqual(m.shape, (4, 16))
+        self.assertTrue(torch.allclose(m.data, t.max(dim=1).values))
+
+    def test_max_layer_blsh(self):
+        t = torch.randn(2, 3, 8, 16)
+        a = _make_flat_blsh(t, torch.ones(2, 8), layers=(0, 5, 10))
+        m = a.max("l")
+        self.assertEqual(m.dims, "bsh")
+        self.assertIsNone(m.layers)
+
+    def test_max_layer_no_layer_raises(self):
+        a = Activations(data=torch.randn(4, 16), dims="bh")
+        with self.assertRaises(ValueError):
+            a.max("l")
+
+
+class TestSelectSeq(unittest.TestCase):
+    """Tests for select("s", idx) — token selection from flat+offsets."""
+
+    def test_select_first_token(self):
+        t = torch.arange(48).reshape(2, 6, 4).float()
+        a = Activations.from_padded(t, torch.ones(2, 6), dims="bsh")
+        s = a.select("s", 0)
+        self.assertEqual(s.dims, "bh")
+        self.assertEqual(s.shape, (2, 4))
+        self.assertTrue(torch.equal(s.data[0], t[0, 0]))
+        self.assertTrue(torch.equal(s.data[1], t[1, 0]))
+
+    def test_select_last_token(self):
+        det = torch.tensor([[1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 0]]).float()
+        t = torch.arange(48).reshape(2, 6, 4).float()
+        a = Activations.from_padded(t, det, dims="bsh")
+        s = a.select("s", -1)
+        self.assertEqual(s.dims, "bh")
+        # Sample 0: 3 tokens → last is t[0,2], sample 1: 5 tokens → last is t[1,4]
+        self.assertTrue(torch.allclose(s.data[0], t[0, 2]))
+        self.assertTrue(torch.allclose(s.data[1], t[1, 4]))
+
+    def test_select_second_token(self):
+        t = torch.arange(24).reshape(2, 3, 4).float()
+        a = Activations.from_padded(t, torch.ones(2, 3), dims="bsh")
+        s = a.select("s", 1)
+        self.assertTrue(torch.equal(s.data[0], t[0, 1]))
+        self.assertTrue(torch.equal(s.data[1], t[1, 1]))
+
+    def test_select_negative_index(self):
+        t = torch.arange(32).reshape(2, 4, 4).float()
+        a = Activations.from_padded(t, torch.ones(2, 4), dims="bsh")
+        s = a.select("s", -2)
+        # -2 from 4 tokens = index 2
+        self.assertTrue(torch.equal(s.data[0], t[0, 2]))
+        self.assertTrue(torch.equal(s.data[1], t[1, 2]))
+
+    def test_select_seq_no_seq_raises(self):
+        a = Activations(data=torch.randn(4, 16), dims="bh")
+        with self.assertRaises(ValueError):
+            a.select("s", 0)
+
+    def test_select_seq_list_raises(self):
+        t = torch.randn(2, 4, 8)
+        a = Activations.from_padded(t, torch.ones(2, 4), dims="bsh")
+        with self.assertRaises(ValueError):
+            a.select("s", [0, 1])
+
+    def test_last_sugar(self):
+        """last() is sugar for select("s", -1)."""
+        t = torch.randn(2, 4, 8)
+        a = Activations.from_padded(t, torch.ones(2, 4), dims="bsh")
+        s1 = a.last()
+        s2 = a.select("s", -1)
+        self.assertTrue(torch.allclose(s1.data, s2.data))
+
+
+class TestFlatten(unittest.TestCase):
+    """Tests for flatten() — concat layers into hidden dim."""
+
+    def test_flatten_blh(self):
+        t = torch.randn(4, 3, 16)
+        a = Activations(data=t, dims="blh", layers=(0, 5, 10))
+        f = a.flatten()
+        self.assertEqual(f.dims, "bh")
+        self.assertEqual(f.shape, (4, 48))  # 3 * 16
+
+    def test_flatten_blsh(self):
+        t = torch.randn(2, 3, 8, 16)
+        a = _make_flat_blsh(t, torch.ones(2, 8), layers=(0, 5, 10))
+        # data: [T=16, 3, 16]
+        f = a.flatten()
+        self.assertEqual(f.dims, "bsh")
+        self.assertEqual(f.data.shape[1], 48)  # 3 * 16
+        self.assertIsNotNone(f.offsets)
+
+    def test_flatten_no_layer_raises(self):
+        a = Activations(data=torch.randn(4, 16), dims="bh")
+        with self.assertRaises(ValueError):
+            a.flatten()
+
+
+class TestEma(unittest.TestCase):
+    """Tests for ema() — EMA + max over sequence."""
+
+    def test_ema_removes_seq(self):
+        t = torch.randn(2, 8, 4)
+        a = Activations.from_padded(t, torch.ones(2, 8), dims="bsh")
+        e = a.ema(alpha=0.5)
+        self.assertEqual(e.dims, "bh")
+        self.assertEqual(e.shape, (2, 4))
+
+    def test_ema_no_seq_raises(self):
+        a = Activations(data=torch.randn(4, 16), dims="bh")
+        with self.assertRaises(ValueError):
+            a.ema()
+
+
+class TestRolling(unittest.TestCase):
+    """Tests for rolling() — rolling mean + max over sequence."""
+
+    def test_rolling_removes_seq(self):
+        t = torch.randn(2, 8, 4)
+        a = Activations.from_padded(t, torch.ones(2, 8), dims="bsh")
+        r = a.rolling(window=3)
+        self.assertEqual(r.dims, "bh")
+        self.assertEqual(r.shape, (2, 4))
+
+    def test_rolling_no_seq_raises(self):
+        a = Activations(data=torch.randn(4, 16), dims="bh")
+        with self.assertRaises(ValueError):
+            a.rolling()
+
+
+class TestDimValidation(unittest.TestCase):
+    """Tests for invalid dim arguments."""
+
+    def test_mean_invalid_dim(self):
+        a = Activations(data=torch.randn(4, 16), dims="bh")
+        with self.assertRaises(ValueError):
+            a.mean("x")
+
+    def test_max_invalid_dim(self):
+        a = Activations(data=torch.randn(4, 16), dims="bh")
+        with self.assertRaises(ValueError):
+            a.max("x")
+
+    def test_select_invalid_dim(self):
+        a = Activations(data=torch.randn(4, 16), dims="bh")
+        with self.assertRaises(ValueError):
+            a.select("x", 0)
+
+
+class TestCat(unittest.TestCase):
+    """Tests for Activations.cat() — batch concatenation."""
+
+    # --- bh ---
+
+    def test_cat_bh_basic(self):
+        a = Activations(data=torch.randn(3, 8), dims="bh")
+        b = Activations(data=torch.randn(2, 8), dims="bh")
+        c = Activations.cat([a, b])
+        self.assertEqual(c.dims, "bh")
+        self.assertEqual(c.batch_size, 5)
+        self.assertEqual(c.hidden_size, 8)
+
+    def test_cat_bh_three_items(self):
+        items = [Activations(data=torch.randn(i + 1, 4), dims="bh") for i in range(3)]
+        c = Activations.cat(items)
+        self.assertEqual(c.batch_size, 6)  # 1 + 2 + 3
+
+    def test_cat_bh_data_order(self):
+        a = Activations(data=torch.ones(2, 4), dims="bh")
+        b = Activations(data=torch.zeros(3, 4), dims="bh")
+        c = Activations.cat([a, b])
+        self.assertTrue(torch.equal(c.data[:2], torch.ones(2, 4)))
+        self.assertTrue(torch.equal(c.data[2:], torch.zeros(3, 4)))
+
+    # --- blh ---
+
+    def test_cat_blh_basic(self):
+        a = Activations(data=torch.randn(3, 2, 8), dims="blh", layers=(5, 10))
+        b = Activations(data=torch.randn(4, 2, 8), dims="blh", layers=(5, 10))
+        c = Activations.cat([a, b])
+        self.assertEqual(c.dims, "blh")
+        self.assertEqual(c.batch_size, 7)
+        self.assertEqual(c.n_layers, 2)
+        self.assertEqual(c.layers, (5, 10))
+
+    def test_cat_blh_layers_mismatch_raises(self):
+        a = Activations(data=torch.randn(2, 2, 8), dims="blh", layers=(5, 10))
+        b = Activations(data=torch.randn(2, 2, 8), dims="blh", layers=(5, 15))
+        with self.assertRaises(ValueError):
+            Activations.cat([a, b])
+
+    # --- bsh ---
+
+    def test_cat_bsh_basic(self):
+        t1 = torch.randn(2, 4, 8)
+        a = Activations.from_padded(t1, torch.ones(2, 4), dims="bsh")
+        t2 = torch.randn(3, 6, 8)
+        b = Activations.from_padded(t2, torch.ones(3, 6), dims="bsh")
+        c = Activations.cat([a, b])
+        self.assertEqual(c.dims, "bsh")
+        self.assertEqual(c.batch_size, 5)
+        self.assertEqual(c.total_tokens, 2 * 4 + 3 * 6)  # 8 + 18 = 26
+        self.assertEqual(c.hidden_size, 8)
+
+    def test_cat_bsh_offsets_correct(self):
+        """Numerically verify merged offsets."""
+        data_a = torch.randn(7, 4)
+        off_a = torch.tensor([0, 3, 7], dtype=torch.int64)
+        det_a = torch.ones(7, dtype=torch.bool)
+        a = Activations(data=data_a, dims="bsh", offsets=off_a, det=det_a)
+
+        data_b = torch.randn(8, 4)
+        off_b = torch.tensor([0, 5, 8], dtype=torch.int64)
+        det_b = torch.ones(8, dtype=torch.bool)
+        b = Activations(data=data_b, dims="bsh", offsets=off_b, det=det_b)
+
+        c = Activations.cat([a, b])
+        expected_offsets = torch.tensor([0, 3, 7, 12, 15], dtype=torch.int64)
+        self.assertTrue(torch.equal(c.offsets, expected_offsets))
+
+    def test_cat_bsh_data_det_order(self):
+        """Data and det tensors are concatenated in order."""
+        data_a = torch.ones(5, 4)
+        off_a = torch.tensor([0, 2, 5], dtype=torch.int64)
+        det_a = torch.ones(5, dtype=torch.bool)
+        a = Activations(data=data_a, dims="bsh", offsets=off_a, det=det_a)
+
+        data_b = torch.zeros(3, 4)
+        off_b = torch.tensor([0, 3], dtype=torch.int64)
+        det_b = torch.zeros(3, dtype=torch.bool)
+        b = Activations(data=data_b, dims="bsh", offsets=off_b, det=det_b)
+
+        c = Activations.cat([a, b])
+        self.assertTrue(torch.equal(c.data[:5], torch.ones(5, 4)))
+        self.assertTrue(torch.equal(c.data[5:], torch.zeros(3, 4)))
+        self.assertTrue(c.det[:5].all())
+        self.assertFalse(c.det[5:].any())
+
+    def test_cat_bsh_variable_lengths(self):
+        """Samples with different sequence lengths."""
+        # 3 tokens + 1 token
+        data_a = torch.randn(4, 8)
+        off_a = torch.tensor([0, 3, 4], dtype=torch.int64)
+        det_a = torch.ones(4, dtype=torch.bool)
+        a = Activations(data=data_a, dims="bsh", offsets=off_a, det=det_a)
+
+        # 5 tokens
+        data_b = torch.randn(5, 8)
+        off_b = torch.tensor([0, 5], dtype=torch.int64)
+        det_b = torch.ones(5, dtype=torch.bool)
+        b = Activations(data=data_b, dims="bsh", offsets=off_b, det=det_b)
+
+        c = Activations.cat([a, b])
+        self.assertEqual(c.batch_size, 3)
+        self.assertEqual(c.total_tokens, 9)
+        expected_offsets = torch.tensor([0, 3, 4, 9], dtype=torch.int64)
+        self.assertTrue(torch.equal(c.offsets, expected_offsets))
+
+    # --- blsh ---
+
+    def test_cat_blsh_basic(self):
+        t1 = torch.randn(2, 3, 4, 8)
+        a = _make_flat_blsh(t1, torch.ones(2, 4), layers=(0, 5, 10))
+        t2 = torch.randn(3, 3, 6, 8)
+        b = _make_flat_blsh(t2, torch.ones(3, 6), layers=(0, 5, 10))
+        c = Activations.cat([a, b])
+        self.assertEqual(c.dims, "blsh")
+        self.assertEqual(c.batch_size, 5)
+        self.assertEqual(c.n_layers, 3)
+        self.assertEqual(c.layers, (0, 5, 10))
+        self.assertEqual(c.total_tokens, 2 * 4 + 3 * 6)
+
+    # --- Validation ---
+
+    def test_cat_empty_raises(self):
+        with self.assertRaises(ValueError):
+            Activations.cat([])
+
+    def test_cat_single_returns_same(self):
+        a = Activations(data=torch.randn(3, 8), dims="bh")
+        c = Activations.cat([a])
+        self.assertIs(c, a)
+
+    def test_cat_dims_mismatch_raises(self):
+        a = Activations(data=torch.randn(3, 8), dims="bh")
+        b = Activations(data=torch.randn(3, 2, 8), dims="blh", layers=(0, 1))
+        with self.assertRaises(ValueError):
+            Activations.cat([a, b])
+
+    def test_cat_hidden_size_mismatch_raises(self):
+        a = Activations(data=torch.randn(3, 8), dims="bh")
+        b = Activations(data=torch.randn(3, 16), dims="bh")
+        with self.assertRaises(ValueError):
+            Activations.cat([a, b])
+
+    # --- Dtype ---
+
+    def test_cat_preserves_float16(self):
+        a = Activations(data=torch.randn(2, 8, dtype=torch.float16), dims="bh")
+        b = Activations(data=torch.randn(3, 8, dtype=torch.float16), dims="bh")
+        c = Activations.cat([a, b])
+        self.assertEqual(c.data.dtype, torch.float16)
+
+    # --- Integration ---
+
+    def test_cat_then_mean_s(self):
+        """cat followed by mean('s') produces correct result."""
+        t1 = torch.ones(2, 4, 8)
+        a = Activations.from_padded(t1, torch.ones(2, 4), dims="bsh")
+        t2 = torch.ones(3, 6, 8) * 2
+        b = Activations.from_padded(t2, torch.ones(3, 6), dims="bsh")
+        c = Activations.cat([a, b])
+        pooled = c.mean("s")
+        self.assertEqual(pooled.dims, "bh")
+        self.assertEqual(pooled.batch_size, 5)
+        # First 2 samples had value 1.0, next 3 had value 2.0
+        self.assertTrue(torch.allclose(pooled.data[:2], torch.ones(2, 8)))
+        self.assertTrue(torch.allclose(pooled.data[2:], torch.ones(3, 8) * 2))
 
 
 class TestValidDims(unittest.TestCase):

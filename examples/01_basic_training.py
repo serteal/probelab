@@ -45,8 +45,8 @@ train_acts = pl.collect_activations(model, train_tokens, layers=[LAYER], batch_s
 test_acts = pl.collect_activations(model, test_tokens, layers=[LAYER], batch_size=8)
 
 # Pool sequence dimension (single layer already has no LAYER axis)
-train_prepared = train_acts.mean_pool()
-test_prepared = test_acts.mean_pool()
+train_prepared = train_acts.mean("s")
+test_prepared = test_acts.mean("s")
 
 print(f"Prepared shapes: train={train_prepared.shape}, test={test_prepared.shape}")
 
