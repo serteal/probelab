@@ -1,6 +1,7 @@
 """Cybersecurity and defensive security datasets."""
 
 import json
+import logging
 from typing import Any
 from urllib.request import urlopen
 
@@ -10,6 +11,8 @@ from datasets import load_dataset
 from ..types import Label, Message
 from .base import Dataset
 from .registry import Topic, _register_dataset
+
+logger = logging.getLogger(__name__)
 
 
 @_register_dataset("trendyol_cybersecurity", Topic.CYBERSECURITY, "Trendyol cybersecurity")
@@ -251,3 +254,37 @@ def hackaprompt() -> Dataset:
         metadata["correct"].append(correct)
 
     return Dataset(dialogues, labels, "hackaprompt", metadata).shuffle()
+
+
+@_register_dataset("cyberrisk_qa", Topic.CYBERSECURITY, "CyberRisk Q/A pairs")
+def cyberrisk_qa() -> Dataset:
+    """CyberRisk 14K+ offensive cybersecurity Q/A pairs (augmented, multilingual)."""
+    try:
+        hf_ds = load_dataset("serteal/cyberrisk-qa-pairs", split="train")
+    except Exception as e:
+        logger.debug("HF load failed for serteal/cyberrisk-qa-pairs: %s", e)
+        raise FileNotFoundError(
+            "cyberrisk-qa-pairs not found on HuggingFace (serteal/cyberrisk-qa-pairs)"
+        ) from e
+
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {
+        "topic": [], "subtopic": [], "question_type": [],
+        "augmentation": [], "language": [], "base_id": [],
+    }
+
+    for item in hf_ds:
+        question = item.get("question", "")
+        answer = item.get("answer", "")
+        if not question or not answer:
+            continue
+        dialogues.append([Message("user", question), Message("assistant", answer)])
+        labels.append(Label.POSITIVE)
+        metadata["topic"].append(item.get("topic", ""))
+        metadata["subtopic"].append(item.get("subtopic", ""))
+        metadata["question_type"].append(item.get("question_type", ""))
+        metadata["augmentation"].append(item.get("augmentation", ""))
+        metadata["language"].append(item.get("language", ""))
+        metadata["base_id"].append(item.get("base_id", -1))
+
+    return Dataset(dialogues, labels, "cyberrisk_qa", metadata).shuffle()
