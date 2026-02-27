@@ -253,6 +253,15 @@ def _insider_trading_upscale_from_rows(data: list[dict]) -> Dataset:
         if "doubling_down_label" in meta:
             transcript = transcript[:-2]
 
+        # Split last message at "Action: " (matches truth_spec reasoning trimming)
+        final = transcript[-1]
+        if final.role == "assistant" and "Action: " in final.content:
+            idx = final.content.rindex("Action: ")
+            transcript[-1] = Message("assistant", final.content[:idx])
+            transcript.append(Message("assistant", final.content[idx:]))
+        elif final.role == "assistant":
+            continue  # skip if trim token missing
+
         dialogues.append(transcript)
         labels.append(label_map[meta["report_label"]])
         for k, v in meta.items():
