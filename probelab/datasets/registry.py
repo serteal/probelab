@@ -82,6 +82,7 @@ def _init_registry() -> None:
         legal_finance,
         medical,
         mental_health,
+        multi_turn,
         multilingual,
         ood,
         reasoning,

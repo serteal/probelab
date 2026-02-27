@@ -1,5 +1,6 @@
 """Harmfulness detection datasets."""
 
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -9,7 +10,10 @@ from ..types import Label, Message
 from .base import Dataset
 from .registry import Topic, _register_dataset
 
+logger = logging.getLogger(__name__)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+PROJECT_ROOT = REPO_ROOT.parent  # scaling-probes/
 
 
 def _sanitize_prompt(prompt: str) -> str:
@@ -81,37 +85,48 @@ def xstest_response() -> Dataset:
     return Dataset(dialogues, labels, "xstest_response").shuffle()
 
 
-@_register_dataset("clearharm_llama3", Topic.HARMFULNESS, "ClearHarm Llama3")
-def clearharm_llama3(path: str | None = None) -> Dataset:
-    json_path = Path(path) if path else REPO_ROOT / "data" / "harmfulness" / "outputs_huihui-ai_Meta-Llama-3.json"
-    df = pd.read_json(json_path)
+def _load_clearharm(name: str, config: str, local_path: Path) -> Dataset:
+    """Load a clearharm dataset from HF, falling back to local JSON."""
+    try:
+        hf_ds = load_dataset("serteal/clearharm", config, split="train")
+        df = hf_ds.to_pandas()
+    except Exception as e:
+        logger.debug("HF load failed for serteal/clearharm/%s, trying local: %s", config, e)
+        if not local_path.exists():
+            raise FileNotFoundError(
+                f"ClearHarm not found on HuggingFace (serteal/clearharm/{config}) "
+                f"or locally ({local_path})"
+            ) from e
+        df = pd.read_json(local_path)
 
     dialogues = [[Message("user", str(row["prompt"])), Message("assistant", str(row["generated_text"]))] for _, row in df.iterrows()]
     labels = [Label.POSITIVE] * len(dialogues)
 
-    return Dataset(dialogues, labels, "clearharm_llama3").shuffle()
+    return Dataset(dialogues, labels, name).shuffle()
+
+
+@_register_dataset("clearharm_llama3", Topic.HARMFULNESS, "ClearHarm Llama3")
+def clearharm_llama3() -> Dataset:
+    return _load_clearharm(
+        "clearharm_llama3", "llama3",
+        PROJECT_ROOT / "data" / "harmfulness" / "rollouts" / "outputs_huihui-ai_Meta-Llama-3.json",
+    )
 
 
 @_register_dataset("clearharm_mistral", Topic.HARMFULNESS, "ClearHarm Mistral")
-def clearharm_mistral(path: str | None = None) -> Dataset:
-    json_path = Path(path) if path else REPO_ROOT / "data" / "harmfulness" / "outputs_huihui-ai_Mistral-Small-24B-Instruct-2501-abliterated_20250702_233538.json"
-    df = pd.read_json(json_path)
-
-    dialogues = [[Message("user", str(row["prompt"])), Message("assistant", str(row["generated_text"]))] for _, row in df.iterrows()]
-    labels = [Label.POSITIVE] * len(dialogues)
-
-    return Dataset(dialogues, labels, "clearharm_mistral").shuffle()
+def clearharm_mistral() -> Dataset:
+    return _load_clearharm(
+        "clearharm_mistral", "mistral",
+        PROJECT_ROOT / "data" / "harmfulness" / "rollouts" / "outputs_huihui-ai_Mistral-Small-24B-Instruct-2501-abliterated_20250702_233538.json",
+    )
 
 
 @_register_dataset("clearharm_qwen3", Topic.HARMFULNESS, "ClearHarm Qwen3")
-def clearharm_qwen3(path: str | None = None) -> Dataset:
-    json_path = Path(path) if path else REPO_ROOT / "data" / "harmfulness" / "outputs_huihui-ai_Huihui-Qwen3-14B-abliterated-v2_20250702_212758_cleaned.json"
-    df = pd.read_json(json_path)
-
-    dialogues = [[Message("user", str(row["prompt"])), Message("assistant", str(row["generated_text"]))] for _, row in df.iterrows()]
-    labels = [Label.POSITIVE] * len(dialogues)
-
-    return Dataset(dialogues, labels, "clearharm_qwen3").shuffle()
+def clearharm_qwen3() -> Dataset:
+    return _load_clearharm(
+        "clearharm_qwen3", "qwen3",
+        PROJECT_ROOT / "data" / "harmfulness" / "rollouts" / "outputs_huihui-ai_Huihui-Qwen3-14B-abliterated-v2_20250702_212758_cleaned.json",
+    )
 
 
 @_register_dataset("or_bench", Topic.HARMFULNESS, "OR-Bench over-refusal benchmark")
