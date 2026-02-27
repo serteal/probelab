@@ -1,6 +1,8 @@
 """Science and STEM domain datasets."""
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from datasets import load_dataset
@@ -161,49 +163,80 @@ def stem_qa() -> Dataset:
     return Dataset(dialogues, labels, "stem_qa", metadata).shuffle()
 
 
+def _parse_bioprobe_item(item: dict, task_type: str) -> tuple[str, str]:
+    """Extract (question, answer) from a BioProBench item."""
+    match task_type:
+        case "PQA":
+            q = item.get("question", "")
+            choices = item.get("choices", [])
+            if choices:
+                q += "\n\n" + "\n".join(
+                    f"{chr(65 + i)}. {c}" for i, c in enumerate(choices)
+                )
+            answer = str(item.get("answer", ""))
+        case "GEN":
+            q = item.get("input", "")
+            output = item.get("output", [])
+            answer = "\n".join(
+                f"{i + 1}. {s}" for i, s in enumerate(output)
+            ) if isinstance(output, list) else str(output)
+        case "ORD":
+            q = item.get("question", "")
+            steps = item.get("correct_steps", [])
+            answer = "\n".join(
+                f"{i + 1}. {s}" for i, s in enumerate(steps)
+            ) if isinstance(steps, list) else str(steps)
+        case "ERR":
+            q = f"Check this protocol step for errors:\n{item.get('corrupted_text', '')}"
+            answer = item.get("corrected_text", "")
+        case _:
+            q, answer = "", ""
+    return q, answer
+
+
 @_register_dataset("bioprobe_bench", Topic.SCIENCE, "BioProBench biomedical protocols")
-def bioprobe_bench(path: str) -> Dataset:
+def bioprobe_bench(path: str | None = None) -> Dataset:
     """BioProBench: 4K+ biomedical protocol understanding tasks.
 
+    Loads from HuggingFace (serteal/bioprobe-bench), falls back to local files.
+
     Args:
-        path: Directory containing {ERR,GEN,ORD,PQA}_test.json files.
+        path: Optional directory containing {ERR,GEN,ORD,PQA}_test.json files.
     """
-    base = Path(path)
     dialogues, labels = [], []
     metadata: dict[str, list[Any]] = {"task_type": [], "id": []}
 
+    # Try HuggingFace first
+    try:
+        hf_ds = load_dataset("serteal/bioprobe-bench", split="train")
+        for row in hf_ds:
+            item = json.loads(row["data"])
+            task_type = row["task_type"]
+            q, answer = _parse_bioprobe_item(item, task_type)
+            if not q:
+                continue
+            dialogues.append([Message("user", q), Message("assistant", str(answer))])
+            labels.append(Label.NEGATIVE)
+            metadata["task_type"].append(task_type)
+            metadata["id"].append(row.get("id", ""))
+        return Dataset(dialogues, labels, "bioprobe_bench", metadata).shuffle()
+    except Exception as e:
+        logger.debug("HF load failed for serteal/bioprobe-bench: %s", e)
+
+    # Fall back to local files
+    if path is None:
+        raise FileNotFoundError(
+            "BioProBench not found on HuggingFace (serteal/bioprobe-bench) "
+            "and no local path provided"
+        )
+    base = Path(path)
     for task_type in ["PQA", "GEN", "ORD", "ERR"]:
         json_path = base / f"{task_type}_test.json"
         if not json_path.exists():
             continue
         data = json.loads(json_path.read_text())
-
         for item in data:
-            match task_type:
-                case "PQA":
-                    q = item.get("question", "")
-                    choices = item.get("choices", [])
-                    if choices:
-                        q += "\n\n" + "\n".join(
-                            f"{chr(65 + i)}. {c}" for i, c in enumerate(choices)
-                        )
-                    answer = str(item.get("answer", ""))
-                case "GEN":
-                    q = item.get("input", "")
-                    output = item.get("output", [])
-                    answer = "\n".join(
-                        f"{i + 1}. {s}" for i, s in enumerate(output)
-                    ) if isinstance(output, list) else str(output)
-                case "ORD":
-                    q = item.get("question", "")
-                    steps = item.get("correct_steps", [])
-                    answer = "\n".join(
-                        f"{i + 1}. {s}" for i, s in enumerate(steps)
-                    ) if isinstance(steps, list) else str(steps)
-                case "ERR":
-                    q = f"Check this protocol step for errors:\n{item.get('corrupted_text', '')}"
-                    answer = item.get("corrected_text", "")
-
+            q, answer = _parse_bioprobe_item(item, task_type)
             if not q:
                 continue
             dialogues.append([Message("user", q), Message("assistant", str(answer))])
