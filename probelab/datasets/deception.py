@@ -4,6 +4,7 @@ import copy
 import csv
 import datetime
 import json
+import logging
 import random
 from collections import defaultdict
 from pathlib import Path
@@ -18,6 +19,8 @@ from ..types import Dialogue, Label, Message, Role
 from .base import Dataset
 from .builders import build_from_messages
 from .registry import Topic, _register_dataset
+
+logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DECEPTION_DATA_PATH = REPO_ROOT / "data" / "deception"
@@ -120,6 +123,73 @@ def _load_rollout(
     return dialogues, labels
 
 
+def _load_rollout_from_hf(
+    hf_ds,
+    *,
+    use_system_message: bool = True,
+    trim_token: str | None = None,
+) -> tuple[list[Dialogue], list[Label]]:
+    """Load dialogues from an HF dataset of JSON-stringified rollout rows.
+
+    Mirror of _load_rollout but for HF-hosted data where fields are JSON strings.
+    """
+    dialogues: list[Dialogue] = []
+    labels: list[Label] = []
+
+    for row in hf_ds:
+        input_messages = json.loads(row["input_messages"])
+        output_strs = json.loads(row["output_strs"])
+        graded_deception = json.loads(row["graded_deception"])
+
+        for i in range(len(output_strs)):
+            msgs = input_messages
+            if not use_system_message:
+                msgs = [m for m in msgs if m["role"] != "system"]
+
+            dialogue: Dialogue = [
+                Message(m["role"], m["content"].strip()) for m in msgs
+            ]
+
+            output = output_strs[i].rstrip()
+            if (
+                dialogue
+                and dialogue[-1].role == "assistant"
+                and dialogue[-1].content == ""
+            ):
+                dialogue[-1] = Message("assistant", output)
+            else:
+                dialogue.append(Message("assistant", output))
+
+            grade = graded_deception[i]
+            if isinstance(grade, str):
+                label = _STR_TO_LABEL.get(grade)
+                if label is None:
+                    continue
+            elif isinstance(grade, int):
+                if grade >= 6:
+                    label = Label.POSITIVE
+                elif grade <= 2:
+                    label = Label.NEGATIVE
+                else:
+                    continue
+            else:
+                continue
+
+            if trim_token:
+                final = dialogue[-1]
+                if final.role == "assistant" and trim_token in final.content:
+                    idx = final.content.rindex(trim_token)
+                    dialogue[-1] = Message("assistant", final.content[:idx])
+                    dialogue.append(Message("assistant", final.content[idx:]))
+                elif final.role == "assistant":
+                    continue
+
+            dialogues.append(dialogue)
+            labels.append(label)
+
+    return dialogues, labels
+
+
 # ---------------------------------------------------------------------------
 # DolusChat
 # ---------------------------------------------------------------------------
@@ -148,9 +218,16 @@ def dolus_chat() -> Dataset:
 
 @_register_dataset("roleplaying", Topic.DECEPTION, "Roleplaying dataset")
 def roleplaying(model_name: str, data_root: str | None = None) -> Dataset:
-    base = Path(data_root) if data_root else DECEPTION_DATA_PATH
-    path = base / "rollouts" / f"roleplaying__plain__{model_name}.json"
-    dialogues, labels = _load_rollout(path)
+    try:
+        hf_ds = load_dataset(
+            "serteal/deception-rollouts", f"roleplaying-{model_name}", split="train",
+        )
+        dialogues, labels = _load_rollout_from_hf(hf_ds)
+    except Exception as e:
+        logger.debug("HF load failed for roleplaying/%s, trying local: %s", model_name, e)
+        base = Path(data_root) if data_root else DECEPTION_DATA_PATH
+        path = base / "rollouts" / f"roleplaying__plain__{model_name}.json"
+        dialogues, labels = _load_rollout(path)
     return Dataset(dialogues, labels, "roleplaying").shuffle()
 
 
@@ -158,25 +235,27 @@ def roleplaying(model_name: str, data_root: str | None = None) -> Dataset:
 # Insider Trading
 # ---------------------------------------------------------------------------
 
-def _insider_trading_upscale(base: Path, model_name: str) -> Dataset:
-    data = json.load(open(base / "insider_trading" / f"{model_name}-generations.json"))
+def _insider_trading_upscale_from_rows(data: list[dict]) -> Dataset:
+    """Build insider_trading:upscale Dataset from a list of dicts with transcript/metadata."""
     dialogues, labels = [], []
     metadata: dict[str, list] = defaultdict(list)
 
     for r in data:
-        if "report_label" not in r["metadata"]:
+        meta = r["metadata"] if isinstance(r["metadata"], dict) else json.loads(r["metadata"])
+        if "report_label" not in meta:
             continue
         label_map = {"explicit": Label.NEGATIVE, "concealed": Label.POSITIVE}
-        if r["metadata"]["report_label"] not in label_map:
+        if meta["report_label"] not in label_map:
             continue
 
-        transcript = [Message(m["role"], m["content"].strip()) for m in r["transcript"]]
-        if "doubling_down_label" in r["metadata"]:
+        transcript_raw = r["transcript"] if isinstance(r["transcript"], list) else json.loads(r["transcript"])
+        transcript = [Message(m["role"], m["content"].strip()) for m in transcript_raw]
+        if "doubling_down_label" in meta:
             transcript = transcript[:-2]
 
         dialogues.append(transcript)
-        labels.append(label_map[r["metadata"]["report_label"]])
-        for k, v in r["metadata"].items():
+        labels.append(label_map[meta["report_label"]])
+        for k, v in meta.items():
             if not k.startswith("doubling_down"):
                 metadata[k].append(v)
         metadata["expected_label"].append("deceptive")
@@ -195,7 +274,15 @@ def insider_trading(
     base = Path(data_root) if data_root else DECEPTION_DATA_PATH
 
     if variant == "upscale":
-        return _insider_trading_upscale(base, model_name)
+        try:
+            hf_ds = load_dataset(
+                "serteal/deception-insider-trading", model_name, split="train",
+            )
+            return _insider_trading_upscale_from_rows(list(hf_ds))
+        except Exception as e:
+            logger.debug("HF load failed for insider_trading/%s, trying local: %s", model_name, e)
+            data = json.load(open(base / "insider_trading" / f"{model_name}-generations.json"))
+            return _insider_trading_upscale_from_rows(data)
     elif variant == "onpolicy":
         path = base / "rollouts" / f"insider_trading__onpolicy__{model_name}.json"
         dialogues, labels = _load_rollout(path, trim_token="Action: ")
@@ -329,8 +416,13 @@ def repe(variant: str = "you_are_fact_sys", data_root: str | None = None) -> Dat
     if variant not in variants:
         raise ValueError(f"Unknown variant: {variant}. Available: {variants}")
 
-    base = Path(data_root) if data_root else DECEPTION_DATA_PATH
-    df = pd.read_csv(base / "repe" / "true_false_facts.csv")
+    try:
+        hf_ds = load_dataset("serteal/deception-repe", split="train")
+        df = hf_ds.to_pandas()
+    except Exception as e:
+        logger.debug("HF load failed for repe, trying local: %s", e)
+        base = Path(data_root) if data_root else DECEPTION_DATA_PATH
+        df = pd.read_csv(base / "repe" / "true_false_facts.csv")
 
     # Prompt config: (sys_honest, usr_honest, sys_dishonest, usr_dishonest)
     config = {
@@ -496,11 +588,20 @@ def werewolf(variant: str = "paired", data_root: str | None = None) -> Dataset:
 
 @_register_dataset("sandbagging", Topic.DECEPTION, "Sandbagging dataset")
 def sandbagging(model_name: str, data_root: str | None = None) -> Dataset:
-    base = Path(data_root) if data_root else DECEPTION_DATA_PATH
-    path = base / "rollouts" / f"sandbagging_v2__wmdp_mmlu__{model_name}.json"
-    dialogues, labels = _load_rollout(
-        path, use_system_message=False, trim_token="<step4>"
-    )
+    try:
+        hf_ds = load_dataset(
+            "serteal/deception-rollouts", f"sandbagging-{model_name}", split="train",
+        )
+        dialogues, labels = _load_rollout_from_hf(
+            hf_ds, use_system_message=False, trim_token="<step4>",
+        )
+    except Exception as e:
+        logger.debug("HF load failed for sandbagging/%s, trying local: %s", model_name, e)
+        base = Path(data_root) if data_root else DECEPTION_DATA_PATH
+        path = base / "rollouts" / f"sandbagging_v2__wmdp_mmlu__{model_name}.json"
+        dialogues, labels = _load_rollout(
+            path, use_system_message=False, trim_token="<step4>"
+        )
     return Dataset(dialogues, labels, "sandbagging").shuffle()
 
 
@@ -638,9 +739,14 @@ def fleed_claims(variant: str = "definitional", data_root: str | None = None) ->
     if variant not in all_variants:
         raise ValueError(f"Unknown variant: {variant}. Available: {all_variants}")
 
-    base = Path(data_root) if data_root else DECEPTION_DATA_PATH
-    csv_path = base / "fleed_claims" / f"claims__{variant}_gemini_600_full.csv"
-    raw = pd.read_csv(csv_path)
+    try:
+        hf_ds = load_dataset("serteal/deception-fleed-claims", variant, split="train")
+        raw = hf_ds.to_pandas()
+    except Exception as e:
+        logger.debug("HF load failed for fleed_claims/%s, trying local: %s", variant, e)
+        base = Path(data_root) if data_root else DECEPTION_DATA_PATH
+        csv_path = base / "fleed_claims" / f"claims__{variant}_gemini_600_full.csv"
+        raw = pd.read_csv(csv_path)
 
     dialogues, labels = [], []
     for _, row in raw.iterrows():
@@ -671,27 +777,32 @@ def geometry_of_truth(variant: str = "cities", data_root: str | None = None) -> 
     if variant not in all_variants:
         raise ValueError(f"Unknown variant: {variant}. Available: {all_variants}")
 
-    base = Path(data_root) if data_root else DECEPTION_DATA_PATH
-    csv_path = base / "geometry_of_truth" / f"{variant}.csv"
+    try:
+        hf_ds = load_dataset("serteal/deception-geometry-of-truth", variant, split="train")
+        rows = list(hf_ds)
+    except Exception as e:
+        logger.debug("HF load failed for geometry_of_truth/%s, trying local: %s", variant, e)
+        base = Path(data_root) if data_root else DECEPTION_DATA_PATH
+        csv_path = base / "geometry_of_truth" / f"{variant}.csv"
+        with open(csv_path, newline="") as f:
+            rows = list(csv.DictReader(f))
 
     dialogues, labels = [], []
-    with open(csv_path, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            statement = row["statement"].rstrip(".")
-            if (
-                statement.endswith('"')
-                or statement.endswith(">")
-                or statement.endswith(")")
-                or statement.endswith("\u201d")
-            ):
-                continue
-            dialogues.append([
-                Message("user", "Please state a fact."),
-                Message("assistant", statement),
-                Message("assistant", "."),
-            ])
-            labels.append(Label.NEGATIVE if int(row["label"]) == 1 else Label.POSITIVE)
+    for row in rows:
+        statement = row["statement"].rstrip(".")
+        if (
+            statement.endswith('"')
+            or statement.endswith(">")
+            or statement.endswith(")")
+            or statement.endswith("\u201d")
+        ):
+            continue
+        dialogues.append([
+            Message("user", "Please state a fact."),
+            Message("assistant", statement),
+            Message("assistant", "."),
+        ])
+        labels.append(Label.NEGATIVE if int(row["label"]) == 1 else Label.POSITIVE)
 
     return Dataset(dialogues, labels, f"geometry_of_truth:{variant}").shuffle()
 
@@ -788,27 +899,43 @@ def sycophancy(
         "high_school_statistics", "machine_learning", "medical_genetics", "virology",
     ]
 
-    base = Path(data_root) if data_root else DECEPTION_DATA_PATH
-    prefix = "same_" if "same" in variant else ""
-    conf = "conf_" if "conf" in variant else ""
+    def _build_dialogues(rows):
+        dialogues, labels = [], []
+        for row in rows:
+            question = row["question"]
+            letter = chr(65 + int(row["model_answer_with_bio"]))
+            answer = f"I believe the best answer is ({letter})"
+            label = Label.POSITIVE if row["side"] == "positive" else Label.NEGATIVE
+            dialogues.append([
+                Message("user", question),
+                Message("assistant", answer[:-2]),
+                Message("assistant", answer[-2:-1]),
+            ])
+            labels.append(label)
+        return dialogues, labels
 
-    dialogues, labels = [], []
-    for task in _STEM_TASKS:
-        fp = base / "sycophancy" / model_name / f"{prefix}{conf}paired_mmlu_sycophancy_{task}.json"
-        with open(fp) as f:
-            dataset = json.load(f)
+    try:
+        hf_ds = load_dataset("serteal/deception-sycophancy", model_name, split="train")
+        dialogues, labels = _build_dialogues(hf_ds)
+    except Exception as e:
+        logger.debug("HF load failed for sycophancy/%s, trying local: %s", model_name, e)
+        base = Path(data_root) if data_root else DECEPTION_DATA_PATH
+        prefix = "same_" if "same" in variant else ""
+        conf = "conf_" if "conf" in variant else ""
 
-        for side, label in [("positive", Label.POSITIVE), ("negative", Label.NEGATIVE)]:
-            for sample in dataset[side]:
-                question = sample["bio_messages"][0]["content"]
-                letter = chr(65 + sample["model_answer_with_bio"])
-                answer = f"I believe the best answer is ({letter})"
-                dialogues.append([
-                    Message("user", question),
-                    Message("assistant", answer[:-2]),
-                    Message("assistant", answer[-2:-1]),
-                ])
-                labels.append(label)
+        rows = []
+        for task in _STEM_TASKS:
+            fp = base / "sycophancy" / model_name / f"{prefix}{conf}paired_mmlu_sycophancy_{task}.json"
+            with open(fp) as f:
+                dataset = json.load(f)
+            for side in ["positive", "negative"]:
+                for sample in dataset[side]:
+                    rows.append({
+                        "question": sample["bio_messages"][0]["content"],
+                        "model_answer_with_bio": sample["model_answer_with_bio"],
+                        "side": side,
+                    })
+        dialogues, labels = _build_dialogues(rows)
 
     return Dataset(dialogues, labels, f"sycophancy:{variant}").shuffle()
 
