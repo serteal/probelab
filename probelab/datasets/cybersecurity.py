@@ -51,7 +51,7 @@ def cybersecurity_dpo(include_rejected: bool = True) -> Dataset:
     metadata: dict[str, list[Any]] = {"is_secure": []}
 
     for item in data:
-        prompt = item.get("prompt", item.get("instruction", ""))
+        prompt = item.get("prompt", item.get("question", item.get("instruction", "")))
         if prompt and (chosen := item.get("chosen", "")):
             dialogues.append([Message("user", prompt), Message("assistant", chosen)])
             labels.append(Label.NEGATIVE)
@@ -246,15 +246,32 @@ def hackaprompt() -> Dataset:
 
 
 @_register_dataset("cyberrisk_qa", Topic.CYBERSECURITY, "CyberRisk Q/A pairs")
-def cyberrisk_qa() -> Dataset:
-    """CyberRisk 14K+ offensive cybersecurity Q/A pairs (augmented, multilingual)."""
-    try:
-        hf_ds = load_dataset("serteal/cyberrisk-qa-pairs", split="train")
-    except Exception as e:
-        logger.debug("HF load failed for serteal/cyberrisk-qa-pairs: %s", e)
-        raise FileNotFoundError(
-            "cyberrisk-qa-pairs not found on HuggingFace (serteal/cyberrisk-qa-pairs)"
-        ) from e
+def cyberrisk_qa(split: str | None = None, path: str | None = None) -> Dataset:
+    """CyberRisk 14K+ offensive cybersecurity Q/A pairs (augmented, multilingual).
+
+    Args:
+        split: ``"train"`` or ``"test"`` to load a pre-split file
+            (``qa_pairs_train.json`` / ``qa_pairs_test.json``).
+            ``None`` loads the full HuggingFace dataset.
+        path: Directory containing the split JSON files.  Required when
+            *split* is not ``None``.
+    """
+    if split is not None:
+        if path is None:
+            raise ValueError("path is required when split is specified")
+        from pathlib import Path as _Path
+        split_file = _Path(path) / f"qa_pairs_{split}.json"
+        with open(split_file) as f:
+            items = json.load(f)
+    else:
+        try:
+            hf_ds = load_dataset("serteal/cyberrisk-qa-pairs", split="train")
+        except Exception as e:
+            logger.debug("HF load failed for serteal/cyberrisk-qa-pairs: %s", e)
+            raise FileNotFoundError(
+                "cyberrisk-qa-pairs not found on HuggingFace (serteal/cyberrisk-qa-pairs)"
+            ) from e
+        items = list(hf_ds)
 
     dialogues, labels = [], []
     metadata: dict[str, list[Any]] = {
@@ -262,7 +279,7 @@ def cyberrisk_qa() -> Dataset:
         "augmentation": [], "language": [], "base_id": [],
     }
 
-    for item in hf_ds:
+    for item in items:
         question = item.get("question", "")
         answer = item.get("answer", "")
         if not question or not answer:

@@ -269,15 +269,31 @@ def wmdp_bio() -> Dataset:
 
 
 @_register_dataset("virology_qa", Topic.SCIENCE, "Virology Q/A pairs")
-def virology_qa() -> Dataset:
-    """Virology 8.6K+ dual-use virology Q/A pairs (augmented, multilingual)."""
-    try:
-        hf_ds = load_dataset("serteal/virology-qa-pairs", split="train")
-    except Exception as e:
-        logger.debug("HF load failed for serteal/virology-qa-pairs: %s", e)
-        raise FileNotFoundError(
-            "virology-qa-pairs not found on HuggingFace (serteal/virology-qa-pairs)"
-        ) from e
+def virology_qa(split: str | None = None, path: str | None = None) -> Dataset:
+    """Virology 8.6K+ dual-use virology Q/A pairs (augmented, multilingual).
+
+    Args:
+        split: ``"train"`` or ``"test"`` to load a pre-split file
+            (``qa_pairs_train.json`` / ``qa_pairs_test.json``).
+            ``None`` loads the full HuggingFace dataset.
+        path: Directory containing the split JSON files.  Required when
+            *split* is not ``None``.
+    """
+    if split is not None:
+        if path is None:
+            raise ValueError("path is required when split is specified")
+        split_file = Path(path) / f"qa_pairs_{split}.json"
+        with open(split_file) as f:
+            items = json.load(f)
+    else:
+        try:
+            hf_ds = load_dataset("serteal/virology-qa-pairs", split="train")
+        except Exception as e:
+            logger.debug("HF load failed for serteal/virology-qa-pairs: %s", e)
+            raise FileNotFoundError(
+                "virology-qa-pairs not found on HuggingFace (serteal/virology-qa-pairs)"
+            ) from e
+        items = list(hf_ds)
 
     dialogues, labels = [], []
     metadata: dict[str, list[Any]] = {
@@ -285,7 +301,7 @@ def virology_qa() -> Dataset:
         "augmentation": [], "language": [], "base_id": [],
     }
 
-    for item in hf_ds:
+    for item in items:
         question = item.get("question", "")
         answer = item.get("answer", "")
         if not question or not answer:

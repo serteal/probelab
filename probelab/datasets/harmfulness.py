@@ -66,9 +66,16 @@ def wildguard_mix(split: str = "train") -> Dataset:
     dialogues, labels = [], []
     metadata = {"prompt_harm_label": [], "response_refusal_label": [], "response_harm_label": [], "adversarial": [], "subcategory": [], "response": []}
 
+    seen: set[tuple[str, int]] = set()
     for d in data:
-        dialogues.append([Message("system", "You are a helpful, honest assistant."), Message("user", str(d["prompt"]))])
-        labels.append(Label.POSITIVE if str(d["prompt_harm_label"]).lower() == "harmful" else Label.NEGATIVE)
+        prompt = str(d["prompt"])
+        label_val = Label.POSITIVE if str(d["prompt_harm_label"]).lower() == "harmful" else Label.NEGATIVE
+        key = (prompt, label_val.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        dialogues.append([Message("system", "You are a helpful, honest assistant."), Message("user", prompt)])
+        labels.append(label_val)
         for k in metadata:
             metadata[k].append(d.get(k))
 

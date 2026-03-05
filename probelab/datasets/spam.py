@@ -15,8 +15,13 @@ def enron_spam(split: str = "train") -> Dataset:
         split: HF split name ('train' or 'test').
     """
     data = load_dataset("SetFit/enron_spam")[split]
-    dialogues = [[Message("user", str(row["text"]))] for row in data]
-    labels = [Label.POSITIVE if row["label"] == 1 else Label.NEGATIVE for row in data]
+    dialogues, labels = [], []
+    for row in data:
+        text = str(row["text"]).strip()
+        if not text:
+            continue
+        dialogues.append([Message("user", text)])
+        labels.append(Label.POSITIVE if row["label"] == 1 else Label.NEGATIVE)
     return Dataset(dialogues, labels, "enron_spam").shuffle()
 
 

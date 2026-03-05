@@ -37,6 +37,7 @@ class Logistic(BaseProbe):
         C: float = 1.0,
         max_iter: int = 500,
         n_epochs: int = 100,
+        batch_size: int = 8192,
         *,
         optimizer_fn: Callable | None = None,
         scheduler_fn: Callable | None = None,
@@ -48,6 +49,7 @@ class Logistic(BaseProbe):
         self.C = C
         self.max_iter = max_iter
         self.n_epochs = n_epochs
+        self.batch_size = batch_size
         self.net = None
         self.scaler_mean = None
         self.scaler_std = None
@@ -91,42 +93,64 @@ class Logistic(BaseProbe):
         self._seed_everything()  # seeds weight init; no local generator needed
         self.net = _LogisticNetwork(d_model).to(self.device, dtype=working_dtype)
 
-        # Standardize (clone to avoid mutating input data)
+        # Compute scaler statistics (output is [d_model], negligible memory)
         self.scaler_mean = features.mean(0)
         self.scaler_std = features.std(0).clamp(min=1e-8)
-        features = (features - self.scaler_mean) / self.scaler_std
+        # NOTE: we do NOT pre-scale features here.  Scaling is applied
+        # on-the-fly in chunks during training to avoid allocating a
+        # full-size copy of the feature matrix on GPU.
 
-        l2_weight = 1.0 / (2.0 * self.C * len(labels)) if self.C > 0 else 0.0
+        N = features.shape[0]
+        bs = min(self.batch_size, N)
+        l2_weight = 1.0 / (2.0 * self.C * N) if self.C > 0 else 0.0
         weight_param = self.net.linear.weight
+        sc_mean, sc_std = self.scaler_mean, self.scaler_std
 
         if self._optimizer_fn is not None:
-            # Custom optimizer: epoch-based training loop
+            # Custom optimizer: mini-batch training with on-the-fly scaling
             optimizer = self._optimizer_fn(self.net.parameters())
             scheduler = self._make_scheduler(optimizer)
             self.net.train()
             for _ in range(self.n_epochs):
-                optimizer.zero_grad()
-                loss = F.binary_cross_entropy_with_logits(self.net(features), labels)
-                if l2_weight > 0:
-                    loss = loss + l2_weight * weight_param.pow(2).sum()
-                loss.backward()
-                optimizer.step()
+                perm = torch.randperm(N, device=features.device)
+                for i in range(0, N, bs):
+                    idx = perm[i : i + bs]
+                    x_batch = (features[idx] - sc_mean) / sc_std
+                    optimizer.zero_grad()
+                    loss = F.binary_cross_entropy_with_logits(
+                        self.net(x_batch), labels[idx]
+                    )
+                    if l2_weight > 0:
+                        loss = loss + l2_weight * weight_param.pow(2).sum()
+                    loss.backward()
+                    optimizer.step()
                 if scheduler is not None:
                     scheduler.step()
             self.net.eval()
         else:
-            # Default: single-step LBFGS
+            # Default: LBFGS with chunked gradient accumulation.
+            # Features stay unscaled; each chunk is scaled on-the-fly in
+            # the closure.  Peak memory = features (1×) + one chunk temp.
             optimizer = torch.optim.LBFGS(
                 self.net.parameters(), max_iter=self.max_iter, line_search_fn="strong_wolfe"
             )
 
             def closure():
                 optimizer.zero_grad()
-                loss = F.binary_cross_entropy_with_logits(self.net(features), labels)
+                running_loss = 0.0
+                for i in range(0, N, bs):
+                    x_chunk = (features[i : i + bs] - sc_mean) / sc_std
+                    chunk_loss = F.binary_cross_entropy_with_logits(
+                        self.net(x_chunk), labels[i : i + bs], reduction="sum"
+                    )
+                    (chunk_loss / N).backward()
+                    running_loss += chunk_loss.item()
+                total = running_loss / N
                 if l2_weight > 0:
-                    loss = loss + l2_weight * weight_param.pow(2).sum()
-                loss.backward()
-                return loss
+                    l2 = l2_weight * weight_param.pow(2).sum()
+                    l2.backward()
+                    total += l2.item()
+                return total
 
             optimizer.step(closure)
 
@@ -185,6 +209,7 @@ class Logistic(BaseProbe):
             "C": self.C,
             "max_iter": self.max_iter,
             "n_epochs": self.n_epochs,
+            "batch_size": self.batch_size,
             "seed": self.seed,
             "device": self.device,
             "cast": self.cast,
@@ -201,6 +226,7 @@ class Logistic(BaseProbe):
             C=state["C"],
             max_iter=state["max_iter"],
             n_epochs=state.get("n_epochs", 100),
+            batch_size=state.get("batch_size", 8192),
             seed=state.get("seed"),
             device=device,
             cast=state.get("cast"),

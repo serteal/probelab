@@ -946,6 +946,17 @@ def sycophancy(
                     })
         dialogues, labels = _build_dialogues(rows)
 
+    # Deduplicate by (dialogue_text, label) — same question appears across MMLU STEM tasks
+    seen: set[tuple[tuple[tuple[str, str], ...], Label]] = set()
+    unique_dialogues, unique_labels = [], []
+    for dlg, label in zip(dialogues, labels):
+        key = (tuple((m.role, m.content) for m in dlg), label)
+        if key not in seen:
+            seen.add(key)
+            unique_dialogues.append(dlg)
+            unique_labels.append(label)
+    dialogues, labels = unique_dialogues, unique_labels
+
     return Dataset(dialogues, labels, f"sycophancy:{variant}").shuffle()
 
 
