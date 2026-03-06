@@ -779,6 +779,294 @@ class Activations:
         mask = torch.tensor(f["mask"][:], device=device).float()
         return cls.from_padded(data, mask, dims, layers)
 
+    # -------------------------------------------------------------------------
+    # Save / Load (memmap)
+    # -------------------------------------------------------------------------
+
+    def save_memmap(self, dir_path: str) -> None:
+        """Save activations as per-layer memmap files.
+
+        Layout::
+
+            dir_path/
+              meta.json
+              offsets.bin      # [n_samples+1] int64
+              det.bin          # [total_tokens] uint8
+              layer_{L}.bin    # [total_tokens, hidden] int16 (bf16 view)
+
+        Requires ``dims`` to contain ``"s"`` and ``"l"`` (flat+offsets
+        multi-layer layout).
+        """
+        import json
+        import os
+        import shutil
+        from pathlib import Path
+
+        dir_path = Path(dir_path)
+        if "s" not in self.dims or "l" not in self.dims:
+            raise ValueError(
+                f"save_memmap requires dims with 's' and 'l', got {self.dims!r}"
+            )
+        if self.layers is None:
+            raise ValueError("save_memmap requires layers to be set")
+
+        data_cpu = self.data.cpu()  # [total_tokens, n_layers, hidden]
+        total_tokens = data_cpu.shape[0]
+        n_layers = data_cpu.shape[1]
+        hidden = data_cpu.shape[2]
+
+        # Write to temp dir, then atomic rename
+        tmp_dir = dir_path.parent / f"{dir_path.name}._tmp_{os.getpid()}"
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        # Offsets
+        off_mm = np.memmap(
+            tmp_dir / "offsets.bin", dtype=np.int64, mode="w+",
+            shape=self.offsets.shape,
+        )
+        off_mm[:] = self.offsets.cpu().numpy()
+        off_mm.flush()
+        del off_mm
+
+        # Detection mask
+        det_mm = np.memmap(
+            tmp_dir / "det.bin", dtype=np.uint8, mode="w+",
+            shape=(total_tokens,),
+        )
+        det_mm[:] = self.det.cpu().numpy().astype(np.uint8)
+        det_mm.flush()
+        del det_mm
+
+        # Per-layer data
+        data_int16 = data_cpu.bfloat16().view(torch.int16).numpy()
+        for i, layer in enumerate(self.layers):
+            layer_data = data_int16[:, i, :]  # [total_tokens, hidden]
+            mm = np.memmap(
+                tmp_dir / f"layer_{layer}.bin", dtype=np.int16, mode="w+",
+                shape=(total_tokens, hidden),
+            )
+            mm[:] = layer_data
+            mm.flush()
+            del mm
+
+        # Metadata
+        meta = {
+            "format": "memmap_v1",
+            "dims": self.dims,
+            "total_tokens": total_tokens,
+            "n_layers": n_layers,
+            "hidden_dim": hidden,
+            "layers": list(self.layers),
+            "n_samples": len(self.offsets) - 1,
+        }
+        with open(tmp_dir / "meta.json", "w") as f:
+            json.dump(meta, f)
+
+        # Atomic rename
+        if dir_path.exists():
+            shutil.rmtree(dir_path)
+        tmp_dir.rename(dir_path)
+
+    @classmethod
+    def load_memmap(
+        cls,
+        dir_path: str,
+        *,
+        layer: int | list[int] | None = None,
+        device: str = "cpu",
+    ) -> "Activations":
+        """Load activations from memmap directory.
+
+        Args:
+            dir_path: Directory containing memmap files.
+            layer: Layer(s) to load. ``int`` loads single layer (no layer axis),
+                ``list[int]`` loads multiple layers. ``None`` loads all.
+            device: Target device for tensors.
+        """
+        import json
+        import warnings
+        from pathlib import Path
+
+        dir_path = Path(dir_path)
+        with open(dir_path / "meta.json") as f:
+            meta = json.load(f)
+
+        total_tokens = meta["total_tokens"]
+        hidden = meta["hidden_dim"]
+        all_layers = meta["layers"]
+        n_samples = meta["n_samples"]
+
+        # Offsets
+        off_mm = np.memmap(
+            dir_path / "offsets.bin", dtype=np.int64, mode="r",
+            shape=(n_samples + 1,),
+        )
+        offsets = torch.from_numpy(off_mm.copy()).to(device)
+
+        # Detection mask
+        det_mm = np.memmap(
+            dir_path / "det.bin", dtype=np.uint8, mode="r",
+            shape=(total_tokens,),
+        )
+        det = torch.from_numpy(det_mm.copy()).to(torch.bool).to(device)
+
+        # Determine which layers to load
+        if layer is None:
+            load_layers = all_layers
+        elif isinstance(layer, int):
+            load_layers = [layer]
+        else:
+            load_layers = list(layer)
+
+        # Load layer data
+        layer_tensors = []
+        for l in load_layers:
+            if l not in all_layers:
+                raise ValueError(f"Layer {l} not in stored layers {all_layers}")
+            mm = np.memmap(
+                dir_path / f"layer_{l}.bin", dtype=np.int16, mode="r",
+                shape=(total_tokens, hidden),
+            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", "The given NumPy array is not writable")
+                t = torch.from_numpy(mm).view(torch.bfloat16).to(device)
+            layer_tensors.append(t)
+
+        if isinstance(layer, int):
+            # Single layer: dims="bsh", data=[total_tokens, hidden]
+            return cls(
+                data=layer_tensors[0], dims="bsh",
+                offsets=offsets, det=det, layers=None,
+            )
+        else:
+            # Multi-layer: dims="blsh", data=[total_tokens, n_layers, hidden]
+            data = torch.stack(layer_tensors, dim=1)
+            return cls(
+                data=data, dims="blsh",
+                offsets=offsets, det=det, layers=tuple(load_layers),
+            )
+
+    @classmethod
+    def stream_memmap(
+        cls,
+        dir_path: str,
+        *,
+        layer: int | None = None,
+        chunk_tokens: int = 500_000,
+    ) -> Generator[tuple["Activations", list[int]], None, None]:
+        """Yield ``(chunk, indices)`` from memmap files.
+
+        Args:
+            dir_path: Directory containing memmap files.
+            layer: Single layer to stream. If ``None``, streams all layers.
+            chunk_tokens: Token budget per chunk.
+
+        Yields:
+            ``(activations, indices)`` where *indices* are sample positions.
+        """
+        import json
+        import warnings
+        from pathlib import Path
+
+        dir_path = Path(dir_path)
+        with open(dir_path / "meta.json") as f:
+            meta = json.load(f)
+
+        total_tokens = meta["total_tokens"]
+        hidden = meta["hidden_dim"]
+        all_layers = meta["layers"]
+        n_samples = meta["n_samples"]
+
+        # Memory-map offsets (small, copy is fine)
+        off_mm = np.memmap(
+            dir_path / "offsets.bin", dtype=np.int64, mode="r",
+            shape=(n_samples + 1,),
+        )
+        offsets_np = np.array(off_mm)
+
+        # Memory-map det
+        det_mm = np.memmap(
+            dir_path / "det.bin", dtype=np.uint8, mode="r",
+            shape=(total_tokens,),
+        )
+
+        # Memory-map layer files
+        load_layers = [layer] if layer is not None else all_layers
+        layer_mms = {}
+        for l in load_layers:
+            layer_mms[l] = np.memmap(
+                dir_path / f"layer_{l}.bin", dtype=np.int16, mode="r",
+                shape=(total_tokens, hidden),
+            )
+
+        sample_idx = 0
+        while sample_idx < n_samples:
+            chunk_start = sample_idx
+            tok_start = int(offsets_np[chunk_start])
+            chunk_end = chunk_start
+            while chunk_end < n_samples:
+                next_tok = int(offsets_np[chunk_end + 1])
+                if next_tok - tok_start > chunk_tokens and chunk_end > chunk_start:
+                    break
+                chunk_end += 1
+
+            tok_end = int(offsets_np[chunk_end])
+            if tok_end == tok_start:
+                sample_idx = chunk_end
+                continue
+
+            # Read chunk from each layer's memmap
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", "The given NumPy array is not writable")
+                if layer is not None:
+                    # Single layer: [n_tok, hidden]
+                    chunk_data = torch.from_numpy(
+                        layer_mms[layer][tok_start:tok_end]
+                    ).view(torch.bfloat16)
+                    dims = "bsh"
+                    stored_layers = None
+                else:
+                    # All layers: stack → [n_tok, n_layers, hidden]
+                    layer_chunks = [
+                        torch.from_numpy(layer_mms[l][tok_start:tok_end]).view(torch.bfloat16)
+                        for l in all_layers
+                    ]
+                    chunk_data = torch.stack(layer_chunks, dim=1)
+                    dims = "blsh"
+                    stored_layers = tuple(all_layers)
+
+            chunk_det = torch.from_numpy(
+                det_mm[tok_start:tok_end].astype(bool).copy()
+            )
+
+            # Local offsets
+            local_offsets = torch.zeros(chunk_end - chunk_start + 1, dtype=torch.int64)
+            for i in range(chunk_start, chunk_end):
+                local_offsets[i - chunk_start + 1] = int(offsets_np[i + 1]) - tok_start
+
+            indices = list(range(chunk_start, chunk_end))
+            chunk_acts = cls(
+                data=chunk_data, dims=dims,
+                offsets=local_offsets, det=chunk_det,
+                layers=stored_layers,
+            )
+            yield chunk_acts, indices
+            sample_idx = chunk_end
+
+    @staticmethod
+    def has_memmap(dir_path: str) -> bool:
+        """Check if a directory contains memmap-format activations."""
+        from pathlib import Path
+        meta_path = Path(dir_path) / "meta.json"
+        if not meta_path.exists():
+            return False
+        import json
+        with open(meta_path) as f:
+            meta = json.load(f)
+        return meta.get("format") == "memmap_v1"
+
 
 # ---------------------------------------------------------------------------
 # Public API
