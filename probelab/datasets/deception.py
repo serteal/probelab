@@ -293,12 +293,30 @@ def insider_trading(
             data = json.load(open(base / "insider_trading" / f"{model_name}-generations.json"))
             return _insider_trading_upscale_from_rows(data)
     elif variant == "onpolicy":
-        path = base / "rollouts" / f"insider_trading__onpolicy__{model_name}.json"
-        dialogues, labels = _load_rollout(path, trim_token="Action: ")
+        try:
+            hf_ds = load_dataset(
+                "serteal/deception-rollouts",
+                f"insider-trading-onpolicy-{model_name}",
+                split="train",
+            )
+            dialogues, labels = _load_rollout_from_hf(hf_ds, trim_token="Action: ")
+        except Exception as e:
+            logger.debug("HF load failed for insider_trading/onpolicy/%s: %s", model_name, e)
+            path = base / "rollouts" / f"insider_trading__onpolicy__{model_name}.json"
+            dialogues, labels = _load_rollout(path, trim_token="Action: ")
         return Dataset(dialogues, labels, "insider_trading:onpolicy").shuffle()
     elif variant == "doubledown":
-        path = base / "rollouts" / f"insider_trading_doubledown__onpolicy__{model_name}.json"
-        dialogues, labels = _load_rollout(path, trim_token="Action: send_message")
+        try:
+            hf_ds = load_dataset(
+                "serteal/deception-rollouts",
+                f"insider-trading-doubledown-{model_name}",
+                split="train",
+            )
+            dialogues, labels = _load_rollout_from_hf(hf_ds, trim_token="Action: send_message")
+        except Exception as e:
+            logger.debug("HF load failed for insider_trading/doubledown/%s: %s", model_name, e)
+            path = base / "rollouts" / f"insider_trading_doubledown__onpolicy__{model_name}.json"
+            dialogues, labels = _load_rollout(path, trim_token="Action: send_message")
         return Dataset(dialogues, labels, "insider_trading:doubledown").shuffle()
     else:
         raise ValueError(
@@ -386,32 +404,52 @@ def ai_liar(variant: str = "original_with_answers", data_root: str | None = None
 # ---------------------------------------------------------------------------
 
 @_register_dataset("azaria_mitchell", Topic.DECEPTION, "Azaria & Mitchell true-false")
-def azaria_mitchell(path: str, topic: str | None = None) -> Dataset:
+def azaria_mitchell(path: str | None = None, topic: str | None = None) -> Dataset:
     """Azaria & Mitchell true-false factual statements.
 
     Args:
-        path: Directory containing *_true_false.csv files.
+        path: Directory containing *_true_false.csv files (optional, falls back to HF).
         topic: Optional specific topic (e.g. 'animals', 'cities'). None loads all.
     """
     topics = ["animals", "cities", "companies", "elements", "facts", "generated", "inventions"]
-    if topic:
-        topics = [topic]
+
+    # Try HuggingFace first
+    try:
+        hf_ds = load_dataset("serteal/azaria-mitchell", split="train")
+        df = hf_ds.to_pandas()
+        if topic:
+            df = df[df["topic"] == topic]
+        elif topics:
+            df = df[df["topic"].isin(topics)]
+    except Exception as e:
+        logger.debug("HF load failed for azaria_mitchell, trying local: %s", e)
+        if path is None:
+            raise FileNotFoundError(
+                "azaria-mitchell not found on HuggingFace (serteal/azaria-mitchell) "
+                "and no local path provided"
+            ) from e
+        if topic:
+            topics = [topic]
+        frames = []
+        for t in topics:
+            csv_path = Path(path) / f"{t}_true_false.csv"
+            if not csv_path.exists():
+                continue
+            tdf = pd.read_csv(csv_path)
+            tdf["topic"] = t
+            frames.append(tdf)
+        df = pd.concat(frames, ignore_index=True)
 
     dialogues, labels = [], []
     metadata: dict[str, list] = {"topic": []}
 
-    for t in topics:
-        csv_path = Path(path) / f"{t}_true_false.csv"
-        if not csv_path.exists():
+    for _, row in df.iterrows():
+        stmt = str(row["statement"]).strip()
+        if not stmt:
             continue
-        df = pd.read_csv(csv_path)
-        for _, row in df.iterrows():
-            stmt = str(row["statement"]).strip()
-            if not stmt:
-                continue
-            dialogues.append([Message("user", "Tell me a fact."), Message("assistant", stmt)])
-            labels.append(Label.NEGATIVE if row["label"] == 1 else Label.POSITIVE)
-            metadata["topic"].append(t)
+        dialogues.append([Message("user", "Tell me a fact."), Message("assistant", stmt)])
+        labels.append(Label.NEGATIVE if row["label"] == 1 else Label.POSITIVE)
+        metadata["topic"].append(row["topic"])
 
     return Dataset(dialogues, labels, "azaria_mitchell", metadata).shuffle()
 
@@ -826,18 +864,27 @@ def internal_state(variant: str = "animals", data_root: str | None = None) -> Da
     if variant not in all_variants:
         raise ValueError(f"Unknown variant: {variant}. Available: {all_variants}")
 
-    base = Path(data_root) if data_root else DECEPTION_DATA_PATH
-    csv_path = base / "internal_state" / f"{variant}_true_false.csv"
+    rows: list[dict] = []
+    try:
+        hf_ds = load_dataset("serteal/internal-state", split="train")
+        for row in hf_ds:
+            if row["topic"] == variant:
+                rows.append(row)
+    except Exception as e:
+        logger.debug("HF load failed for internal_state, trying local: %s", e)
+        base = Path(data_root) if data_root else DECEPTION_DATA_PATH
+        csv_path = base / "internal_state" / f"{variant}_true_false.csv"
+        with open(csv_path, newline="") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
 
     dialogues, labels = [], []
-    with open(csv_path, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            dialogues.append([
-                Message("user", "Please state a fact."),
-                Message("assistant", row["statement"]),
-            ])
-            labels.append(Label.NEGATIVE if int(row["label"]) == 1 else Label.POSITIVE)
+    for row in rows:
+        dialogues.append([
+            Message("user", "Please state a fact."),
+            Message("assistant", row["statement"]),
+        ])
+        labels.append(Label.NEGATIVE if int(row["label"]) == 1 else Label.POSITIVE)
 
     return Dataset(dialogues, labels, f"internal_state:{variant}").shuffle()
 

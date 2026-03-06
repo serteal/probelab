@@ -170,13 +170,23 @@ def cyberseceval(config: str = "instruct") -> Dataset:
 
 
 @_register_dataset("cysecbench", Topic.CYBERSECURITY, "CySecBench cybersecurity prompts")
-def cysecbench(path: str) -> Dataset:
+def cysecbench(path: str | None = None) -> Dataset:
     """CySecBench: 12K+ cybersecurity jailbreaking prompts.
 
     Args:
-        path: Path to cysecbench.csv file.
+        path: Path to cysecbench.csv file (optional, falls back to HF).
     """
-    df = pd.read_csv(path)
+    try:
+        hf_ds = load_dataset("serteal/cysecbench", split="train")
+        df = hf_ds.to_pandas()
+    except Exception as e:
+        logger.debug("HF load failed for cysecbench, trying local: %s", e)
+        if path is None:
+            raise FileNotFoundError(
+                "cysecbench not found on HuggingFace (serteal/cysecbench) "
+                "and no local path provided"
+            ) from e
+        df = pd.read_csv(path)
 
     dialogues, labels = [], []
     metadata: dict[str, list[Any]] = {"category": []}
@@ -257,12 +267,20 @@ def cyberrisk_qa(split: str | None = None, path: str | None = None) -> Dataset:
             *split* is not ``None``.
     """
     if split is not None:
-        if path is None:
-            raise ValueError("path is required when split is specified")
-        from pathlib import Path as _Path
-        split_file = _Path(path) / f"qa_pairs_{split}.json"
-        with open(split_file) as f:
-            items = json.load(f)
+        try:
+            hf_ds = load_dataset("serteal/cyberrisk-qa-pairs", split=split)
+            items = list(hf_ds)
+        except Exception as e:
+            logger.debug("HF load failed for cyberrisk_qa/%s: %s", split, e)
+            if path is None:
+                raise FileNotFoundError(
+                    f"cyberrisk-qa-pairs split '{split}' not found on HuggingFace "
+                    "and no local path provided"
+                ) from e
+            from pathlib import Path as _Path
+            split_file = _Path(path) / f"qa_pairs_{split}.json"
+            with open(split_file) as f:
+                items = json.load(f)
     else:
         try:
             hf_ds = load_dataset("serteal/cyberrisk-qa-pairs", split="train")

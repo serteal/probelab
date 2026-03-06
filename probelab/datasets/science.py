@@ -280,11 +280,19 @@ def virology_qa(split: str | None = None, path: str | None = None) -> Dataset:
             *split* is not ``None``.
     """
     if split is not None:
-        if path is None:
-            raise ValueError("path is required when split is specified")
-        split_file = Path(path) / f"qa_pairs_{split}.json"
-        with open(split_file) as f:
-            items = json.load(f)
+        try:
+            hf_ds = load_dataset("serteal/virology-qa-pairs", split=split)
+            items = list(hf_ds)
+        except Exception as e:
+            logger.debug("HF load failed for virology_qa/%s: %s", split, e)
+            if path is None:
+                raise FileNotFoundError(
+                    f"virology-qa-pairs split '{split}' not found on HuggingFace "
+                    "and no local path provided"
+                ) from e
+            split_file = Path(path) / f"qa_pairs_{split}.json"
+            with open(split_file) as f:
+                items = json.load(f)
     else:
         try:
             hf_ds = load_dataset("serteal/virology-qa-pairs", split="train")
