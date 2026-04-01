@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any, Generator, Iterator
 import numpy as np
 import torch
 
-from ..backends import get_context_defaults, resolve_backend
 from .. import pool as P
 
 try:
@@ -1069,6 +1068,189 @@ class Activations:
 
 
 # ---------------------------------------------------------------------------
+# mirin helpers
+# ---------------------------------------------------------------------------
+
+
+def _ensure_model(model_obj: object) -> object:
+    """Wrap a raw ``nn.Module`` into ``mirin.Model`` if needed."""
+    import mirin
+
+    if isinstance(model_obj, (mirin.Model, mirin.Server)):
+        return model_obj
+    if isinstance(model_obj, torch.nn.Module):
+        return mirin.Model(model_obj, rename=mirin.renames.llm)
+    raise TypeError(
+        f"Expected mirin.Model, mirin.Server, or torch.nn.Module, "
+        f"got {type(model_obj).__name__}"
+    )
+
+
+def _resolve_get_sites(
+    model: object,
+    layers: list[int],
+    hook_point: str,
+) -> list[object]:
+    """Map layer indices + hook_point string to mirin proxy list."""
+    import mirin
+
+    if isinstance(model, mirin.Server):
+        m = model._model
+    else:
+        m = model
+    if hook_point == "layernorm":
+        return [m.layers[l].input_layernorm for l in layers]
+    return [m.layers[l] for l in layers]
+
+
+def _iter_batches(
+    tokens: "Tokens",
+    batch_size: int,
+    *,
+    batch_token_budget: int | None = None,
+    sort_by_length: bool = True,
+) -> Generator[tuple[dict[str, torch.Tensor], list[int]], None, None]:
+    """Yield padded batches with optional dynamic token-budget packing."""
+    lengths = tokens.lengths
+    if sort_by_length:
+        order = lengths.argsort(descending=True)
+    else:
+        order = torch.arange(len(tokens), device=lengths.device)
+
+    if batch_token_budget is None:
+        for i in range(0, len(order), batch_size):
+            idx = order[i : i + batch_size]
+            idx_list = idx.tolist()
+            batch = tokens.pad_batch(idx_list, padding_side=tokens.padding_side)
+            yield batch, idx_list
+        return
+
+    n = len(order)
+    i = 0
+    while i < n:
+        start = i
+        cur_max = 0
+        while i < n and (i - start) < batch_size:
+            sample_idx = int(order[i].item())
+            seq_len = int(lengths[sample_idx].item())
+            new_max = max(cur_max, seq_len)
+            new_count = (i - start) + 1
+            if new_count > 1 and new_max * new_count > batch_token_budget:
+                break
+            cur_max = new_max
+            i += 1
+        if i == start:
+            i += 1
+        idx = order[start:i]
+        idx_list = idx.tolist()
+        batch = tokens.pad_batch(idx_list, padding_side=tokens.padding_side)
+        yield batch, idx_list
+
+
+def _flatten_batch(
+    acts_stacked: torch.Tensor,
+    batch: dict[str, torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Flatten a padded [B, S, L, H] activation batch to flat+offsets.
+
+    Returns ``(flat_data, flat_det, offsets)``.
+    """
+    dev = acts_stacked.device
+    attn_mask = batch["attention_mask"].to(dev).bool()
+    det_mask = batch["detection_mask"].to(dev).bool()
+
+    flat_data = acts_stacked[attn_mask]  # [T, n_layers, hidden]
+    flat_det = det_mask[attn_mask]  # [T]
+
+    b_size = attn_mask.shape[0]
+    valid_lengths = attn_mask.sum(dim=1, dtype=torch.int64)
+    offsets = torch.zeros(b_size + 1, dtype=torch.int64, device=dev)
+    offsets[1:] = valid_lengths.cumsum(0)
+    return flat_data, flat_det, offsets
+
+
+def _stream_model(
+    model: object,
+    tokens: "Tokens",
+    layers: list[int],
+    batch_size: int,
+    hook_point: str,
+    sort_by_length: bool,
+    batch_token_budget: int | None,
+) -> Generator[tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[int]], None, None]:
+    """Unified streaming for ``mirin.Model``."""
+    import mirin
+
+    model_obj: mirin.Model = model  # type: ignore[assignment]
+    get_proxies = _resolve_get_sites(model_obj, layers, hook_point)
+
+    for batch, idx_list in _iter_batches(
+        tokens,
+        batch_size,
+        batch_token_budget=batch_token_budget,
+        sort_by_length=sort_by_length,
+    ):
+        batch_gpu = {
+            k: v.to(model_obj.device, non_blocking=True) for k, v in batch.items()
+        }
+        model_kwargs = {k: v for k, v in batch_gpu.items() if k != "detection_mask"}
+
+        output = model_obj(**model_kwargs, get=get_proxies, stop_at_last_get=True)
+
+        layer_acts = []
+        for proxy in get_proxies:
+            act = output[proxy]
+            if act.device != batch_gpu["attention_mask"].device:
+                act = act.to(batch_gpu["attention_mask"].device)
+            layer_acts.append(act)
+
+        acts_stacked = torch.stack(layer_acts, dim=2)  # [B, S, L, H]
+        flat_data, flat_det, offsets = _flatten_batch(acts_stacked, batch_gpu)
+        yield flat_data, flat_det, offsets, idx_list
+
+
+def _stream_server(
+    server: object,
+    tokens: "Tokens",
+    layers: list[int],
+    batch_size: int,
+    hook_point: str,
+    sort_by_length: bool,
+    batch_token_budget: int | None,
+) -> Generator[tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[int]], None, None]:
+    """Unified streaming for ``mirin.Server``."""
+    import mirin
+
+    srv: mirin.Server = server  # type: ignore[assignment]
+    get_proxies = _resolve_get_sites(srv, layers, hook_point)
+    layer_paths = [p.path for p in get_proxies]
+
+    plan = srv.compile(
+        get=layer_paths,
+        output={"activations": True, "logits": False, "activations_to_cpu": False},
+    )
+    collector = srv.open_collector(
+        plan=plan, stop_at_last_get=True, activations_to_cpu=False,
+    )
+
+    try:
+        for batch, idx_list in _iter_batches(
+            tokens,
+            batch_size,
+            batch_token_budget=batch_token_budget,
+            sort_by_length=sort_by_length,
+        ):
+            result = collector.collect_batch(batch)
+
+            layer_acts = [result.activations[p] for p in layer_paths]
+            acts_stacked = torch.stack(layer_acts, dim=2)  # [B, S, L, H]
+            flat_data, flat_det, offsets = _flatten_batch(acts_stacked, batch)
+            yield flat_data, flat_det, offsets, idx_list
+    finally:
+        collector.close()
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1079,50 +1261,57 @@ def stream_activations(
     layers: list[int] | int,
     batch_size: int = 32,
     *,
-    backend: str = "auto",
-    **backend_kwargs: Any,
+    hook_point: str = "block",
+    sort_by_length: bool = True,
+    batch_token_budget: int | None = None,
+    **kwargs: Any,
 ) -> Generator[tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[int]], None, None]:
-    """Yield (flat_data, det, offsets, indices) per batch.
+    """Yield ``(flat_data, det, offsets, indices)`` per batch.
 
     Args:
-        model: Loaded model object (HF model or vLLM activation engine).
-        tokens: Tokenized inputs from tokenize_dialogues().
+        model: ``mirin.Model``, ``mirin.Server``, or raw ``nn.Module``
+            (auto-wrapped into ``mirin.Model``).
+        tokens: Tokenized inputs from ``tokenize_dataset``.
         layers: Layer index or list of indices.
-        batch_size: Batch size for extraction.
-        backend: Backend override ("auto", "transformers", "vllm").
-        **backend_kwargs: Backend-specific extraction options.
+        batch_size: Maximum samples per batch.
+        hook_point: ``"block"`` (post-transformer-block, default) or
+            ``"layernorm"`` (output of input layernorm).
+        sort_by_length: Sort samples by length for padding efficiency.
+        batch_token_budget: Optional max padded tokens per batch (dynamic
+            batching).  When set, ``batch_size`` becomes an upper bound.
 
     Yields:
-        (flat_data, det, offsets, indices) where:
-        - flat_data: [total_batch_tokens, n_layers, hidden] tensor
-        - det: [total_batch_tokens] bool detection mask
-        - offsets: [batch_chunk+1] int64 cumulative token counts
+        ``(flat_data, det, offsets, indices)`` where:
+
+        - flat_data: ``[total_batch_tokens, n_layers, hidden]`` tensor
+        - det: ``[total_batch_tokens]`` bool detection mask
+        - offsets: ``[batch_chunk+1]`` int64 cumulative token counts
         - indices: original sample indices for this batch
     """
+    import warnings
+
+    if "backend" in kwargs:
+        warnings.warn(
+            "The 'backend' parameter is deprecated and ignored. "
+            "Pass a mirin.Model or mirin.Server directly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        kwargs.pop("backend")
+
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
 
     layers = [layers] if isinstance(layers, int) else list(layers)
-    merged_kwargs = get_context_defaults()
-    merged_kwargs.update(backend_kwargs)
-    selected_backend = backend
-    if selected_backend == "auto":
-        context_backend = merged_kwargs.pop("backend", "auto")
-        if isinstance(context_backend, str):
-            selected_backend = context_backend
-    else:
-        merged_kwargs.pop("backend", None)
+    model = _ensure_model(model)
 
-    backend_impl = resolve_backend(model, backend=selected_backend)
+    import mirin
 
-    for flat_data, det, offsets, idx in backend_impl.stream_raw(
-        model_obj=model,
-        tokens=tokens,
-        layers=layers,
-        batch_size=batch_size,
-        **merged_kwargs,
-    ):
-        yield flat_data, det, offsets, idx
+    stream_fn = _stream_server if isinstance(model, mirin.Server) else _stream_model
+    yield from stream_fn(
+        model, tokens, layers, batch_size, hook_point,
+        sort_by_length, batch_token_budget,
+    )
 
 
 def collect_activations(
@@ -1132,48 +1321,50 @@ def collect_activations(
     batch_size: int = 32,
     pool: str | None = None,
     *,
-    backend: str = "auto",
+    hook_point: str = "block",
+    sort_by_length: bool = True,
+    batch_token_budget: int | None = None,
     progress: bool = False,
     progress_desc: str | None = None,
     progress_leave: bool = False,
-    **backend_kwargs: Any,
+    **kwargs: Any,
 ) -> Activations:
-    """Collect all activations into single Activations object.
+    """Collect all activations into a single ``Activations`` object.
 
     Args:
-        model: Loaded model object (HF model or vLLM activation engine).
-        tokens: Tokenized inputs from tokenize_dialogues().
+        model: ``mirin.Model``, ``mirin.Server``, or raw ``nn.Module``
+            (auto-wrapped into ``mirin.Model``).
+        tokens: Tokenized inputs from ``tokenize_dataset``.
         layers: Layer index or list of indices.
-        batch_size: Batch size for extraction.
-        pool: Optional pooling over sequence ("mean", "max", "last_token").
-        backend: Backend override ("auto", "transformers", "vllm").
-        **backend_kwargs: Backend-specific extraction options.
+        batch_size: Maximum samples per batch.
+        pool: Optional pooling over sequence (``"mean"``, ``"max"``,
+            ``"last_token"``).
+        hook_point: ``"block"`` or ``"layernorm"``.
+        sort_by_length: Sort samples by length for padding efficiency.
+        batch_token_budget: Optional max padded tokens per batch.
+        progress: Show a tqdm progress bar.
 
     Returns:
-        Activations with shape:
-        - Single layer, no pool: flat [total_tokens, hidden] with offsets
-        - Multiple layers, no pool: flat [total_tokens, n_layers, hidden] with offsets
-        - Pooled: [batch, hidden] or [batch, n_layers, hidden]
+        ``Activations`` with shape:
+
+        - Single layer, no pool: flat ``[total_tokens, hidden]`` with offsets
+        - Multiple layers, no pool: flat ``[total_tokens, n_layers, hidden]``
+        - Pooled: ``[batch, hidden]`` or ``[batch, n_layers, hidden]``
     """
+    import warnings
+
+    if "backend" in kwargs:
+        warnings.warn(
+            "The 'backend' parameter is deprecated and ignored. "
+            "Pass a mirin.Model or mirin.Server directly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        kwargs.pop("backend")
+
     layers = [layers] if isinstance(layers, int) else list(layers)
     single_layer = len(layers) == 1
     n = len(tokens)
-    stream_kwargs = dict(backend_kwargs)
-    if (
-        pool in {"mean", "last_token"}
-        and "vllm_pool_mode" not in stream_kwargs
-    ):
-        try:
-            backend_impl = resolve_backend(model, backend=backend)
-            if (
-                getattr(backend_impl, "name", None) == "vllm"
-                and bool(tokens.detection_mask.bool().all().item())
-            ):
-                # Native vLLM pooled capture avoids exporting full token streams
-                # when pooling over all tokens.
-                stream_kwargs["vllm_pool_mode"] = pool
-        except Exception:
-            pass
 
     def _iter_stream():
         iterator = stream_activations(
@@ -1181,8 +1372,9 @@ def collect_activations(
             tokens,
             layers,
             batch_size,
-            backend=backend,
-            **stream_kwargs,
+            hook_point=hook_point,
+            sort_by_length=sort_by_length,
+            batch_token_budget=batch_token_budget,
         )
         if progress and tqdm is not None:
             desc = progress_desc or ("collect+pool" if pool else "collect")
@@ -1196,20 +1388,13 @@ def collect_activations(
             available = [name for name in dir(P) if not name.startswith("_")]
             raise ValueError(f"Unknown pooling method: {pool}. Available: {available}")
 
-        # Collect as [batch, layer, hidden]
         out: torch.Tensor | None = None
         for flat_data, det, offsets, idx in _iter_stream():
-            # flat_data: [T, n_layers, hidden]
             if out is None:
                 out = torch.zeros(
-                    n,
-                    len(layers),
-                    flat_data.shape[-1],
-                    dtype=flat_data.dtype,
-                    device=flat_data.device,
+                    n, len(layers), flat_data.shape[-1],
+                    dtype=flat_data.dtype, device=flat_data.device,
                 )
-
-            # Vectorized pooling over all layers at once: [T, L, H] -> [B, L, H]
             pooled = pool_fn(flat_data, det, offsets=offsets)
             out_idx = torch.tensor(idx, dtype=torch.long, device=pooled.device)
             out[out_idx] = pooled
@@ -1217,7 +1402,6 @@ def collect_activations(
         if out is None:
             out = torch.zeros(n, len(layers), 0, dtype=torch.float32)
         elif out.is_cuda:
-            # Keep all reduction work on GPU, move to CPU only once at the end.
             out = out.cpu()
 
         if single_layer:
@@ -1232,7 +1416,6 @@ def collect_activations(
             s, e = int(offsets[j]), int(offsets[j + 1])
             per_sample[idx[j]] = (flat_data[s:e], det[s:e])
 
-    # Build global flat tensor and offsets
     all_data: list[torch.Tensor] = []
     all_det: list[torch.Tensor] = []
     global_offsets = torch.zeros(n + 1, dtype=torch.int64)
@@ -1249,7 +1432,6 @@ def collect_activations(
         cat_data = torch.cat(all_data, dim=0)
         cat_det = torch.cat(all_det, dim=0)
         if cat_data.is_cuda:
-            # Build flat representation on GPU, transfer once after concatenation.
             cat_data = cat_data.cpu()
             cat_det = cat_det.cpu()
     else:
@@ -1257,22 +1439,15 @@ def collect_activations(
         cat_det = torch.empty(0, dtype=torch.bool)
 
     if single_layer:
-        # Squeeze layer dim: [T, 1, hidden] → [T, hidden]
         if cat_data.ndim == 2:
-            pass  # already [T, hidden]
+            pass
         else:
             cat_data = cat_data.squeeze(1)
         return Activations(
-            data=cat_data,
-            dims="bsh",
-            offsets=global_offsets,
-            det=cat_det,
-            layers=None,
+            data=cat_data, dims="bsh", offsets=global_offsets,
+            det=cat_det, layers=None,
         )
     return Activations(
-        data=cat_data,
-        dims="blsh",
-        offsets=global_offsets,
-        det=cat_det,
-        layers=tuple(layers),
+        data=cat_data, dims="blsh", offsets=global_offsets,
+        det=cat_det, layers=tuple(layers),
     )

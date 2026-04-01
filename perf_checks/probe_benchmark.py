@@ -7,8 +7,8 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from utils import TimingResult, measure_with_warmup, timer
 
+import mirin
 import probelab as pl
-from probelab.models import HookedModel
 from probelab.processing import tokenize_dataset
 
 torch.set_float32_matmul_precision("high")
@@ -42,30 +42,19 @@ def benchmark_activation_collection(
     # Get tokenized inputs for activation collection
     inputs = tokenize_dataset(dataset, tokenizer)
 
-    # Measure activation collection with HookedModel
-    def collect_with_hooks():
-        with HookedModel(model, layers=layers) as hooked_model:
-            activations = []
+    # Measure activation collection with mirin
+    ti_model = mirin.Model(model, rename=mirin.renames.llm)
 
-            # Process in batches
-            for start_idx in range(0, len(inputs["input_ids"]), batch_size):
-                end_idx = min(start_idx + batch_size, len(inputs["input_ids"]))
-                batch_inputs = {
-                    k: v[start_idx:end_idx].to(model.device) for k, v in inputs.items()
-                }
-
-                # Get activations
-                batch_acts = hooked_model.get_activations(batch_inputs)
-                # Use non_blocking for async GPU->CPU transfer
-                activations.append(batch_acts.to("cpu", non_blocking=True))
-
-            return torch.cat(activations, dim=1)
+    def collect_with_mirin():
+        return pl.collect_activations(
+            ti_model, inputs, layers=layers, batch_size=batch_size,
+        )
 
     hook_result = measure_with_warmup(
-        collect_with_hooks,
+        collect_with_mirin,
         warmup_runs=1,
         measurement_runs=3,
-        name="Activation Collection (HookedModel - all positions)",
+        name="Activation Collection (mirin)",
     )
     results["activation_collection_hooks"] = hook_result
 

@@ -16,21 +16,6 @@ class Role(str, Enum):
     ASSISTANT = "assistant"
 
 
-class HookPoint(str, Enum):
-    """Where to extract activations from the model.
-
-    PRE_LAYERNORM: Before layer normalization (input to layernorm)
-                   Earlier in computation, less processed
-
-    POST_BLOCK: After transformer block + final layernorm
-               Matches HuggingFace hidden_states semantics
-               Default recommended for most use cases
-    """
-
-    PRE_LAYERNORM = "pre_layernorm"
-    POST_BLOCK = "post_block"
-
-
 class AggregationMethod(str, Enum):
     MEAN = "mean"
     MAX = "max"
