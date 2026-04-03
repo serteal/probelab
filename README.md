@@ -24,14 +24,14 @@ import mirin as mi
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import probelab as pl
 
-# Load model
-model = AutoModelForCausalLM.from_pretrained(
+# Load and wrap model
+hf_model = AutoModelForCausalLM.from_pretrained(
     model_name := "meta-llama/Llama-3.1-8B-Instruct",
     torch_dtype=torch.bfloat16,
     device_map="auto",
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-mirin_model = mi.Model(model, rename=mi.renames.llm, tokenizer=tokenizer)
+model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
 
 # Load and combine datasets
 train_ds, test_ds = (
@@ -43,8 +43,8 @@ train_tokens = pl.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant(
 test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
 # Collect activations (single layer returns no LAYER axis)
-train_acts = pl.collect_activations(mirin_model, train_tokens, layers=[16])
-test_acts = pl.collect_activations(mirin_model, test_tokens, layers=[16])
+train_acts = pl.collect_activations(model, train_tokens, layers=[16])
+test_acts = pl.collect_activations(model, test_tokens, layers=[16])
 
 # Pool over sequence dimension
 train_prepared = train_acts.mean("s")

@@ -2,6 +2,7 @@ import gc
 import sys
 import time
 
+import mirin as mi
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -36,11 +37,12 @@ print(f"Test tokenized in {time.time() - t0:.1f}s: {len(test_tokens)} samples, {
 # Load model
 print("\nLoading model...")
 t0 = time.time()
-model = AutoModelForCausalLM.from_pretrained(
+hf_model = AutoModelForCausalLM.from_pretrained(
     "google/gemma-3-27b-it", dtype=torch.bfloat16, device_map="auto"
 ).eval()
-for param in model.parameters():
+for param in hf_model.parameters():
     param.requires_grad = False
+model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
 print(f"Model loaded in {time.time() - t0:.1f}s")
 
 # Collect activations with inline mean pooling (avoids storing all tokens)
@@ -74,7 +76,10 @@ print(f"Test done in {elapsed:.0f}s: {test_prepared.data.shape}")
 
 # Free the model
 print("Freeing model...")
-del model; gc.collect(); torch.cuda.empty_cache()
+del model
+del hf_model
+gc.collect()
+torch.cuda.empty_cache()
 
 # Train logistic probe (C=0.01, on GPU since model is freed)
 print("\nTraining logistic probe (C=0.01)...")

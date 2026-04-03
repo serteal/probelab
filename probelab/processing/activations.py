@@ -1073,17 +1073,12 @@ class Activations:
 
 
 def _ensure_model(model_obj: object) -> object:
-    """Wrap a raw ``nn.Module`` into ``mirin.Model`` if needed."""
+    """Require a ``mirin.Model`` for activation collection."""
     import mirin
 
     if isinstance(model_obj, mirin.Model):
         return model_obj
-    if isinstance(model_obj, torch.nn.Module):
-        return mirin.Model(model_obj, rename=mirin.renames.llm)
-    raise TypeError(
-        f"Expected mirin.Model or torch.nn.Module, "
-        f"got {type(model_obj).__name__}"
-    )
+    raise TypeError(f"Expected mirin.Model, got {type(model_obj).__name__}")
 
 def _iter_batch_indices(
     tokens: "Tokens",
@@ -1238,8 +1233,7 @@ def stream_activations(
     """Yield ``(flat_data, det, offsets, indices)`` per batch.
 
     Args:
-        model: ``mirin.Model`` or raw ``nn.Module``
-            (auto-wrapped into ``mirin.Model``).
+        model: ``mirin.Model``.
         tokens: Tokenized inputs from ``tokenize_dataset``.
         layers: Layer index or list of indices.
         batch_size: Maximum samples per batch.
@@ -1285,8 +1279,7 @@ def collect_activations(
     """Collect all activations into a single ``Activations`` object.
 
     Args:
-        model: ``mirin.Model`` or raw ``nn.Module``
-            (auto-wrapped into ``mirin.Model``).
+        model: ``mirin.Model``.
         tokens: Tokenized inputs from ``tokenize_dataset``.
         layers: Layer index or list of indices.
         batch_size: Maximum samples per batch.

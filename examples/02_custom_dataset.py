@@ -5,6 +5,7 @@ the built-in registry. Useful for custom data or testing on specific examples.
 """
 
 import torch
+import mirin as mi
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
@@ -93,12 +94,13 @@ print(f"Test: {test_ds}")
 
 # Use in standard workflow
 print("\nLoading model...")
-model = AutoModelForCausalLM.from_pretrained(
+hf_model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
     torch_dtype=torch.bfloat16,
     device_map="auto",
 )
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
 
 # Tokenize custom dataset
 tokens = pl.tokenize_dataset(custom_dataset, tokenizer, mask=pl.masks.assistant())

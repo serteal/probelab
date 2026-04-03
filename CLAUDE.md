@@ -23,11 +23,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Main API Imports
 
 ```python
+import mirin as mi
 import probelab as pl
 
 # Load data via registry
 dataset = pl.datasets.load("circuit_breakers")
 pl.datasets.list_datasets(category="deception")
+
+# Activation collection expects a mirin.Model
+model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
 
 # Tokenize and collect activations (single layer returns no LAYER axis)
 tokens = pl.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
@@ -134,7 +138,11 @@ probelab/
 The API follows a **two-step** pattern: tokenize first, then collect activations:
 
 ```python
+import mirin as mi
 import probelab as pl
+
+# Activation collection expects a mirin.Model
+model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
 
 # 1. Tokenize with mask (determines which tokens to extract)
 tokens = pl.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
@@ -302,14 +310,15 @@ probe = pl.probes.Logistic().fit(prepared, labels_a + labels_b)
 # Stream activations to avoid OOM
 tokens = pl.tokenize_dataset(large_dataset, tokenizer, mask=pl.masks.all())
 
-for acts_batch, indices, seq_len in pl.processing.stream_activations(model, tokens, layers=[16]):
-    # Process each batch incrementally (stream returns raw tensor)
+for flat_data, det, offsets, indices in pl.processing.stream_activations(model, tokens, layers=[16]):
+    pooled = pl.pool.mean(flat_data[:, 0, :], det, offsets=offsets)
     # ... accumulate results
 ```
 
 **7. Differentiable Probe for Fine-tuning**
 ```python
-# Use probe(x) for gradient-based training
+# Use probe(x) for gradient-based training.
+# This path uses raw model hidden states directly because it needs autograd.
 hidden_states = model(..., output_hidden_states=True).hidden_states[layer]
 logits = probe(hidden_states)  # Differentiable!
 loss = some_loss_fn(logits, targets)

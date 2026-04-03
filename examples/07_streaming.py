@@ -9,6 +9,7 @@ to process in batches. This example demonstrates:
 """
 
 import torch
+import mirin as mi
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
@@ -21,12 +22,13 @@ N_SAMPLES = 400  # Simulating a large dataset
 
 # Load model
 print("Loading model...")
-model = AutoModelForCausalLM.from_pretrained(
+hf_model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
     torch_dtype=torch.bfloat16,
     device_map="auto",
 )
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
 
 # Load dataset (simulating a large dataset)
 dataset = pl.datasets.load("ultrachat").sample(N_SAMPLES, stratified=True)

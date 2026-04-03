@@ -98,13 +98,12 @@ class TestEnsureModel:
         assert _ensure_model(m) is m
         m.close()
 
-    def test_wraps_nn_module(self, tiny_model):
-        m = _ensure_model(tiny_model)
-        assert isinstance(m, mirin.Model)
-        m.close()
+    def test_rejects_raw_module(self, tiny_model):
+        with pytest.raises(TypeError, match="Expected mirin.Model"):
+            _ensure_model(tiny_model)
 
     def test_rejects_non_module(self):
-        with pytest.raises(TypeError, match="torch.nn.Module"):
+        with pytest.raises(TypeError, match="Expected mirin.Model"):
             _ensure_model("not a model")
 
 
@@ -185,10 +184,9 @@ class TestCollectActivations:
         assert acts.data.shape == (8, 2, 32)
         m.close()
 
-    def test_auto_wraps_nn_module(self, tiny_model, tiny_tokens):
-        acts = collect_activations(tiny_model, tiny_tokens, layers=[1], batch_size=4, pool="mean")
-        assert acts.dims == "bh"
-        assert acts.data.shape[0] == 8
+    def test_rejects_raw_module(self, tiny_model, tiny_tokens):
+        with pytest.raises(TypeError, match="Expected mirin.Model"):
+            collect_activations(tiny_model, tiny_tokens, layers=[1], batch_size=4, pool="mean")
 
     def test_hook_point_layernorm(self, tiny_model, tiny_tokens):
         m = mirin.Model(tiny_model)
