@@ -254,28 +254,29 @@ def _flat_mean(
 ) -> torch.Tensor:
     """Mean pool over flat [T, *] data using offsets and det mask.
 
-    Uses scatter_add for vectorized segment reduction (no Python for-loop).
+    Uses torch.segment_reduce over compacted detected rows. This avoids the
+    nondeterministic CUDA scatter_add path that was previously used here.
     """
     batch = offsets.shape[0] - 1
     det_bool = det.to(data.device).bool()
     total = data.shape[0]
     extra_dims = data.shape[1:]
 
+    if batch == 0:
+        return data.new_zeros((0, *extra_dims))
+
     seg_ids = _segment_ids(offsets, total)
-    # Zero out non-detected tokens
-    masked_data = data.clone()
-    masked_data[~det_bool] = 0
+    masked_seg_ids = seg_ids[det_bool]
+    masked_lengths = torch.bincount(masked_seg_ids, minlength=batch)
+    if not det_bool.any():
+        return data.new_zeros((batch, *extra_dims))
 
-    out = data.new_zeros(batch, *extra_dims)
-    # scatter_add needs matching shapes: expand seg_ids to [T, *extra_dims]
-    idx = seg_ids.view(-1, *([1] * len(extra_dims))).expand_as(masked_data)
-    out.scatter_add_(0, idx, masked_data.to(out.dtype))
-
-    # Count valid tokens per segment
-    counts = data.new_zeros(batch)
-    counts.scatter_add_(0, seg_ids, det_bool.to(counts.dtype))
-    counts.clamp_(min=1)
-    return out / counts.view(-1, *([1] * len(extra_dims)))
+    masked_data = data[det_bool]
+    out = torch.segment_reduce(masked_data, "mean", lengths=masked_lengths)
+    empty = masked_lengths == 0
+    if empty.any():
+        out[empty] = 0
+    return out
 
 
 def _flat_max(

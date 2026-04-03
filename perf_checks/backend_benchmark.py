@@ -1,4 +1,4 @@
-"""Benchmark comparing probelab backends: transformers vs mirin vs mirin_server.
+"""Benchmark comparing probelab backends: transformers vs mirin.
 
 Usage:
     uv run python perf_checks/backend_benchmark.py [--model MODEL] [--n-samples N]
@@ -144,7 +144,6 @@ def benchmark_one(
 def validate_correctness(
     hf_model,
     ti_model,
-    ti_server,
     tokens: Tokens,
     layers: list[int],
     batch_size: int,
@@ -157,14 +156,7 @@ def validate_correctness(
     tf_pooled = acts_tf.mean("s").data
     ti_pooled = acts_ti.mean("s").data
 
-    diffs = {"mirin_vs_transformers": (tf_pooled - ti_pooled).abs().max().item()}
-
-    if ti_server is not None:
-        acts_srv = collect_with_backend(ti_server, tokens, layers, batch_size, "mirin_server")
-        srv_pooled = acts_srv.mean("s").data
-        diffs["server_vs_transformers"] = (tf_pooled - srv_pooled).abs().max().item()
-
-    return diffs
+    return {"mirin_vs_transformers": (tf_pooled - ti_pooled).abs().max().item()}
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +171,6 @@ def main():
     parser.add_argument("--n-warmup", type=int, default=2, help="Warmup runs")
     parser.add_argument("--batch-sizes", type=str, default="8,16,32", help="Comma-separated batch sizes")
     parser.add_argument("--json-output", type=str, default=None, help="Optional JSON output path")
-    parser.add_argument("--skip-server", action="store_true", help="Skip mirin server backend")
     args = parser.parse_args()
 
     batch_sizes = [int(x) for x in args.batch_sizes.split(",")]
@@ -211,10 +202,6 @@ def main():
     print("Creating mirin wrappers...")
     ti_model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
 
-    ti_server = None
-    if not args.skip_server:
-        ti_server = mi.Server(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
-
     # Create synthetic data
     print("Generating synthetic tokens...")
     tokens = make_synthetic_tokens(tokenizer, args.n_samples)
@@ -233,7 +220,7 @@ def main():
     # Validate correctness first
     print("\nValidating numerical correctness...")
     for layer_cfg in layer_configs:
-        diffs = validate_correctness(hf_model, ti_model, ti_server, tokens, layer_cfg, batch_sizes[0])
+        diffs = validate_correctness(hf_model, ti_model, tokens, layer_cfg, batch_sizes[0])
         for name, diff in diffs.items():
             status = "PASS" if diff < 1e-3 else ("WARN" if diff < 1e-1 else "FAIL")
             print(f"  layers={layer_cfg} {name}: max_diff={diff:.2e} [{status}]")
@@ -243,9 +230,6 @@ def main():
 
     backends = ["transformers", "mirin"]
     backend_models = {"transformers": hf_model, "mirin": ti_model}
-    if ti_server is not None:
-        backends.append("mirin_server")
-        backend_models["mirin_server"] = ti_server
 
     all_results: list[BenchResult] = []
 
@@ -320,8 +304,6 @@ def main():
         print(f"\nResults saved to {args.json_output}")
 
     # Cleanup
-    if ti_server is not None:
-        ti_server.close()
     ti_model.close()
 
     print("\nDone.")

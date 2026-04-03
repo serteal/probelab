@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
-
 import pytest
 import torch
 import torch.nn as nn
@@ -14,7 +12,6 @@ import probelab as pl
 from probelab.processing.activations import (
     Activations,
     _ensure_model,
-    _resolve_get_sites,
     collect_activations,
     stream_activations,
 )
@@ -112,28 +109,6 @@ class TestEnsureModel:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_get_sites
-# ---------------------------------------------------------------------------
-
-
-class TestResolveGetSites:
-    def test_block_hook_point(self, tiny_model):
-        m = mirin.Model(tiny_model)
-        sites = _resolve_get_sites(m, [0, 2], "block")
-        assert len(sites) == 2
-        assert sites[0].path == "model.layers.0"
-        assert sites[1].path == "model.layers.2"
-        m.close()
-
-    def test_layernorm_hook_point(self, tiny_model):
-        m = mirin.Model(tiny_model)
-        sites = _resolve_get_sites(m, [1], "layernorm")
-        assert len(sites) == 1
-        assert "input_layernorm" in sites[0].path
-        m.close()
-
-
-# ---------------------------------------------------------------------------
 # stream_activations
 # ---------------------------------------------------------------------------
 
@@ -149,14 +124,6 @@ class TestStreamActivations:
             assert isinstance(det, torch.Tensor)
             assert isinstance(offsets, torch.Tensor)
             assert isinstance(idx, list)
-        m.close()
-
-    def test_backend_kwarg_deprecated(self, tiny_model, tiny_tokens):
-        m = mirin.Model(tiny_model)
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            list(stream_activations(m, tiny_tokens, layers=[0], batch_size=8, backend="auto"))
-            assert any(issubclass(x.category, DeprecationWarning) for x in w)
         m.close()
 
     def test_multi_layer(self, tiny_model, tiny_tokens):
@@ -196,6 +163,21 @@ class TestCollectActivations:
         assert acts.data.shape[0] == 8
         m.close()
 
+    def test_pool_mean_matches_stream_pooling(self, tiny_model, tiny_tokens):
+        m = mirin.Model(tiny_model)
+        try:
+            collected = collect_activations(m, tiny_tokens, layers=[1], batch_size=4, pool="mean")
+            pooled_batches: list[tuple[torch.Tensor, list[int]]] = []
+            for flat_data, det, offsets, idx in stream_activations(m, tiny_tokens, layers=[1], batch_size=4):
+                pooled = pl.pool.mean(flat_data, det, offsets=offsets).squeeze(1).cpu()
+                pooled_batches.append((pooled, idx))
+            manual = torch.zeros_like(collected.data)
+            for pooled, idx in pooled_batches:
+                manual[torch.tensor(idx, dtype=torch.long)] = pooled
+            torch.testing.assert_close(collected.data, manual)
+        finally:
+            m.close()
+
     def test_pool_multi_layer(self, tiny_model, tiny_tokens):
         m = mirin.Model(tiny_model)
         acts = collect_activations(m, tiny_tokens, layers=[0, 2], batch_size=4, pool="mean")
@@ -218,31 +200,6 @@ class TestCollectActivations:
         assert acts_block.data.shape == acts_ln.data.shape
         # Not identical (unless the model is degenerate)
         m.close()
-
-    def test_backend_kwarg_deprecated(self, tiny_model, tiny_tokens):
-        m = mirin.Model(tiny_model)
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            collect_activations(m, tiny_tokens, layers=[0], batch_size=8, backend="whatever")
-            assert any(issubclass(x.category, DeprecationWarning) for x in w)
-        m.close()
-
-    def test_server_path(self, tiny_model, tiny_tokens):
-        server = mirin.Server(tiny_model)
-        acts = collect_activations(server, tiny_tokens, layers=[1], batch_size=4, pool="mean")
-        assert acts.dims == "bh"
-        assert acts.data.shape[0] == 8
-        server.close()
-
-    def test_server_matches_local(self, tiny_model, tiny_tokens):
-        m = mirin.Model(tiny_model)
-        server = mirin.Server(tiny_model)
-        acts_local = collect_activations(m, tiny_tokens, layers=[1], batch_size=4, pool="mean")
-        acts_server = collect_activations(server, tiny_tokens, layers=[1], batch_size=4, pool="mean")
-        diff = (acts_local.data - acts_server.data).abs().max().item()
-        assert diff < 1e-5, f"Local vs server max diff: {diff}"
-        m.close()
-        server.close()
 
     def test_batch_token_budget(self, tiny_model, tiny_tokens):
         m = mirin.Model(tiny_model)

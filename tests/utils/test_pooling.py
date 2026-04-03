@@ -52,6 +52,68 @@ class TestPoolMean:
         torch.testing.assert_close(result[0], torch.tensor([2.0, 3.0]))
         torch.testing.assert_close(result[1], torch.tensor([0.0, 0.0]))
 
+    def test_mean_pool_flat_offsets_matches_manual_reference(self):
+        """Flat masked mean should match a simple segment-wise reference."""
+        data = torch.tensor([
+            [1.0, 2.0],
+            [3.0, 4.0],
+            [5.0, 6.0],
+            [7.0, 8.0],
+            [9.0, 10.0],
+            [11.0, 12.0],
+        ])
+        det = torch.tensor([True, False, True, False, False, True])
+        offsets = torch.tensor([0, 3, 5, 6], dtype=torch.int64)
+
+        result = pl.pool.mean(data, det, offsets=offsets)
+
+        expected = torch.tensor([
+            [3.0, 4.0],    # mean of rows 0 and 2
+            [0.0, 0.0],    # no detected rows in segment 1
+            [11.0, 12.0],  # mean of row 5
+        ])
+        torch.testing.assert_close(result, expected)
+
+    def test_mean_pool_flat_offsets_matches_padded_path(self):
+        """Flat and padded masked mean should agree on the same logical batch."""
+        padded = torch.tensor([
+            [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [0.0, 0.0]],
+            [[7.0, 8.0], [9.0, 10.0], [0.0, 0.0], [0.0, 0.0]],
+            [[11.0, 12.0], [12.0, 13.0], [13.0, 14.0], [14.0, 15.0]],
+        ])
+        attn = torch.tensor([
+            [True, True, True, False],
+            [True, True, False, False],
+            [True, True, True, True],
+        ])
+        det = torch.tensor([
+            [True, False, True, False],
+            [False, False, False, False],
+            [True, False, False, True],
+        ])
+        flat = padded[attn]
+        flat_det = det[attn]
+        lengths = attn.sum(dim=1, dtype=torch.int64)
+        offsets = torch.zeros(attn.shape[0] + 1, dtype=torch.int64)
+        offsets[1:] = lengths.cumsum(0)
+
+        flat_result = pl.pool.mean(flat, flat_det, offsets=offsets)
+        padded_result = pl.pool.mean(padded, det)
+
+        torch.testing.assert_close(flat_result, padded_result)
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_mean_pool_flat_offsets_bfloat16_is_repeatable_on_cuda(self):
+        """Flat bf16 mean should be stable for identical inputs on CUDA."""
+        data = torch.randn(128, 64, device="cuda", dtype=torch.bfloat16)
+        det = (torch.arange(128, device="cuda") % 3) == 0
+        offsets = torch.tensor([0, 31, 77, 128], device="cuda", dtype=torch.int64)
+
+        first = pl.pool.mean(data, det, offsets=offsets)
+        second = pl.pool.mean(data, det, offsets=offsets)
+
+        torch.testing.assert_close(first, second)
+
 
 class TestPoolMax:
     """Tests for pl.pool.max."""
@@ -98,6 +160,28 @@ class TestPoolMax:
         torch.testing.assert_close(result[0], torch.tensor([3.0, 4.0]))
         torch.testing.assert_close(result[1], torch.tensor([0.0, 0.0]))
 
+    def test_max_pool_flat_offsets_matches_manual_reference(self):
+        """Flat max should match a simple segment-wise reference."""
+        data = torch.tensor([
+            [1.0, 2.0],
+            [3.0, 9.0],
+            [5.0, 6.0],
+            [7.0, 8.0],
+            [9.0, 10.0],
+            [11.0, 12.0],
+        ])
+        det = torch.tensor([True, False, True, False, False, True])
+        offsets = torch.tensor([0, 3, 5, 6], dtype=torch.int64)
+
+        result = pl.pool.max(data, det, offsets=offsets)
+
+        expected = torch.tensor([
+            [5.0, 6.0],    # max of rows 0 and 2
+            [0.0, 0.0],    # no detected rows in segment 1
+            [11.0, 12.0],  # only row 5
+        ])
+        torch.testing.assert_close(result, expected)
+
 
 class TestPoolLastToken:
     """Tests for pl.pool.last_token."""
@@ -143,6 +227,28 @@ class TestPoolLastToken:
         assert result.shape == (2, 2)
         torch.testing.assert_close(result[0], torch.tensor([3.0, 4.0]))
         torch.testing.assert_close(result[1], torch.tensor([0.0, 0.0]))
+
+    def test_last_token_flat_offsets_matches_manual_reference(self):
+        """Flat last-token should match the last detected row per segment."""
+        data = torch.tensor([
+            [1.0, 2.0],
+            [3.0, 4.0],
+            [5.0, 6.0],
+            [7.0, 8.0],
+            [9.0, 10.0],
+            [11.0, 12.0],
+        ])
+        det = torch.tensor([True, False, True, False, False, True])
+        offsets = torch.tensor([0, 3, 5, 6], dtype=torch.int64)
+
+        result = pl.pool.last_token(data, det, offsets=offsets)
+
+        expected = torch.tensor([
+            [5.0, 6.0],    # last detected row in segment 0
+            [0.0, 0.0],    # no detected rows in segment 1
+            [11.0, 12.0],  # only row 5
+        ])
+        torch.testing.assert_close(result, expected)
 
 
 class TestPool4D:
@@ -312,6 +418,33 @@ class TestPoolEMA:
 
         assert result.shape == (2, 2, 1)
 
+    def test_ema_flat_offsets_matches_padded_path(self):
+        """Flat EMA should match the padded-path reference."""
+        padded = torch.tensor([
+            [[1.0], [2.0], [100.0], [100.0]],
+            [[5.0], [6.0], [7.0], [100.0]],
+            [[11.0], [12.0], [13.0], [14.0]],
+        ])
+        attn = torch.tensor([
+            [True, True, False, False],
+            [True, True, True, False],
+            [True, True, True, True],
+        ])
+        det = torch.tensor([
+            [True, True, False, False],
+            [True, True, True, False],
+            [True, False, False, True],
+        ])
+        flat = padded[attn]
+        flat_det = det[attn]
+        offsets = torch.zeros(attn.shape[0] + 1, dtype=torch.int64)
+        offsets[1:] = attn.sum(dim=1, dtype=torch.int64).cumsum(0)
+
+        flat_result = pl.pool.ema(flat, flat_det, offsets=offsets, alpha=0.5)
+        padded_result = pl.pool.ema(padded, det, alpha=0.5)
+
+        torch.testing.assert_close(flat_result, padded_result)
+
 
 class TestPoolRolling:
     """Tests for pl.pool.rolling."""
@@ -392,6 +525,33 @@ class TestPoolRolling:
         result = pl.pool.rolling(tensor, mask, dim=2, window_size=2)
 
         assert result.shape == (2, 2, 1)
+
+    def test_rolling_flat_offsets_matches_padded_path(self):
+        """Flat rolling should match the padded-path reference."""
+        padded = torch.tensor([
+            [[1.0], [2.0], [100.0], [100.0]],
+            [[5.0], [6.0], [7.0], [100.0]],
+            [[11.0], [12.0], [13.0], [14.0]],
+        ])
+        attn = torch.tensor([
+            [True, True, False, False],
+            [True, True, True, False],
+            [True, True, True, True],
+        ])
+        det = torch.tensor([
+            [True, True, False, False],
+            [True, True, True, False],
+            [True, False, False, True],
+        ])
+        flat = padded[attn]
+        flat_det = det[attn]
+        offsets = torch.zeros(attn.shape[0] + 1, dtype=torch.int64)
+        offsets[1:] = attn.sum(dim=1, dtype=torch.int64).cumsum(0)
+
+        flat_result = pl.pool.rolling(flat, flat_det, offsets=offsets, window_size=2)
+        padded_result = pl.pool.rolling(padded, det, window_size=2)
+
+        torch.testing.assert_close(flat_result, padded_result)
 
 
 class TestPoolNegativeValues:
@@ -553,3 +713,27 @@ class TestPoolLargeSequences:
         result = pl.pool.mean(tensor, mask, dim=2)
 
         assert result.shape == (batch, layers, hidden)
+
+
+class TestPoolDeterminismCUDA:
+    """Repeatability checks for flat CUDA bf16 pooling paths."""
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    @pytest.mark.parametrize(
+        ("name", "fn"),
+        [
+            ("max", lambda x, m, o: pl.pool.max(x, m, offsets=o)),
+            ("last_token", lambda x, m, o: pl.pool.last_token(x, m, offsets=o)),
+            ("ema", lambda x, m, o: pl.pool.ema(x, m, offsets=o, alpha=0.5)),
+            ("rolling", lambda x, m, o: pl.pool.rolling(x, m, offsets=o, window_size=3)),
+        ],
+    )
+    def test_flat_bfloat16_repeatable(self, name, fn):
+        data = torch.randn(128, 64, device="cuda", dtype=torch.bfloat16)
+        det = (torch.arange(128, device="cuda") % 3) == 0
+        offsets = torch.tensor([0, 31, 77, 128], device="cuda", dtype=torch.int64)
+
+        first = fn(data, det, offsets)
+        second = fn(data, det, offsets)
+
+        torch.testing.assert_close(first, second, msg=f"{name} should be repeatable on CUDA")

@@ -20,6 +20,7 @@ uv sync
 
 ```python
 import torch
+import mirin as mi
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import probelab as pl
 
@@ -30,6 +31,7 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
+mirin_model = mi.Model(model, rename=mi.renames.llm, tokenizer=tokenizer)
 
 # Load and combine datasets
 train_ds, test_ds = (
@@ -41,12 +43,12 @@ train_tokens = pl.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant(
 test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
 
 # Collect activations (single layer returns no LAYER axis)
-train_acts = pl.collect_activations(model, train_tokens, layers=[16])
-test_acts = pl.collect_activations(model, test_tokens, layers=[16])
+train_acts = pl.collect_activations(mirin_model, train_tokens, layers=[16])
+test_acts = pl.collect_activations(mirin_model, test_tokens, layers=[16])
 
 # Pool over sequence dimension
-train_prepared = train_acts.mean_pool()
-test_prepared = test_acts.mean_pool()
+train_prepared = train_acts.mean("s")
+test_prepared = test_acts.mean("s")
 
 # Train and evaluate (probes auto-detect device from input)
 for name, probe in [
