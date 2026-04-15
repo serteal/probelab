@@ -203,6 +203,12 @@ def preprocess_dialogue(
         else:
             processed.append({"role": message.role, "content": message.content.strip()})
 
+    # Ensure conversation starts with user for strict-alternation templates
+    # (e.g. Gemma).  Prepend an empty user turn if the first message is
+    # assistant, so the resulting sequence is user/assistant/...
+    if fold_system and processed and str(processed[0]["role"]).split(".")[-1].lower() != "user":
+        processed.insert(0, {"role": "user", "content": ""})
+
     return processed
 
 

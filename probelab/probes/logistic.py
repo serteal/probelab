@@ -85,17 +85,17 @@ class Logistic(BaseProbe):
         working_dtype = self._resolve_dtype(features.dtype)
         self._training_dtype = working_dtype
 
-        features = features.to(self.device, dtype=working_dtype)
-        labels = labels.to(self.device, dtype=working_dtype)
+        features = features.to(dtype=working_dtype)  # keep on CPU
+        labels = labels.to(dtype=working_dtype)       # keep on CPU
         d_model = features.shape[1]
 
         # Fresh state every fit()
         self._seed_everything()  # seeds weight init; no local generator needed
         self.net = _LogisticNetwork(d_model).to(self.device, dtype=working_dtype)
 
-        # Compute scaler statistics (output is [d_model], negligible memory)
-        self.scaler_mean = features.mean(0)
-        self.scaler_std = features.std(0).clamp(min=1e-8)
+        # Compute scaler statistics on CPU, then move to device
+        self.scaler_mean = features.mean(0).to(self.device)
+        self.scaler_std = features.std(0).clamp(min=1e-8).to(self.device)
         # NOTE: we do NOT pre-scale features here.  Scaling is applied
         # on-the-fly in chunks during training to avoid allocating a
         # full-size copy of the feature matrix on GPU.
@@ -115,10 +115,10 @@ class Logistic(BaseProbe):
                 perm = torch.randperm(N, device=features.device)
                 for i in range(0, N, bs):
                     idx = perm[i : i + bs]
-                    x_batch = (features[idx] - sc_mean) / sc_std
+                    x_batch = (features[idx].to(self.device) - sc_mean) / sc_std
                     optimizer.zero_grad()
                     loss = F.binary_cross_entropy_with_logits(
-                        self.net(x_batch), labels[idx]
+                        self.net(x_batch), labels[idx].to(self.device)
                     )
                     if l2_weight > 0:
                         loss = loss + l2_weight * weight_param.pow(2).sum()
@@ -139,9 +139,9 @@ class Logistic(BaseProbe):
                 optimizer.zero_grad()
                 running_loss = 0.0
                 for i in range(0, N, bs):
-                    x_chunk = (features[i : i + bs] - sc_mean) / sc_std
+                    x_chunk = (features[i : i + bs].to(self.device) - sc_mean) / sc_std
                     chunk_loss = F.binary_cross_entropy_with_logits(
-                        self.net(x_chunk), labels[i : i + bs], reduction="sum"
+                        self.net(x_chunk), labels[i : i + bs].to(self.device), reduction="sum"
                     )
                     (chunk_loss / N).backward()
                     running_loss += chunk_loss.item()

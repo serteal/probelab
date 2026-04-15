@@ -1,5 +1,6 @@
 """Base class for probes."""
 
+import copy
 import random
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import Callable
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.optim import AdamW
 
 from ..processing.activations import Activations
@@ -53,6 +55,11 @@ class BaseProbe(ABC):
         self._scheduler_fn = scheduler_fn
         self.cast = cast
         self._training_dtype: torch.dtype | None = None
+        self._optimizer = None
+        self._scheduler = None
+        self._best_val_loss = float("inf")
+        self._patience_counter = 0
+        self._best_state = None
 
     def _resolve_dtype(self, input_dtype: torch.dtype) -> torch.dtype:
         """Resolve working dtype from cast policy and input dtype."""
@@ -93,6 +100,85 @@ class BaseProbe(ABC):
             return self._scheduler_fn(optimizer)
         return None
 
+    # ------------------------------------------------------------------
+    # Composable training interface — used by multi-probe sweep training
+    # ------------------------------------------------------------------
+
+    def _create_network(self, d_model: int) -> None:
+        """Set ``self.net`` to a fresh nn.Module. Called after seeding.
+
+        Override in seq probe subclasses (Attention, MultiMax, GatedBipolar).
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement _create_network"
+        )
+
+    def setup_training(self, d_model: int, working_dtype: torch.dtype) -> torch.Generator | None:
+        """Create network, optimizer, scheduler; reset early-stopping state.
+
+        Calls ``_seed_everything()`` first so weight init is deterministic,
+        then ``_create_network(d_model)`` (subclass hook).
+
+        Returns the seeded Generator (or ``None``).
+        """
+        self._training_dtype = working_dtype
+        g = self._seed_everything()
+        self._create_network(d_model)
+        self.net.to(self.device, dtype=working_dtype)
+        self._optimizer = self._make_optimizer(
+            self.net.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay,
+        )
+        self._scheduler = self._make_scheduler(self._optimizer)
+        self._best_val_loss = float("inf")
+        self._patience_counter = 0
+        self._best_state = None
+        return g
+
+    def train_on_batch(
+        self,
+        batch_seq: torch.Tensor,
+        batch_mask: torch.Tensor,
+        batch_y: torch.Tensor,
+    ) -> None:
+        """One gradient step on a pre-loaded batch (already on device)."""
+        self._optimizer.zero_grad()
+        out = self.net(batch_seq, batch_mask)
+        logits = out[0] if isinstance(out, tuple) else out
+        loss = F.binary_cross_entropy_with_logits(logits, batch_y)
+        loss = loss + self._regularization_loss()
+        loss.backward()
+        self._optimizer.step()
+
+    def _regularization_loss(self) -> float:
+        """Override in subclasses with custom regularization (e.g. GatedBipolar)."""
+        return 0.0
+
+    def check_val(self, val_loss: float) -> bool:
+        """Update early-stopping state after a validation check.
+
+        Also steps the scheduler if one exists.
+        Returns ``True`` when training should stop.
+        """
+        if self._scheduler is not None:
+            self._scheduler.step()
+        if val_loss < self._best_val_loss:
+            self._best_val_loss = val_loss
+            self._patience_counter = 0
+            if self.net is not None:
+                self._best_state = copy.deepcopy(self.net.state_dict())
+        else:
+            self._patience_counter += 1
+        return self._patience_counter >= self.patience
+
+    def restore_best(self) -> None:
+        """Restore network weights to the best validation checkpoint, if available."""
+        if self._best_state is not None and self.net is not None:
+            self.net.load_state_dict(self._best_state)
+
+    def should_validate_at(self, epoch: int) -> bool:
+        """Whether to run validation at this epoch. Default: every epoch."""
+        return True
+
     @property
     @abstractmethod
     def fitted(self) -> bool:
@@ -129,6 +215,78 @@ class BaseProbe(ABC):
         if isinstance(y, torch.Tensor):
             return y
         return torch.tensor([l.value if hasattr(l, "value") else l for l in y])
+
+    @staticmethod
+    def _get_seq_lengths(X) -> torch.Tensor:
+        """Get per-sample sequence lengths from Activations or compatible object."""
+        if hasattr(X, "offsets") and X.offsets is not None:
+            return X.offsets[1:] - X.offsets[:-1]
+        # _SubsetActivations: compute from parent offsets
+        if hasattr(X, "_parent") and hasattr(X, "_indices"):
+            po = X._parent.offsets
+            idx = torch.tensor(X._indices, dtype=torch.long)
+            return po[idx + 1] - po[idx]
+        raise ValueError("Cannot determine sequence lengths from input")
+
+    @staticmethod
+    def _length_sorted_batches(
+        sample_indices: list[int],
+        seq_lengths: torch.Tensor,
+        batch_size: int,
+        generator: torch.Generator | None = None,
+    ) -> list[list[int]]:
+        """Group sample indices into length-sorted batches.
+
+        Sorts samples by descending sequence length so each minibatch only
+        pads to its own local max, then shuffles the batch order for
+        stochasticity.
+
+        Args:
+            sample_indices: List of sample indices to batch.
+            seq_lengths: Per-sample lengths (indexed by sample index).
+            batch_size: Max samples per batch.
+            generator: Optional RNG for batch-order shuffling.
+
+        Returns:
+            List of index-lists, each of length ≤ batch_size.
+        """
+        # Sort by descending length
+        decorated = sorted(sample_indices, key=lambda i: -int(seq_lengths[i]))
+        # Chunk into batches
+        batches = [
+            decorated[i : i + batch_size]
+            for i in range(0, len(decorated), batch_size)
+        ]
+        # Shuffle batch order (not within batches — preserves length grouping)
+        perm = torch.randperm(len(batches), generator=generator).tolist()
+        return [batches[p] for p in perm]
+
+    @staticmethod
+    def _minibatch_forward(
+        net,
+        X,
+        indices: list[int],
+        device: str,
+        dtype: torch.dtype,
+        batch_size: int,
+    ) -> torch.Tensor:
+        """Run net forward on X in minibatches, return concatenated logits.
+
+        Pads each minibatch independently to avoid materializing the full
+        padded tensor.
+        """
+        all_logits: list[torch.Tensor] = []
+        for i in range(0, len(indices), batch_size):
+            batch_idx = indices[i : i + batch_size]
+            batch_seq, batch_mask = X.pad_batch(batch_idx)
+            batch_seq = batch_seq.to(device, dtype=dtype)
+            batch_mask = batch_mask.to(device)
+            out = net(batch_seq, batch_mask)
+            # Some nets return (logits, extras), others return logits
+            logits = out[0] if isinstance(out, tuple) else out
+            all_logits.append(logits)
+            del batch_seq, batch_mask
+        return torch.cat(all_logits, dim=0)
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(fitted={self.fitted})"

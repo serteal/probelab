@@ -1,4 +1,8 @@
-"""Attention-based probe."""
+"""Multi-head self-attention (transformer encoder) probe.
+
+Down-projects tokens, prepends learnable CLS token, runs through
+a small transformer encoder, classifies from CLS output.
+"""
 
 from pathlib import Path
 from typing import Callable
@@ -11,74 +15,78 @@ from ..processing.activations import Activations
 from .base import BaseProbe
 
 
-class _AttentionNetwork(nn.Module):
-    """Attention-based neural network for sequence classification."""
+class _MHANetwork(nn.Module):
+    """Lightweight transformer encoder with CLS token."""
 
     def __init__(
         self,
         d_model: int,
-        hidden_dim: int = 64,
+        proj_dim: int = 128,
+        n_heads: int = 4,
+        n_enc_layers: int = 1,
         dropout: float = 0.1,
-        temperature: float = 1.0,
     ):
         super().__init__()
-        self.temperature = temperature
-        self.attention_norm = nn.LayerNorm(d_model)
-        self.attention_scorer = nn.Sequential(
-            nn.Linear(d_model, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1),
+        self.proj_dim = proj_dim
+        self.down_proj = nn.Linear(d_model, proj_dim)
+        self.cls_token = nn.Parameter(torch.randn(1, 1, proj_dim) * 0.02)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=proj_dim,
+            nhead=n_heads,
+            dim_feedforward=4 * proj_dim,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
         )
-        self.classifier_norm = nn.LayerNorm(d_model)
-        self.classifier = nn.Sequential(
-            nn.Linear(d_model, hidden_dim * 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1),
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=n_enc_layers, enable_nested_tensor=False,
         )
+        self.classifier = nn.Linear(proj_dim, 1)
         self._init_weights()
 
     def _init_weights(self):
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_normal_(module.weight, gain=0.5)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+        nn.init.xavier_uniform_(self.down_proj.weight)
+        nn.init.zeros_(self.down_proj.bias)
+        nn.init.xavier_uniform_(self.classifier.weight)
+        nn.init.zeros_(self.classifier.bias)
 
-    def forward(
-        self, sequences: torch.Tensor, mask: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        normed = self.attention_norm(sequences)
-        scores = self.attention_scorer(normed).squeeze(-1) / self.temperature
-        scores_masked = scores.masked_fill(~mask.bool(), float("-inf"))
-        attn_weights = torch.nan_to_num(torch.softmax(scores_masked, dim=1), nan=0.0)
-        aggregated = (attn_weights.unsqueeze(-1) * sequences).sum(dim=1)
-        logits = self.classifier(self.classifier_norm(aggregated)).squeeze(-1)
-        return logits, attn_weights
+    def forward(self, sequences: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        B = sequences.shape[0]
+        x = self.down_proj(sequences)  # [B, S, proj_dim]
+
+        # Prepend CLS token
+        cls = self.cls_token.expand(B, -1, -1)  # [B, 1, proj_dim]
+        x = torch.cat([cls, x], dim=1)  # [B, S+1, proj_dim]
+
+        # Extend mask for CLS (always valid)
+        cls_mask = torch.ones(B, 1, dtype=mask.dtype, device=mask.device)
+        ext_mask = torch.cat([cls_mask, mask], dim=1)  # [B, S+1]
+
+        # TransformerEncoder expects src_key_padding_mask: True = IGNORE
+        x = self.encoder(x, src_key_padding_mask=~ext_mask.bool())
+
+        # Classify from CLS output
+        return self.classifier(x[:, 0]).squeeze(-1)  # [B]
 
 
-class Attention(BaseProbe):
-    """Attention-based probe for sequence classification.
+class MHA(BaseProbe):
+    """Multi-head self-attention (transformer encoder) probe.
 
-    Learns attention weights over the sequence dimension. REQUIRES SEQ axis.
+    REQUIRES SEQ axis.
     """
 
     def __init__(
         self,
-        hidden_dim: int = 128,
-        dropout: float = 0.2,
-        temperature: float = 2.0,
+        proj_dim: int = 128,
+        n_heads: int = 4,
+        n_enc_layers: int = 1,
+        dropout: float = 0.1,
         learning_rate: float = 5e-4,
         weight_decay: float = 1e-3,
-        n_epochs: int = 1000,
+        n_epochs: int = 20,
         patience: int = 5,
         batch_size: int = 32,
         val_split: float = 0.2,
-        eval_interval: int = 1,
         *,
         optimizer_fn: Callable | None = None,
         scheduler_fn: Callable | None = None,
@@ -87,42 +95,39 @@ class Attention(BaseProbe):
         cast: str | None = None,
     ):
         super().__init__(device=device, seed=seed, optimizer_fn=optimizer_fn, scheduler_fn=scheduler_fn, cast=cast)
-        self.hidden_dim = hidden_dim
+        self.proj_dim = proj_dim
+        self.n_heads = n_heads
+        self.n_enc_layers = n_enc_layers
         self.dropout = dropout
-        self.temperature = temperature
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.n_epochs = n_epochs
         self.patience = patience
         self.batch_size = batch_size
         self.val_split = val_split
-        self.eval_interval = eval_interval
         self.net = None
-        self.attention_weights = None
 
     @property
     def fitted(self) -> bool:
         return self.net is not None
 
     def _create_network(self, d_model: int) -> None:
-        self.net = _AttentionNetwork(
+        self.net = _MHANetwork(
             d_model=d_model,
-            hidden_dim=self.hidden_dim,
+            proj_dim=self.proj_dim,
+            n_heads=self.n_heads,
+            n_enc_layers=self.n_enc_layers,
             dropout=self.dropout,
-            temperature=self.temperature,
         )
 
-    def should_validate_at(self, epoch: int) -> bool:
-        return epoch % self.eval_interval == 0
-
-    def fit(self, X: Activations, y: list | torch.Tensor) -> "Attention":
+    def fit(self, X: Activations, y: list | torch.Tensor) -> "MHA":
         if "l" in X.dims:
             raise ValueError(
-                f"Attention expects no LAYER axis. "
-                f"Call select(\"l\", layer) first. Current dims: {X.dims}"
+                f"MHA expects no LAYER axis. "
+                f'Call select("l", layer) first. Current dims: {X.dims}'
             )
         if "s" not in X.dims:
-            raise ValueError("Attention probe requires SEQ axis")
+            raise ValueError("MHA probe requires SEQ axis")
 
         if self.device is None:
             self.device = str(X.data.device)
@@ -171,36 +176,18 @@ class Attention(BaseProbe):
 
     def __call__(
         self, sequences: torch.Tensor, mask: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Differentiable forward pass.
-
-        Args:
-            sequences: Sequence tensor [batch, seq, hidden]
-            mask: Detection mask [batch, seq]
-
-        Returns:
-            Tuple of (logits [batch], attention_weights [batch, seq])
-        """
+    ) -> torch.Tensor:
         self._check_fitted()
         sequences = sequences.to(self.device)
         mask = mask.to(self.device)
         return self.net(sequences, mask)
 
     def predict(self, X: Activations) -> torch.Tensor:
-        """Evaluate on activations.
-
-        Args:
-            X: Activations with SEQ axis, without LAYER axis
-
-        Returns:
-            Probability of positive class [batch]
-        """
         self._check_fitted()
-
         if "l" in X.dims:
-            raise ValueError(f"Attention expects no LAYER axis. Current dims: {X.dims}")
+            raise ValueError(f"MHA expects no LAYER axis. Current dims: {X.dims}")
         if "s" not in X.dims:
-            raise ValueError("Attention probe requires SEQ axis")
+            raise ValueError("MHA probe requires SEQ axis")
 
         net_dtype = next(self.net.parameters()).dtype
         all_indices = list(range(X.batch_size))
@@ -217,16 +204,16 @@ class Attention(BaseProbe):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({
-            "hidden_dim": self.hidden_dim,
+            "proj_dim": self.proj_dim,
+            "n_heads": self.n_heads,
+            "n_enc_layers": self.n_enc_layers,
             "dropout": self.dropout,
-            "temperature": self.temperature,
             "learning_rate": self.learning_rate,
             "weight_decay": self.weight_decay,
             "n_epochs": self.n_epochs,
             "patience": self.patience,
             "batch_size": self.batch_size,
             "val_split": self.val_split,
-            "eval_interval": self.eval_interval,
             "seed": self.seed,
             "device": self.device,
             "cast": self.cast,
@@ -235,19 +222,19 @@ class Attention(BaseProbe):
         }, path)
 
     @classmethod
-    def load(cls, path: Path | str, device: str = "cpu") -> "Attention":
+    def load(cls, path: Path | str, device: str = "cpu") -> "MHA":
         state = torch.load(Path(path), map_location="cpu")
         probe = cls(
-            hidden_dim=state["hidden_dim"],
-            dropout=state.get("dropout", 0.2),
-            temperature=state.get("temperature", 2.0),
+            proj_dim=state["proj_dim"],
+            n_heads=state["n_heads"],
+            n_enc_layers=state["n_enc_layers"],
+            dropout=state.get("dropout", 0.1),
             learning_rate=state.get("learning_rate", 5e-4),
             weight_decay=state.get("weight_decay", 1e-3),
             n_epochs=state["n_epochs"],
             patience=state["patience"],
             batch_size=state.get("batch_size", 32),
             val_split=state.get("val_split", 0.2),
-            eval_interval=state.get("eval_interval", 10),
             seed=state.get("seed"),
             device=device,
             cast=state.get("cast"),
@@ -256,17 +243,17 @@ class Attention(BaseProbe):
         stored_dtype = getattr(torch, dtype_str.split(".")[-1]) if dtype_str else torch.float32
         probe._training_dtype = stored_dtype
 
-        # Infer d_model from saved weights
-        d_model = state["network_state_dict"]["attention_norm.weight"].shape[0]
-        probe.net = _AttentionNetwork(
+        d_model = state["network_state_dict"]["down_proj.weight"].shape[1]
+        probe.net = _MHANetwork(
             d_model=d_model,
-            hidden_dim=probe.hidden_dim,
+            proj_dim=probe.proj_dim,
+            n_heads=probe.n_heads,
+            n_enc_layers=probe.n_enc_layers,
             dropout=probe.dropout,
-            temperature=probe.temperature,
-        ).to(probe.device, dtype=stored_dtype)
+        ).to(device, dtype=stored_dtype)
         probe.net.load_state_dict(state["network_state_dict"])
         probe.net.eval()
         return probe
 
     def __repr__(self) -> str:
-        return f"Attention(hidden_dim={self.hidden_dim}, fitted={self.fitted})"
+        return f"MHA(proj_dim={self.proj_dim}, n_heads={self.n_heads}, fitted={self.fitted})"

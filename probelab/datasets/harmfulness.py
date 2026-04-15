@@ -136,6 +136,25 @@ def clearharm_qwen3() -> Dataset:
     )
 
 
+@_register_dataset("fortress_public", Topic.HARMFULNESS, "ScaleAI FORTRESS adversarial safety prompts")
+def fortress_public() -> Dataset:
+    """ScaleAI FORTRESS: 500 adversarial/benign prompt pairs across 3 risk domains.
+
+    Each sample yields two dialogues: adversarial (POSITIVE) and benign (NEGATIVE).
+    Risk domains: CBRNE, Criminal & Financial, Political Violence & Terrorism.
+    """
+    data = load_dataset("ScaleAI/fortress_public")["train"]
+
+    dialogues, labels = [], []
+    for row in data:
+        dialogues.append([Message("user", str(row["adversarial_prompt"]))])
+        labels.append(Label.POSITIVE)
+        dialogues.append([Message("user", str(row["benign_prompt"]))])
+        labels.append(Label.NEGATIVE)
+
+    return Dataset(dialogues, labels, "fortress_public").shuffle()
+
+
 @_register_dataset("or_bench", Topic.HARMFULNESS, "OR-Bench over-refusal benchmark")
 def or_bench(config: str = "or-bench-80k") -> Dataset:
     """Load OR-Bench dataset (over-refusal benchmark).

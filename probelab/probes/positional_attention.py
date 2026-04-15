@@ -1,4 +1,12 @@
-"""Attention-based probe."""
+"""Positional attention probe.
+
+Cross-attention with learned query tokens per head and ALiBi-style
+position bias. Lightweight — no MLP on activations, operates directly
+on raw hidden states.
+
+Reference: EleutherAI blog "Attention Probes" (2025);
+           McKenzie et al., "Detecting High-Stakes Interactions" (2025).
+"""
 
 from pathlib import Path
 from typing import Callable
@@ -11,74 +19,63 @@ from ..processing.activations import Activations
 from .base import BaseProbe
 
 
-class _AttentionNetwork(nn.Module):
-    """Attention-based neural network for sequence classification."""
+class _PositionalAttentionNetwork(nn.Module):
+    """Multi-head cross-attention with ALiBi position bias."""
 
-    def __init__(
-        self,
-        d_model: int,
-        hidden_dim: int = 64,
-        dropout: float = 0.1,
-        temperature: float = 1.0,
-    ):
+    def __init__(self, d_model: int, n_heads: int = 8):
         super().__init__()
-        self.temperature = temperature
-        self.attention_norm = nn.LayerNorm(d_model)
-        self.attention_scorer = nn.Sequential(
-            nn.Linear(d_model, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1),
-        )
-        self.classifier_norm = nn.LayerNorm(d_model)
-        self.classifier = nn.Sequential(
-            nn.Linear(d_model, hidden_dim * 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1),
-        )
-        self._init_weights()
+        self.n_heads = n_heads
+        # Per-head query and value projections: [d_model, n_heads]
+        self.query_proj = nn.Parameter(torch.zeros(d_model, n_heads))
+        self.value_proj = nn.Parameter(torch.empty(d_model, n_heads))
+        nn.init.xavier_normal_(self.value_proj, gain=0.5)
+        # Learned ALiBi-style position bias slopes
+        self.position_weights = nn.Parameter(torch.zeros(n_heads))
+        self.bias = nn.Parameter(torch.zeros(1))
 
-    def _init_weights(self):
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_normal_(module.weight, gain=0.5)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+    def forward(self, sequences: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        B, S, D = sequences.shape
+        # Attention logits: [B, S, H]
+        attn_logits = sequences @ self.query_proj
 
-    def forward(
-        self, sequences: torch.Tensor, mask: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        normed = self.attention_norm(sequences)
-        scores = self.attention_scorer(normed).squeeze(-1) / self.temperature
-        scores_masked = scores.masked_fill(~mask.bool(), float("-inf"))
-        attn_weights = torch.nan_to_num(torch.softmax(scores_masked, dim=1), nan=0.0)
-        aggregated = (attn_weights.unsqueeze(-1) * sequences).sum(dim=1)
-        logits = self.classifier(self.classifier_norm(aggregated)).squeeze(-1)
-        return logits, attn_weights
+        # Position bias: [S, H]
+        positions = torch.arange(S, device=sequences.device, dtype=sequences.dtype)
+        pos_bias = positions.unsqueeze(-1) * self.position_weights.unsqueeze(0)
+        attn_logits = attn_logits + pos_bias.unsqueeze(0)
+
+        # Mask invalid positions
+        mask_bool = mask.bool()
+        attn_logits = attn_logits.masked_fill(~mask_bool.unsqueeze(-1), float("-inf"))
+
+        # Softmax over sequence dim
+        attn_weights = torch.softmax(attn_logits, dim=1)
+        attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
+
+        # Values: [B, S, H]
+        values = sequences @ self.value_proj
+
+        # Weighted sum over sequence and heads → scalar
+        output = (attn_weights * values).sum(dim=(1, 2)) + self.bias
+        return output
 
 
-class Attention(BaseProbe):
-    """Attention-based probe for sequence classification.
+class PositionalAttention(BaseProbe):
+    """Positional attention probe with ALiBi position bias.
 
-    Learns attention weights over the sequence dimension. REQUIRES SEQ axis.
+    Lightweight cross-attention applied directly to raw activations (no MLP).
+    Per-head learned query and value projections with position-dependent bias.
+    REQUIRES SEQ axis.
     """
 
     def __init__(
         self,
-        hidden_dim: int = 128,
-        dropout: float = 0.2,
-        temperature: float = 2.0,
+        n_heads: int = 8,
         learning_rate: float = 5e-4,
         weight_decay: float = 1e-3,
-        n_epochs: int = 1000,
+        n_epochs: int = 20,
         patience: int = 5,
         batch_size: int = 32,
         val_split: float = 0.2,
-        eval_interval: int = 1,
         *,
         optimizer_fn: Callable | None = None,
         scheduler_fn: Callable | None = None,
@@ -87,42 +84,30 @@ class Attention(BaseProbe):
         cast: str | None = None,
     ):
         super().__init__(device=device, seed=seed, optimizer_fn=optimizer_fn, scheduler_fn=scheduler_fn, cast=cast)
-        self.hidden_dim = hidden_dim
-        self.dropout = dropout
-        self.temperature = temperature
+        self.n_heads = n_heads
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.n_epochs = n_epochs
         self.patience = patience
         self.batch_size = batch_size
         self.val_split = val_split
-        self.eval_interval = eval_interval
         self.net = None
-        self.attention_weights = None
 
     @property
     def fitted(self) -> bool:
         return self.net is not None
 
     def _create_network(self, d_model: int) -> None:
-        self.net = _AttentionNetwork(
-            d_model=d_model,
-            hidden_dim=self.hidden_dim,
-            dropout=self.dropout,
-            temperature=self.temperature,
-        )
+        self.net = _PositionalAttentionNetwork(d_model=d_model, n_heads=self.n_heads)
 
-    def should_validate_at(self, epoch: int) -> bool:
-        return epoch % self.eval_interval == 0
-
-    def fit(self, X: Activations, y: list | torch.Tensor) -> "Attention":
+    def fit(self, X: Activations, y: list | torch.Tensor) -> "PositionalAttention":
         if "l" in X.dims:
             raise ValueError(
-                f"Attention expects no LAYER axis. "
-                f"Call select(\"l\", layer) first. Current dims: {X.dims}"
+                f"PositionalAttention expects no LAYER axis. "
+                f'Call select("l", layer) first. Current dims: {X.dims}'
             )
         if "s" not in X.dims:
-            raise ValueError("Attention probe requires SEQ axis")
+            raise ValueError("PositionalAttention probe requires SEQ axis")
 
         if self.device is None:
             self.device = str(X.data.device)
@@ -171,36 +156,18 @@ class Attention(BaseProbe):
 
     def __call__(
         self, sequences: torch.Tensor, mask: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Differentiable forward pass.
-
-        Args:
-            sequences: Sequence tensor [batch, seq, hidden]
-            mask: Detection mask [batch, seq]
-
-        Returns:
-            Tuple of (logits [batch], attention_weights [batch, seq])
-        """
+    ) -> torch.Tensor:
         self._check_fitted()
         sequences = sequences.to(self.device)
         mask = mask.to(self.device)
         return self.net(sequences, mask)
 
     def predict(self, X: Activations) -> torch.Tensor:
-        """Evaluate on activations.
-
-        Args:
-            X: Activations with SEQ axis, without LAYER axis
-
-        Returns:
-            Probability of positive class [batch]
-        """
         self._check_fitted()
-
         if "l" in X.dims:
-            raise ValueError(f"Attention expects no LAYER axis. Current dims: {X.dims}")
+            raise ValueError(f"PositionalAttention expects no LAYER axis. Current dims: {X.dims}")
         if "s" not in X.dims:
-            raise ValueError("Attention probe requires SEQ axis")
+            raise ValueError("PositionalAttention probe requires SEQ axis")
 
         net_dtype = next(self.net.parameters()).dtype
         all_indices = list(range(X.batch_size))
@@ -217,16 +184,13 @@ class Attention(BaseProbe):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({
-            "hidden_dim": self.hidden_dim,
-            "dropout": self.dropout,
-            "temperature": self.temperature,
+            "n_heads": self.n_heads,
             "learning_rate": self.learning_rate,
             "weight_decay": self.weight_decay,
             "n_epochs": self.n_epochs,
             "patience": self.patience,
             "batch_size": self.batch_size,
             "val_split": self.val_split,
-            "eval_interval": self.eval_interval,
             "seed": self.seed,
             "device": self.device,
             "cast": self.cast,
@@ -235,19 +199,16 @@ class Attention(BaseProbe):
         }, path)
 
     @classmethod
-    def load(cls, path: Path | str, device: str = "cpu") -> "Attention":
+    def load(cls, path: Path | str, device: str = "cpu") -> "PositionalAttention":
         state = torch.load(Path(path), map_location="cpu")
         probe = cls(
-            hidden_dim=state["hidden_dim"],
-            dropout=state.get("dropout", 0.2),
-            temperature=state.get("temperature", 2.0),
+            n_heads=state["n_heads"],
             learning_rate=state.get("learning_rate", 5e-4),
             weight_decay=state.get("weight_decay", 1e-3),
             n_epochs=state["n_epochs"],
             patience=state["patience"],
             batch_size=state.get("batch_size", 32),
             val_split=state.get("val_split", 0.2),
-            eval_interval=state.get("eval_interval", 10),
             seed=state.get("seed"),
             device=device,
             cast=state.get("cast"),
@@ -256,17 +217,13 @@ class Attention(BaseProbe):
         stored_dtype = getattr(torch, dtype_str.split(".")[-1]) if dtype_str else torch.float32
         probe._training_dtype = stored_dtype
 
-        # Infer d_model from saved weights
-        d_model = state["network_state_dict"]["attention_norm.weight"].shape[0]
-        probe.net = _AttentionNetwork(
-            d_model=d_model,
-            hidden_dim=probe.hidden_dim,
-            dropout=probe.dropout,
-            temperature=probe.temperature,
-        ).to(probe.device, dtype=stored_dtype)
+        d_model = state["network_state_dict"]["query_proj"].shape[0]
+        probe.net = _PositionalAttentionNetwork(
+            d_model=d_model, n_heads=probe.n_heads,
+        ).to(device, dtype=stored_dtype)
         probe.net.load_state_dict(state["network_state_dict"])
         probe.net.eval()
         return probe
 
     def __repr__(self) -> str:
-        return f"Attention(hidden_dim={self.hidden_dim}, fitted={self.fitted})"
+        return f"PositionalAttention(n_heads={self.n_heads}, fitted={self.fitted})"

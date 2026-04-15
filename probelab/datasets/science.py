@@ -268,6 +268,27 @@ def wmdp_bio() -> Dataset:
     return Dataset(dialogues, labels, "wmdp_bio").shuffle()
 
 
+@_register_dataset("wmdp_chem", Topic.SCIENCE, "WMDP chemical security MC questions")
+def wmdp_chem() -> Dataset:
+    """WMDP-chem: 408 multiple-choice chemical security questions from CAIS."""
+    data = load_dataset("cais/wmdp", "wmdp-chem")["test"]
+
+    dialogues, labels = [], []
+
+    for item in data:
+        question = item["question"]
+        choices = item["choices"]
+        answer_idx = item["answer"]
+        formatted = question + "\n\n" + "\n".join(
+            f"{chr(65 + i)}. {c}" for i, c in enumerate(choices)
+        )
+        answer_text = f"The answer is {chr(65 + answer_idx)}: {choices[answer_idx]}"
+        dialogues.append([Message("user", formatted), Message("assistant", answer_text)])
+        labels.append(Label.POSITIVE)
+
+    return Dataset(dialogues, labels, "wmdp_chem").shuffle()
+
+
 @_register_dataset("virology_qa", Topic.SCIENCE, "Virology Q/A pairs")
 def virology_qa(split: str | None = None, path: str | None = None) -> Dataset:
     """Virology 8.6K+ dual-use virology Q/A pairs (augmented, multilingual).

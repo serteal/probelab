@@ -69,6 +69,8 @@ class MLP(BaseProbe):
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.net = None
+        self.scaler_mean = None
+        self.scaler_std = None
 
     @property
     def fitted(self) -> bool:
@@ -107,8 +109,8 @@ class MLP(BaseProbe):
         working_dtype = self._resolve_dtype(features.dtype)
         self._training_dtype = working_dtype
 
-        features = features.to(self.device, dtype=working_dtype)
-        labels = labels.to(self.device, dtype=working_dtype)
+        features = features.to(dtype=working_dtype)  # keep on CPU
+        labels = labels.to(dtype=working_dtype)       # keep on CPU
         d_model = features.shape[1]
 
         # Fresh state every fit()
@@ -133,6 +135,8 @@ class MLP(BaseProbe):
         self.net.train()
         for _ in range(self.n_epochs):
             for batch_features, batch_labels in dataloader:
+                batch_features = batch_features.to(self.device)
+                batch_labels = batch_labels.to(self.device)
                 optimizer.zero_grad()
                 loss = F.binary_cross_entropy_with_logits(
                     self.net(batch_features), batch_labels
@@ -156,6 +160,8 @@ class MLP(BaseProbe):
         """
         self._check_fitted()
         x = x.to(self.device)
+        if self.scaler_mean is not None:
+            x = (x - self.scaler_mean) / self.scaler_std
         return self.net(x)
 
     def predict(self, X: Activations) -> torch.Tensor:
@@ -206,6 +212,8 @@ class MLP(BaseProbe):
             "cast": self.cast,
             "training_dtype": str(self._training_dtype),
             "network_state": self.net.state_dict(),
+            "scaler_mean": self.scaler_mean,
+            "scaler_std": self.scaler_std,
         }, path)
 
     @classmethod
@@ -238,6 +246,13 @@ class MLP(BaseProbe):
         ).to(probe.device, dtype=stored_dtype)
         probe.net.load_state_dict(state["network_state"])
         probe.net.eval()
+
+        # Restore scaler (backwards compat: old checkpoints lack these keys)
+        sc_mean = state.get("scaler_mean")
+        if sc_mean is not None:
+            probe.scaler_mean = sc_mean.to(probe.device, dtype=stored_dtype)
+            probe.scaler_std = state["scaler_std"].to(probe.device, dtype=stored_dtype)
+
         return probe
 
     def __repr__(self) -> str:

@@ -92,6 +92,14 @@ class MultiMax(BaseProbe):
     def fitted(self) -> bool:
         return self.net is not None
 
+    def _create_network(self, d_model: int) -> None:
+        self.net = _MultiMaxNetwork(
+            d_model=d_model,
+            n_heads=self.n_heads,
+            mlp_hidden_dim=self.mlp_hidden_dim,
+            dropout=self.dropout,
+        )
+
     def fit(self, X: Activations, y: list | torch.Tensor) -> "MultiMax":
         if "l" in X.dims:
             raise ValueError(
@@ -101,85 +109,48 @@ class MultiMax(BaseProbe):
         if "s" not in X.dims:
             raise ValueError("MultiMax probe requires SEQ axis")
 
-        # Auto-detect device from input if not specified
         if self.device is None:
             self.device = str(X.data.device)
 
         y_tensor = self._to_labels(y)
-        d_model = X.hidden_size
-
         working_dtype = self._resolve_dtype(X.data.dtype)
-        self._training_dtype = working_dtype
-        labels = y_tensor.to(dtype=working_dtype)
+        labels = y_tensor.to(self.device, dtype=working_dtype)
 
-        # Fresh state every fit()
-        g = self._seed_everything()
-        self.net = _MultiMaxNetwork(
-            d_model=d_model,
-            n_heads=self.n_heads,
-            mlp_hidden_dim=self.mlp_hidden_dim,
-            dropout=self.dropout,
-        ).to(self.device, dtype=working_dtype)
+        g = self.setup_training(X.hidden_size, working_dtype)
 
-        optimizer = self._make_optimizer(
-            self.net.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
-        )
-        scheduler = self._make_scheduler(optimizer)
-
-        # Train/validation split
         n_samples = X.batch_size
         n_val = max(1, int(self.val_split * n_samples))
-        indices = torch.randperm(n_samples, generator=g)
+        indices = torch.randperm(n_samples, device="cpu", generator=g)
         train_idx, val_idx = indices[n_val:].tolist(), indices[:n_val].tolist()
         batch_size = min(self.batch_size, len(train_idx))
 
-        # Pre-pad validation
-        val_seq, val_mask = X.pad_batch(val_idx)
-
-        best_val_loss = float("inf")
-        patience_counter = 0
+        seq_lengths = self._get_seq_lengths(X)
+        val_y = labels[val_idx]
 
         self.net.train()
         for epoch in range(self.n_epochs):
-            perm = torch.randperm(len(train_idx), generator=g)
-            shuffled = [train_idx[p] for p in perm.tolist()]
-
-            for i in range(0, len(shuffled), batch_size):
-                batch_idx = shuffled[i : i + batch_size]
+            batches = self._length_sorted_batches(
+                train_idx, seq_lengths, batch_size, generator=g,
+            )
+            for batch_idx in batches:
                 batch_seq, batch_mask = X.pad_batch(batch_idx)
                 batch_seq = batch_seq.to(self.device)
                 batch_mask = batch_mask.to(self.device)
-                batch_y = labels[batch_idx].to(self.device)
+                self.train_on_batch(batch_seq, batch_mask, labels[batch_idx])
 
-                optimizer.zero_grad()
-                loss = F.binary_cross_entropy_with_logits(
-                    self.net(batch_seq, batch_mask), batch_y
-                )
-                loss.backward()
-                optimizer.step()
-
-            # Validation
-            self.net.eval()
-            with torch.no_grad():
-                val_loss = F.binary_cross_entropy_with_logits(
-                    self.net(val_seq.to(self.device), val_mask.to(self.device)),
-                    labels[val_idx].to(self.device)
-                )
-            self.net.train()
-
-            if scheduler is not None:
-                scheduler.step()
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= self.patience:
+            if self.should_validate_at(epoch):
+                self.net.eval()
+                with torch.no_grad():
+                    val_logits = self._minibatch_forward(
+                        self.net, X, val_idx, self.device,
+                        working_dtype, batch_size,
+                    )
+                val_loss = F.binary_cross_entropy_with_logits(val_logits, val_y).item()
+                if self.check_val(val_loss):
                     break
-            if val_loss < 0.001:
-                break
+                self.net.train()
 
+        self.restore_best()
         self.net.eval()
         return self
 
@@ -215,12 +186,14 @@ class MultiMax(BaseProbe):
             raise ValueError("MultiMax probe requires SEQ axis")
 
         net_dtype = next(self.net.parameters()).dtype
-        sequences, mask = X.to_padded()
-        sequences = sequences.to(self.device, dtype=net_dtype)
-        mask = mask.to(self.device)
+        all_indices = list(range(X.batch_size))
 
         with torch.no_grad():
-            return torch.sigmoid(self(sequences, mask))
+            logits = self._minibatch_forward(
+                self.net, X, all_indices, self.device,
+                net_dtype, self.batch_size,
+            )
+            return torch.sigmoid(logits)
 
     def save(self, path: Path | str) -> None:
         self._check_fitted()
