@@ -9,6 +9,7 @@ Requirements: pip install peft
 
 import torch
 import torch.nn.functional as F
+import mirin as mi
 from peft import LoraConfig, TaskType, get_peft_model
 from torch.optim import AdamW
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -29,12 +30,13 @@ N_SAMPLES = 200
 
 # Load model and tokenizer
 print("Loading model...")
-model = AutoModelForCausalLM.from_pretrained(
+hf_model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
     torch_dtype=torch.float16,
     device_map="auto",
 )
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
 
 # -------------------------------------------------------------------
 # Step 1: Train a probe on harmful/harmless activations
@@ -75,7 +77,7 @@ lora_config = LoraConfig(
     task_type=TaskType.CAUSAL_LM,
 )
 
-peft_model = get_peft_model(model, lora_config)
+peft_model = get_peft_model(hf_model, lora_config)
 peft_model.print_trainable_parameters()
 
 # -------------------------------------------------------------------
@@ -175,7 +177,8 @@ print("\n--- Step 5: Evaluation ---")
 peft_model.eval()
 
 # Collect new activations from fine-tuned model (single layer, no LAYER axis)
-test_acts_new = pl.collect_activations(peft_model, test_tokens, layers=[LAYER])
+test_model = mi.Model(peft_model, rename=mi.renames.llm, tokenizer=tokenizer)
+test_acts_new = pl.collect_activations(test_model, test_tokens, layers=[LAYER])
 test_prepared_new = test_acts_new.mean("s")
 
 # Evaluate with same probe

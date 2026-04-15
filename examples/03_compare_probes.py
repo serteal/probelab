@@ -9,6 +9,7 @@ Probes:
 """
 
 import torch
+import mirin as mi
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
@@ -20,12 +21,13 @@ N_SAMPLES = 200
 
 # Load model
 print("Loading model...")
-model = AutoModelForCausalLM.from_pretrained(
+hf_model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
     torch_dtype=torch.bfloat16,
     device_map="auto",
 )
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
 
 # Load dataset (sample for faster iteration)
 dataset = pl.datasets.load("truthful_qa").sample(N_SAMPLES, stratified=True)

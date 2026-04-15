@@ -3,6 +3,7 @@ import gc
 import statistics
 import time
 
+import mirin as mi
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -199,24 +200,25 @@ def main() -> None:
 
     print("\nLoading model...")
     t0 = time.perf_counter()
-    model = AutoModelForCausalLM.from_pretrained(
+    hf_model = AutoModelForCausalLM.from_pretrained(
         args.model,
         dtype=torch.bfloat16,
         device_map="auto",
     ).eval()
-    for p in model.parameters():
+    for p in hf_model.parameters():
         p.requires_grad = False
+    model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
     print(f"Model loaded in {time.perf_counter() - t0:.2f}s")
 
-    first_param = next(model.parameters())
-    n_layers = model.config.num_hidden_layers
+    first_param = next(hf_model.parameters())
+    n_layers = hf_model.config.num_hidden_layers
     layer = min(args.layer, n_layers - 1)
     print(
         f"Model placement: first_param={first_param.dtype} on {first_param.device}, "
         f"num_layers={n_layers}, using_layer={layer}"
     )
-    if hasattr(model, "hf_device_map"):
-        print(f"hf_device_map entries: {len(model.hf_device_map)}")
+    if hasattr(hf_model, "hf_device_map"):
+        print(f"hf_device_map entries: {len(hf_model.hf_device_map)}")
 
     print("\nProfiling train activation collection (stream + pooled)...")
     if torch.cuda.is_available():

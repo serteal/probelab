@@ -11,10 +11,14 @@ Or directly:
     cd probelab && uv run pytest tests/test_seed_e2e.py -v -s
 """
 
+import pytest
+import mirin as mi
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
+
+pytest.importorskip("accelerate", reason="device_map='auto' requires accelerate")
 
 
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
@@ -27,9 +31,10 @@ PROBE_SEED = 42
 def _collect_once():
     """Load model, tokenize, collect activations (cached across tests)."""
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-    model = AutoModelForCausalLM.from_pretrained(
+    hf_model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID, torch_dtype=torch.bfloat16, device_map="auto",
     )
+    model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
 
     ds = pl.datasets.load("circuit_breakers")
     pos = ds.positive.sample(N_SAMPLES // 2, seed=DATASET_SEED)

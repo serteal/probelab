@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generator, Iterator
+from typing import TYPE_CHECKING, Any, Generator, Iterable, Iterator
 
 import numpy as np
 import torch
 
-from ..backends import get_context_defaults, resolve_backend
 from .. import pool as P
 
 try:
@@ -615,7 +614,7 @@ class Activations:
             f.create_dataset("data", data=data_np, chunks=chunk_shape, **comp_kwargs)
             f.attrs["dims"] = self.dims
             f.attrs["dtype"] = dtype_str
-            f.attrs["probelab_version"] = "0.0.1"
+            f.attrs["probelab_version"] = "0.1.0"
 
             if self.layers is not None:
                 f.create_dataset("layers", data=list(self.layers))
@@ -1069,6 +1068,154 @@ class Activations:
 
 
 # ---------------------------------------------------------------------------
+# mirin helpers
+# ---------------------------------------------------------------------------
+
+
+def _ensure_model(model_obj: object) -> object:
+    """Require a ``mirin.Model`` for activation collection."""
+    import mirin
+
+    if isinstance(model_obj, mirin.Model):
+        return model_obj
+    raise TypeError(f"Expected mirin.Model, got {type(model_obj).__name__}")
+
+def _iter_batch_indices(
+    tokens: "Tokens",
+    *,
+    batch_size: int,
+    sort_by_length: bool,
+    batch_token_budget: int | None,
+) -> Generator[list[int], None, None]:
+    """Yield sample indices for padded collection batches."""
+
+    order = list(range(len(tokens)))
+    if sort_by_length:
+        lengths = tokens.lengths.tolist()
+        order.sort(key=lambda idx: int(lengths[idx]), reverse=True)
+
+    cursor = 0
+    while cursor < len(order):
+        start = cursor
+        current_max = 0
+        while cursor < len(order) and (cursor - start) < batch_size:
+            idx = order[cursor]
+            seq_len = int(tokens.offsets[idx + 1]) - int(tokens.offsets[idx])
+            next_max = max(current_max, seq_len)
+            next_count = (cursor - start) + 1
+            if (
+                next_count > 1
+                and batch_token_budget is not None
+                and next_max * next_count > batch_token_budget
+            ):
+                break
+            current_max = next_max
+            cursor += 1
+        if cursor == start:
+            cursor += 1
+        yield order[start:cursor]
+
+
+def _flatten_batch(
+    acts_stacked: torch.Tensor,
+    batch: dict[str, torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Flatten a padded [B, S, L, H] activation batch to flat+offsets.
+
+    Returns ``(flat_data, flat_det, offsets)``.
+    """
+    dev = acts_stacked.device
+    attn_mask = batch["attention_mask"].to(dev).bool()
+    det_mask = batch["detection_mask"].to(dev).bool()
+
+    flat_data = acts_stacked[attn_mask]  # [T, n_layers, hidden]
+    flat_det = det_mask[attn_mask]  # [T]
+
+    b_size = attn_mask.shape[0]
+    valid_lengths = attn_mask.sum(dim=1, dtype=torch.int64)
+    offsets = torch.zeros(b_size + 1, dtype=torch.int64, device=dev)
+    offsets[1:] = valid_lengths.cumsum(0)
+    return flat_data, flat_det, offsets
+
+
+def _stack_collect_step_activations(
+    step: object,
+    proxies: list[object],
+) -> torch.Tensor:
+    """Build a batched ``[B, S, L, H]`` activation tensor for one collect step."""
+    layer_acts: list[torch.Tensor] = []
+    for proxy in proxies:
+        getter = getattr(step, "__getitem__", None)
+        if getter is None:
+            raise TypeError("Collect step does not support activation lookup.")
+        act = getter(proxy)
+        if not isinstance(act, torch.Tensor):
+            raise TypeError(f"Expected tensor activations, got {type(act).__name__}.")
+        if act.ndim != 3:
+            raise ValueError(f"Expected batched activations with ndim=3, got shape {tuple(act.shape)}.")
+        layer_acts.append(act)
+    return torch.stack(layer_acts, dim=2)
+
+
+def _stream_model(
+    model: object,
+    tokens: "Tokens",
+    layers: list[int],
+    batch_size: int,
+    hook_point: str,
+    sort_by_length: bool,
+    batch_token_budget: int | None,
+) -> Generator[tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[int]], None, None]:
+    """Unified streaming for ``mirin.Model``."""
+    import mirin
+
+    model_obj: mirin.Model = model  # type: ignore[assignment]
+    get_proxies = mirin.resolve_layer_sites(model_obj, layers, hook_point=hook_point)
+    for batch_indices in _iter_batch_indices(
+        tokens,
+        batch_size=batch_size,
+        sort_by_length=sort_by_length,
+        batch_token_budget=batch_token_budget,
+    ):
+        batch = tokens.pad_batch(batch_indices, padding_side=tokens.padding_side)
+
+        def _flatten_step(step: object) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[int]]:
+            acts_stacked = _stack_collect_step_activations(step, get_proxies)
+            batch_value = getattr(step, "batch", None)
+            if not isinstance(batch_value, dict):
+                raise TypeError("Collect step batch must be a dict.")
+            flat_data, flat_det, offsets = _flatten_batch(acts_stacked, batch_value)
+            chunk_indices = getattr(step, "indices", None)
+            if not isinstance(chunk_indices, list):
+                raise TypeError("Collect step indices must be a list.")
+            return flat_data, flat_det, offsets, chunk_indices
+
+        iterator = model_obj.collect(
+            batch,
+            get=get_proxies,
+            process=_flatten_step,
+            max_items=batch_size,
+            max_tokens=batch_token_budget,
+            sort=False,
+            stop_at_last_get=True,
+        )
+        yielded = False
+        for flat_data, flat_det, offsets, chunk_indices in iterator:
+            yielded = True
+            yield flat_data, flat_det, offsets, [batch_indices[idx] for idx in chunk_indices]
+        if yielded:
+            continue
+        hidden = 0
+        offsets = torch.zeros(len(batch_indices) + 1, dtype=torch.int64)
+        yield (
+            torch.zeros(0, len(layers), hidden, dtype=torch.float32),
+            torch.empty(0, dtype=torch.bool),
+            offsets,
+            batch_indices,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1079,50 +1226,40 @@ def stream_activations(
     layers: list[int] | int,
     batch_size: int = 32,
     *,
-    backend: str = "auto",
-    **backend_kwargs: Any,
+    hook_point: str = "block",
+    sort_by_length: bool = True,
+    batch_token_budget: int | None = None,
 ) -> Generator[tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[int]], None, None]:
-    """Yield (flat_data, det, offsets, indices) per batch.
+    """Yield ``(flat_data, det, offsets, indices)`` per batch.
 
     Args:
-        model: Loaded model object (HF model or vLLM activation engine).
-        tokens: Tokenized inputs from tokenize_dialogues().
+        model: ``mirin.Model``.
+        tokens: Tokenized inputs from ``tokenize_dataset``.
         layers: Layer index or list of indices.
-        batch_size: Batch size for extraction.
-        backend: Backend override ("auto", "transformers", "vllm").
-        **backend_kwargs: Backend-specific extraction options.
+        batch_size: Maximum samples per batch.
+        hook_point: ``"block"`` (post-transformer-block, default) or
+            ``"layernorm"`` (output of input layernorm).
+        sort_by_length: Sort samples by length for padding efficiency.
+        batch_token_budget: Optional max padded tokens per batch (dynamic
+            batching).  When set, ``batch_size`` becomes an upper bound.
 
     Yields:
-        (flat_data, det, offsets, indices) where:
-        - flat_data: [total_batch_tokens, n_layers, hidden] tensor
-        - det: [total_batch_tokens] bool detection mask
-        - offsets: [batch_chunk+1] int64 cumulative token counts
+        ``(flat_data, det, offsets, indices)`` where:
+
+        - flat_data: ``[total_batch_tokens, n_layers, hidden]`` tensor
+        - det: ``[total_batch_tokens]`` bool detection mask
+        - offsets: ``[batch_chunk+1]`` int64 cumulative token counts
         - indices: original sample indices for this batch
     """
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
 
     layers = [layers] if isinstance(layers, int) else list(layers)
-    merged_kwargs = get_context_defaults()
-    merged_kwargs.update(backend_kwargs)
-    selected_backend = backend
-    if selected_backend == "auto":
-        context_backend = merged_kwargs.pop("backend", "auto")
-        if isinstance(context_backend, str):
-            selected_backend = context_backend
-    else:
-        merged_kwargs.pop("backend", None)
-
-    backend_impl = resolve_backend(model, backend=selected_backend)
-
-    for flat_data, det, offsets, idx in backend_impl.stream_raw(
-        model_obj=model,
-        tokens=tokens,
-        layers=layers,
-        batch_size=batch_size,
-        **merged_kwargs,
-    ):
-        yield flat_data, det, offsets, idx
+    model = _ensure_model(model)
+    yield from _stream_model(
+        model, tokens, layers, batch_size, hook_point,
+        sort_by_length, batch_token_budget,
+    )
 
 
 def collect_activations(
@@ -1132,48 +1269,37 @@ def collect_activations(
     batch_size: int = 32,
     pool: str | None = None,
     *,
-    backend: str = "auto",
+    hook_point: str = "block",
+    sort_by_length: bool = True,
+    batch_token_budget: int | None = None,
     progress: bool = False,
     progress_desc: str | None = None,
     progress_leave: bool = False,
-    **backend_kwargs: Any,
 ) -> Activations:
-    """Collect all activations into single Activations object.
+    """Collect all activations into a single ``Activations`` object.
 
     Args:
-        model: Loaded model object (HF model or vLLM activation engine).
-        tokens: Tokenized inputs from tokenize_dialogues().
+        model: ``mirin.Model``.
+        tokens: Tokenized inputs from ``tokenize_dataset``.
         layers: Layer index or list of indices.
-        batch_size: Batch size for extraction.
-        pool: Optional pooling over sequence ("mean", "max", "last_token").
-        backend: Backend override ("auto", "transformers", "vllm").
-        **backend_kwargs: Backend-specific extraction options.
+        batch_size: Maximum samples per batch.
+        pool: Optional pooling over sequence (``"mean"``, ``"max"``,
+            ``"last_token"``).
+        hook_point: ``"block"`` or ``"layernorm"``.
+        sort_by_length: Sort samples by length for padding efficiency.
+        batch_token_budget: Optional max padded tokens per batch.
+        progress: Show a tqdm progress bar.
 
     Returns:
-        Activations with shape:
-        - Single layer, no pool: flat [total_tokens, hidden] with offsets
-        - Multiple layers, no pool: flat [total_tokens, n_layers, hidden] with offsets
-        - Pooled: [batch, hidden] or [batch, n_layers, hidden]
+        ``Activations`` with shape:
+
+        - Single layer, no pool: flat ``[total_tokens, hidden]`` with offsets
+        - Multiple layers, no pool: flat ``[total_tokens, n_layers, hidden]``
+        - Pooled: ``[batch, hidden]`` or ``[batch, n_layers, hidden]``
     """
     layers = [layers] if isinstance(layers, int) else list(layers)
     single_layer = len(layers) == 1
     n = len(tokens)
-    stream_kwargs = dict(backend_kwargs)
-    if (
-        pool in {"mean", "last_token"}
-        and "vllm_pool_mode" not in stream_kwargs
-    ):
-        try:
-            backend_impl = resolve_backend(model, backend=backend)
-            if (
-                getattr(backend_impl, "name", None) == "vllm"
-                and bool(tokens.detection_mask.bool().all().item())
-            ):
-                # Native vLLM pooled capture avoids exporting full token streams
-                # when pooling over all tokens.
-                stream_kwargs["vllm_pool_mode"] = pool
-        except Exception:
-            pass
 
     def _iter_stream():
         iterator = stream_activations(
@@ -1181,8 +1307,9 @@ def collect_activations(
             tokens,
             layers,
             batch_size,
-            backend=backend,
-            **stream_kwargs,
+            hook_point=hook_point,
+            sort_by_length=sort_by_length,
+            batch_token_budget=batch_token_budget,
         )
         if progress and tqdm is not None:
             desc = progress_desc or ("collect+pool" if pool else "collect")
@@ -1196,28 +1323,62 @@ def collect_activations(
             available = [name for name in dir(P) if not name.startswith("_")]
             raise ValueError(f"Unknown pooling method: {pool}. Available: {available}")
 
-        # Collect as [batch, layer, hidden]
-        out: torch.Tensor | None = None
-        for flat_data, det, offsets, idx in _iter_stream():
-            # flat_data: [T, n_layers, hidden]
-            if out is None:
-                out = torch.zeros(
-                    n,
-                    len(layers),
-                    flat_data.shape[-1],
-                    dtype=flat_data.dtype,
-                    device=flat_data.device,
-                )
+        model_obj = _ensure_model(model)
+        import mirin
 
-            # Vectorized pooling over all layers at once: [T, L, H] -> [B, L, H]
-            pooled = pool_fn(flat_data, det, offsets=offsets)
-            out_idx = torch.tensor(idx, dtype=torch.long, device=pooled.device)
-            out[out_idx] = pooled
+        get_proxies = mirin.resolve_layer_sites(model_obj, layers, hook_point=hook_point)
+        out: torch.Tensor | None = None
+        iterator: Iterable[list[int]]
+        iterator = _iter_batch_indices(
+            tokens,
+            batch_size=batch_size,
+            sort_by_length=sort_by_length,
+            batch_token_budget=batch_token_budget,
+        )
+        if progress and tqdm is not None:
+            desc = progress_desc or "collect+pool"
+            total_batches = math.ceil(n / batch_size) if n > 0 else 0
+            iterator = tqdm(iterator, total=total_batches, desc=desc, leave=progress_leave)
+
+        for batch_indices in iterator:
+            batch = tokens.pad_batch(batch_indices, padding_side=tokens.padding_side)
+
+            def _pool_step(step: object) -> tuple[torch.Tensor, list[int]]:
+                acts_stacked = _stack_collect_step_activations(step, get_proxies)
+                batch_value = getattr(step, "batch", None)
+                if not isinstance(batch_value, dict):
+                    raise TypeError("Collect step batch must be a dict.")
+                flat_data, flat_det, offsets = _flatten_batch(acts_stacked, batch_value)
+                pooled = pool_fn(flat_data, flat_det, offsets=offsets)
+                chunk_indices = getattr(step, "indices", None)
+                if not isinstance(chunk_indices, list):
+                    raise TypeError("Collect step indices must be a list.")
+                return pooled, chunk_indices
+
+            for pooled, chunk_indices in model_obj.collect(
+                batch,
+                get=get_proxies,
+                process=_pool_step,
+                max_items=batch_size,
+                max_tokens=batch_token_budget,
+                sort=False,
+                stop_at_last_get=True,
+            ):
+                if out is None:
+                    out = torch.zeros(
+                        n, len(layers), pooled.shape[-1],
+                        dtype=pooled.dtype, device=pooled.device,
+                    )
+                out_idx = torch.tensor(
+                    [batch_indices[idx] for idx in chunk_indices],
+                    dtype=torch.long,
+                    device=pooled.device,
+                )
+                out[out_idx] = pooled
 
         if out is None:
             out = torch.zeros(n, len(layers), 0, dtype=torch.float32)
         elif out.is_cuda:
-            # Keep all reduction work on GPU, move to CPU only once at the end.
             out = out.cpu()
 
         if single_layer:
@@ -1232,7 +1393,6 @@ def collect_activations(
             s, e = int(offsets[j]), int(offsets[j + 1])
             per_sample[idx[j]] = (flat_data[s:e], det[s:e])
 
-    # Build global flat tensor and offsets
     all_data: list[torch.Tensor] = []
     all_det: list[torch.Tensor] = []
     global_offsets = torch.zeros(n + 1, dtype=torch.int64)
@@ -1249,7 +1409,6 @@ def collect_activations(
         cat_data = torch.cat(all_data, dim=0)
         cat_det = torch.cat(all_det, dim=0)
         if cat_data.is_cuda:
-            # Build flat representation on GPU, transfer once after concatenation.
             cat_data = cat_data.cpu()
             cat_det = cat_det.cpu()
     else:
@@ -1257,22 +1416,15 @@ def collect_activations(
         cat_det = torch.empty(0, dtype=torch.bool)
 
     if single_layer:
-        # Squeeze layer dim: [T, 1, hidden] → [T, hidden]
         if cat_data.ndim == 2:
-            pass  # already [T, hidden]
+            pass
         else:
             cat_data = cat_data.squeeze(1)
         return Activations(
-            data=cat_data,
-            dims="bsh",
-            offsets=global_offsets,
-            det=cat_det,
-            layers=None,
+            data=cat_data, dims="bsh", offsets=global_offsets,
+            det=cat_det, layers=None,
         )
     return Activations(
-        data=cat_data,
-        dims="blsh",
-        offsets=global_offsets,
-        det=cat_det,
-        layers=tuple(layers),
+        data=cat_data, dims="blsh", offsets=global_offsets,
+        det=cat_det, layers=tuple(layers),
     )
