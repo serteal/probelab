@@ -249,33 +249,76 @@ def _segment_ids(offsets: torch.Tensor, total: int) -> torch.Tensor:
     )
 
 
+# Tokens-per-chunk budget for streaming _flat_mean / _flat_max. Caps the
+# peak transient at `chunk_tokens × hidden × dtype_size` bytes regardless
+# of how large the input is. Matches sweep_train's PooledCache default.
+_POOL_CHUNK_TOKENS = 500_000
+
+
 def _flat_mean(
     data: torch.Tensor, det: torch.Tensor, offsets: torch.Tensor
 ) -> torch.Tensor:
     """Mean pool over flat [T, *] data using offsets and det mask.
 
-    Uses torch.segment_reduce over compacted detected rows. This avoids the
-    nondeterministic CUDA scatter_add path that was previously used here.
+    Chunks the input along the sample axis so that `data[det_bool]` is only
+    ever applied to at most ~`_POOL_CHUNK_TOKENS` tokens at a time. Each
+    chunk holds whole samples, so per-sample `segment_reduce` produces the
+    final mean directly — no cross-chunk stitching needed.
+
+    Historical note: the previous implementation did `data[det_bool]` on
+    the full input, which materializes `total_det_tokens × hidden × dtype`
+    bytes in one shot. On 12M-token datasets that's >80 GB transient.
     """
     batch = offsets.shape[0] - 1
-    det_bool = det.to(data.device).bool()
     total = data.shape[0]
     extra_dims = data.shape[1:]
 
     if batch == 0:
         return data.new_zeros((0, *extra_dims))
 
-    seg_ids = _segment_ids(offsets, total)
-    masked_seg_ids = seg_ids[det_bool]
-    masked_lengths = torch.bincount(masked_seg_ids, minlength=batch)
-    if not det_bool.any():
-        return data.new_zeros((batch, *extra_dims))
+    offsets_cpu = offsets.detach().cpu()
+    det_full = det.to(data.device).bool() if det.device != data.device else det.bool()
 
-    masked_data = data[det_bool]
-    out = torch.segment_reduce(masked_data, "mean", lengths=masked_lengths)
-    empty = masked_lengths == 0
-    if empty.any():
-        out[empty] = 0
+    out = data.new_zeros((batch, *extra_dims))
+    # March through samples, building chunks of up to _POOL_CHUNK_TOKENS
+    # tokens each. A single sample longer than the budget goes in its own
+    # chunk (bounded by that one sample's length).
+    # Avoid shadowing by module-level ``max`` / ``mean`` / ``last_token``
+    # pool functions defined above.
+    import builtins as _b
+
+    s = 0
+    while s < batch:
+        t_start = int(offsets_cpu[s].item())
+        single_sample_len = int((offsets_cpu[s + 1] - offsets_cpu[s]).item())
+        budget = _b.max(_POOL_CHUNK_TOKENS, single_sample_len)
+        target = t_start + budget
+        e = int(torch.searchsorted(
+            offsets_cpu, torch.tensor(target), right=True,
+        ).item()) - 1
+        e = _b.max(e, s + 1)
+        e = _b.min(e, batch)
+        t_end = int(offsets_cpu[e].item())
+
+        chunk_data = data[t_start:t_end]
+        chunk_det  = det_full[t_start:t_end]
+        if chunk_data.shape[0] == 0 or not chunk_det.any():
+            s = e
+            continue
+
+        chunk_offsets = (offsets[s:e + 1] - offsets[s]).to(data.device)
+        seg_ids = _segment_ids(chunk_offsets, chunk_data.shape[0])
+        masked_seg_ids = seg_ids[chunk_det]
+        lengths = torch.bincount(masked_seg_ids, minlength=e - s)
+        masked = chunk_data[chunk_det]
+
+        reduced = torch.segment_reduce(masked, "mean", lengths=lengths)
+        empty = lengths == 0
+        if empty.any():
+            reduced[empty] = 0
+        out[s:e] = reduced
+
+        s = e
     return out
 
 
