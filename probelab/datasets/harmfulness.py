@@ -22,18 +22,90 @@ def _sanitize_prompt(prompt: str) -> str:
 
 @_register_dataset("wild_jailbreak", Topic.HARMFULNESS, "Wild jailbreak dataset")
 def wild_jailbreak() -> Dataset:
-    df = pd.read_csv(REPO_ROOT / "data" / "harmfulness" / "wildjailbreak_train.csv")
+    """WildJailbreak training split from HuggingFace. Uses `adversarial`
+    prompts as the user turn and the paired completion as assistant.
+    Keeps adversarial_harmful + adversarial_benign so the label is
+    well-defined."""
+    ds = load_dataset(
+        "allenai/wildjailbreak", "train",
+        delimiter="\t", keep_default_na=False,
+    )["train"]
     dialogues, labels = [], []
-
-    for _, row in df[df["data_type"] == "adversarial_harmful"].iterrows():
-        dialogues.append([Message("user", str(row["adversarial"])), Message("assistant", str(row["completion"]))])
-        labels.append(Label.POSITIVE)
-
-    for _, row in df[df["data_type"] == "adversarial_benign"].iterrows():
-        dialogues.append([Message("user", str(row["adversarial"])), Message("assistant", str(row["completion"]))])
-        labels.append(Label.NEGATIVE)
-
+    for row in ds:
+        dtype = str(row["data_type"])
+        if dtype not in ("adversarial_harmful", "adversarial_benign"):
+            continue
+        label_val = (
+            Label.POSITIVE if dtype == "adversarial_harmful"
+            else Label.NEGATIVE
+        )
+        prompt = str(row["adversarial"] or "")
+        completion = str(row["completion"] or "")
+        dialogues.append([
+            Message("user", prompt),
+            Message("assistant", completion),
+        ])
+        labels.append(label_val)
     return Dataset(dialogues, labels, "wild_jailbreak").shuffle()
+
+
+@_register_dataset(
+    "wild_jailbreak_aug", Topic.HARMFULNESS,
+    "WildJailbreak balanced subset for augmenting harmful training data",
+)
+def wild_jailbreak_aug() -> Dataset:
+    """Balanced 80k-sample subset of WildJailbreak, 20k per data_type.
+    Deterministic (seed=0). Used as additional harmful training data
+    on top of wildguard_mix_train for §6B harmful-scaling."""
+    import random
+    from collections import defaultdict
+
+    ds = load_dataset(
+        "allenai/wildjailbreak", "train",
+        delimiter="\t", keep_default_na=False,
+    )["train"]
+
+    per_type: dict[str, list[int]] = defaultdict(list)
+    for i, row in enumerate(ds):
+        per_type[str(row["data_type"])].append(i)
+
+    # Balanced 50k subset (12_500 per data_type) — sized to fit a
+    # ~960 GB 5-layer activation cache in the remaining disk budget.
+    # 50k + the 48k existing wildguard_mix_train gets harmful training
+    # to ~98k total, which is enough to anchor a pre-registered
+    # extrapolation point at n=100k.
+    PER_TYPE = 12_500
+    rng = random.Random(0)
+    keep: set[int] = set()
+    for dtype in ("adversarial_harmful", "adversarial_benign",
+                  "vanilla_harmful", "vanilla_benign"):
+        pool = list(per_type.get(dtype, []))
+        rng.shuffle(pool)
+        keep.update(pool[:PER_TYPE])
+
+    dialogues, labels = [], []
+    for i, row in enumerate(ds):
+        if i not in keep:
+            continue
+        dtype = str(row["data_type"])
+        label_val = (
+            Label.POSITIVE if "harmful" in dtype else Label.NEGATIVE
+        )
+        # prefer the adversarial text when available
+        prompt = (
+            str(row["adversarial"] or "").strip()
+            or str(row["vanilla"] or "").strip()
+        )
+        if not prompt:
+            continue
+        completion = str(row["completion"] or "")
+        dialogues.append([
+            Message("user", prompt),
+            Message("assistant", completion),
+        ])
+        labels.append(label_val)
+
+    return Dataset(dialogues, labels, "wild_jailbreak_aug").shuffle()
 
 
 @_register_dataset("circuit_breakers", Topic.HARMFULNESS, "Circuit breakers dataset")
