@@ -8,12 +8,19 @@ A library for training probes on LLM activations.
 uv add git+https://github.com/serteal/probelab.git
 ```
 
+Install the model-collection dependencies when you need local
+`transformers`/`mirin` activation collection:
+
+```bash
+uv add "probelab[transformers] @ git+https://github.com/serteal/probelab.git"
+```
+
 or:
 
 ```bash
 git clone https://github.com/serteal/probelab.git
 cd probelab
-uv sync
+uv sync --extra transformers
 ```
 
 ## Quick Start

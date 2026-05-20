@@ -34,16 +34,18 @@ classifiers = [
 ]
 dependencies = [
     "datasets>=3.6.0",
-    "mirin",
     "numpy>=2.2",
     "pandas>=2.3.0",
     "scikit-learn>=1.7.0",
     "torch>=2.6",
     "tqdm>=4.66.0",
-    "transformers>=4.55.4",
 ]
 
 [project.optional-dependencies]
+transformers = [
+    "mirin @ git+https://github.com/serteal/mirin.git",
+    "transformers>=4.55.4",
+]
 storage = [
     "h5py>=3.10",
 ]
@@ -74,6 +76,9 @@ lint.ignore = ["F821"]  # forward annotation errors
 [tool.ty.rules]
 invalid-syntax-in-forward-annotation = "ignore"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
@@ -92,7 +97,6 @@ torch = [
 torchvision = [
     { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-mirin = { workspace = true }
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
