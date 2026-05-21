@@ -110,6 +110,95 @@ class Tokens:
             formatted_texts=texts,
         )
 
+    def truncate(
+        self,
+        max_tokens: int,
+        *,
+        side: str = "left",
+        preserve_mask: torch.Tensor | None = None,
+    ) -> "Tokens":
+        """Truncate each sample to at most ``max_tokens`` tokens.
+
+        Args:
+            max_tokens: Maximum per-sample token count.
+            side: Which side to remove from. ``"left"`` keeps the rightmost
+                tokens; ``"right"`` keeps the leftmost tokens.
+            preserve_mask: Flat boolean mask with the same shape as
+                ``input_ids``. Tokens marked true must survive truncation. If
+                omitted, ``detection_mask`` is preserved.
+
+        Returns:
+            A new ``Tokens`` object in flat+offsets layout. ``formatted_texts``
+            is retained only when no sample was truncated, since truncation
+            invalidates the stored rendered strings.
+        """
+        if max_tokens < 1:
+            raise ValueError(f"max_tokens must be >= 1, got {max_tokens}")
+        if side not in {"left", "right"}:
+            raise ValueError(f"side must be 'left' or 'right', got {side!r}")
+
+        preserve = self.detection_mask if preserve_mask is None else preserve_mask
+        if preserve.shape != self.input_ids.shape:
+            raise ValueError(
+                "preserve_mask must have the same shape as input_ids: "
+                f"{tuple(preserve.shape)} vs {tuple(self.input_ids.shape)}"
+            )
+        preserve = preserve.to(device=self.input_ids.device).bool()
+
+        chunks_ids: list[torch.Tensor] = []
+        chunks_det: list[torch.Tensor] = []
+        new_offsets = torch.zeros(len(self) + 1, dtype=torch.int64)
+        any_truncated = False
+
+        for index in range(len(self)):
+            start = int(self.offsets[index])
+            end = int(self.offsets[index + 1])
+            length = end - start
+            rel_start = 0
+            rel_end = length
+
+            if length > max_tokens:
+                any_truncated = True
+                if side == "left":
+                    rel_start = length - max_tokens
+                    rel_end = length
+                    cut = preserve[start : start + rel_start]
+                else:
+                    rel_start = 0
+                    rel_end = max_tokens
+                    cut = preserve[start + rel_end : end]
+                if cut.any():
+                    raise ValueError(
+                        "Cannot truncate sample without removing preserved tokens: "
+                        f"sample={index} length={length} max_tokens={max_tokens} "
+                        f"side={side}"
+                    )
+
+            keep_start = start + rel_start
+            keep_end = start + rel_end
+            chunks_ids.append(self.input_ids[keep_start:keep_end])
+            chunks_det.append(self.detection_mask[keep_start:keep_end])
+            new_offsets[index + 1] = new_offsets[index] + (keep_end - keep_start)
+
+        flat_ids = (
+            torch.cat(chunks_ids)
+            if chunks_ids
+            else self.input_ids.new_empty(0)
+        )
+        flat_det = (
+            torch.cat(chunks_det)
+            if chunks_det
+            else self.detection_mask.new_empty(0)
+        )
+        return Tokens(
+            input_ids=flat_ids,
+            offsets=new_offsets.to(self.offsets.device),
+            detection_mask=flat_det,
+            pad_token_id=self.pad_token_id,
+            padding_side=self.padding_side,
+            formatted_texts=None if any_truncated else self.formatted_texts,
+        )
+
     def pad_batch(
         self,
         indices: list[int],

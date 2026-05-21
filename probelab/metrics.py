@@ -4,7 +4,9 @@ import numpy as np
 import torch
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
     balanced_accuracy_score,
+    brier_score_loss,
     f1_score,
     precision_score,
     recall_score,
@@ -114,6 +116,20 @@ def f1(y_true, y_pred, threshold=0.5):
     return float(f1_score(y_true, _to_binary(proba, threshold), zero_division=0.0))
 
 
+def average_precision(y_true, y_pred):
+    """Average precision, i.e. area under the precision-recall curve."""
+    y_true, proba = _prep(y_true, y_pred)
+    if len(np.unique(y_true)) < 2:
+        raise ValueError("Cannot compute average precision with only one class")
+    return float(average_precision_score(y_true, proba))
+
+
+def brier_score(y_true, y_pred):
+    """Brier score for probabilistic binary predictions."""
+    y_true, proba = _prep(y_true, y_pred)
+    return float(brier_score_loss(y_true, proba))
+
+
 # =============================================================================
 # Recall at FPR
 # =============================================================================
@@ -156,6 +172,65 @@ def fnr(y_true, y_pred, threshold=0.5):
     y_true, proba = _prep(y_true, y_pred)
     pos = proba[y_true == 1]
     return float(np.mean(pos <= threshold)) if len(pos) else np.nan
+
+
+def confusion_counts(y_true, y_pred, threshold=0.5):
+    """Return binary confusion counts as ``{"tn", "fp", "fn", "tp"}``."""
+    y_true, proba = _prep(y_true, y_pred)
+    y_bool = y_true.astype(bool)
+    p_bool = _to_binary(proba, threshold).astype(bool)
+    return {
+        "tn": int((~y_bool & ~p_bool).sum()),
+        "fp": int((~y_bool & p_bool).sum()),
+        "fn": int((y_bool & ~p_bool).sum()),
+        "tp": int((y_bool & p_bool).sum()),
+    }
+
+
+def true_negatives(y_true, y_pred, threshold=0.5):
+    """Number of true negatives."""
+    return confusion_counts(y_true, y_pred, threshold)["tn"]
+
+
+def false_positives(y_true, y_pred, threshold=0.5):
+    """Number of false positives."""
+    return confusion_counts(y_true, y_pred, threshold)["fp"]
+
+
+def false_negatives(y_true, y_pred, threshold=0.5):
+    """Number of false negatives."""
+    return confusion_counts(y_true, y_pred, threshold)["fn"]
+
+
+def true_positives(y_true, y_pred, threshold=0.5):
+    """Number of true positives."""
+    return confusion_counts(y_true, y_pred, threshold)["tp"]
+
+
+def max_balanced_accuracy_threshold(y_true, y_pred):
+    """Find the threshold that maximizes balanced accuracy.
+
+    Returns:
+        ``(threshold, score)`` using the unique predicted probabilities as
+        candidate thresholds.
+    """
+    y_true, proba = _prep(y_true, y_pred)
+    if len(np.unique(y_true)) < 2:
+        raise ValueError("Cannot optimize balanced accuracy with only one class")
+    thresholds = np.unique(proba)
+    best_threshold = float(thresholds[0])
+    best_score = -1.0
+    for threshold in thresholds:
+        score = balanced_accuracy(y_true, proba, threshold=float(threshold))
+        if score > best_score:
+            best_score = float(score)
+            best_threshold = float(threshold)
+    return best_threshold, best_score
+
+
+def max_balanced_accuracy(y_true, y_pred):
+    """Best balanced accuracy over all unique score thresholds."""
+    return max_balanced_accuracy_threshold(y_true, y_pred)[1]
 
 
 # =============================================================================
@@ -218,12 +293,19 @@ def optimal_threshold(y_true, y_pred, fnr_weight=5.0, fpr_weight=50.0, n_thresho
 METRICS_REGISTRY = {
     "auroc": auroc,
     "accuracy": accuracy,
+    "average_precision": average_precision,
     "balanced_accuracy": balanced_accuracy,
+    "brier_score": brier_score,
     "precision": precision,
     "recall": recall,
     "f1": f1,
     "fpr": fpr,
     "fnr": fnr,
+    "tn": true_negatives,
+    "fp": false_positives,
+    "fn": false_negatives,
+    "tp": true_positives,
+    "max_balanced_accuracy": max_balanced_accuracy,
     "mean_score": mean_score,
     "std_score": std_score,
     "weighted_error": weighted_error_rate,

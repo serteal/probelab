@@ -8,7 +8,7 @@ import torch
 from transformers import AutoTokenizer
 
 from probelab import masks
-from probelab.processing.tokenization import build_token_metadata, tokenize_dialogues
+from probelab.processing.tokenization import Tokens, build_token_metadata, tokenize_dialogues
 from probelab.types import Message
 
 
@@ -359,6 +359,73 @@ class TestTokenizeDialoguesIntegration(unittest.TestCase):
                 tokens.detection_mask[s:e].any(),
                 f"Sample {i} should have detected tokens",
             )
+
+
+class TestTokensTruncate(unittest.TestCase):
+    """Tests for flat+offsets token truncation."""
+
+    def _tokens(self):
+        return Tokens(
+            input_ids=torch.arange(10),
+            offsets=torch.tensor([0, 6, 10]),
+            detection_mask=torch.tensor(
+                [False, False, False, False, True, True, False, True, False, False]
+            ),
+            pad_token_id=0,
+            padding_side="right",
+            formatted_texts=("sample0", "sample1"),
+        )
+
+    def test_left_truncate_preserves_detection_by_default(self):
+        tokens = self._tokens()
+
+        truncated = tokens.truncate(3, side="left")
+
+        self.assertEqual(truncated.input_ids.tolist(), [3, 4, 5, 7, 8, 9])
+        self.assertEqual(truncated.offsets.tolist(), [0, 3, 6])
+        self.assertEqual(
+            truncated.detection_mask.tolist(),
+            [False, True, True, True, False, False],
+        )
+        self.assertIsNone(truncated.formatted_texts)
+
+    def test_right_truncate(self):
+        tokens = Tokens(
+            input_ids=torch.arange(7),
+            offsets=torch.tensor([0, 4, 7]),
+            detection_mask=torch.tensor([True, False, False, False, True, False, False]),
+            pad_token_id=0,
+            padding_side="right",
+            formatted_texts=("a", "b"),
+        )
+
+        truncated = tokens.truncate(2, side="right")
+
+        self.assertEqual(truncated.input_ids.tolist(), [0, 1, 4, 5])
+        self.assertEqual(truncated.offsets.tolist(), [0, 2, 4])
+        self.assertEqual(truncated.detection_mask.tolist(), [True, False, True, False])
+
+    def test_raises_when_preserved_tokens_would_be_removed(self):
+        tokens = self._tokens()
+        preserve_mask = torch.zeros_like(tokens.detection_mask)
+        preserve_mask[0] = True
+
+        with self.assertRaises(ValueError):
+            tokens.truncate(3, side="left", preserve_mask=preserve_mask)
+
+    def test_retains_formatted_texts_when_unchanged(self):
+        tokens = self._tokens()
+
+        truncated = tokens.truncate(10)
+
+        self.assertEqual(truncated.input_ids.tolist(), tokens.input_ids.tolist())
+        self.assertEqual(truncated.formatted_texts, tokens.formatted_texts)
+
+    def test_rejects_bad_preserve_shape(self):
+        tokens = self._tokens()
+
+        with self.assertRaises(ValueError):
+            tokens.truncate(3, preserve_mask=torch.ones(3, dtype=torch.bool))
 
 
 if __name__ == "__main__":

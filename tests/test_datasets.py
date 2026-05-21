@@ -156,6 +156,83 @@ class TestDataset:
         assert "pos=1" in repr_str
         assert "neg=0" in repr_str
 
+    def test_dataset_from_records(self):
+        """Dataset.from_records converts row-wise records to columns."""
+        records = [
+            {
+                "id": "a",
+                "messages": [
+                    {"role": "user", "content": "Question"},
+                    {"role": "assistant", "content": "Answer"},
+                ],
+                "label": 1,
+                "metadata": {"source": "unit"},
+            },
+            {
+                "id": "b",
+                "messages": [{"role": "user", "content": "Other"}],
+                "label": "negative",
+                "metadata": {"source": "unit"},
+            },
+        ]
+
+        dataset = Dataset.from_records(records, name="records")
+
+        assert len(dataset) == 2
+        assert dataset.name == "records"
+        assert dataset.labels == [Label.POSITIVE, Label.NEGATIVE]
+        assert dataset.dialogues[0][1].content == "Answer"
+        assert dataset.metadata == {
+            "id": ["a", "b"],
+            "source": ["unit", "unit"],
+        }
+
+    def test_dataset_to_records_flat_and_nested_metadata(self):
+        """Dataset.to_records supports nested or top-level metadata."""
+        dataset = Dataset(
+            dialogues=[[Message("user", "Hello")]],
+            labels=[Label.POSITIVE],
+            name="records",
+            metadata={"example_id": ["ex0"], "source": ["unit"]},
+        )
+
+        nested = dataset.to_records()
+        flat = dataset.to_records(metadata_key=None)
+
+        assert nested == [
+            {
+                "messages": [{"role": "user", "content": "Hello"}],
+                "label": 1,
+                "metadata": {"example_id": "ex0", "source": "unit"},
+            }
+        ]
+        assert flat == [
+            {
+                "messages": [{"role": "user", "content": "Hello"}],
+                "label": 1,
+                "example_id": "ex0",
+                "source": "unit",
+            }
+        ]
+
+    def test_dataset_jsonl_roundtrip(self, tmp_path):
+        """Dataset JSONL helpers round-trip row-wise records."""
+        dataset = Dataset(
+            dialogues=[[Message("user", "Hello")]],
+            labels=[Label.NEGATIVE],
+            name="records",
+            metadata={"example_id": ["ex0"]},
+        )
+        path = tmp_path / "records.jsonl"
+
+        dataset.to_jsonl(path)
+        loaded = Dataset.from_jsonl(path, name="loaded")
+
+        assert loaded.name == "loaded"
+        assert loaded.dialogues == dataset.dialogues
+        assert loaded.labels == dataset.labels
+        assert loaded.metadata == dataset.metadata
+
     def test_dataset_sample_basic(self):
         """Test sample() method with basic random sampling."""
         dialogues = [[Message("user", f"Test {i}")] for i in range(100)]

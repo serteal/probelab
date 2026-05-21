@@ -5,8 +5,11 @@ import torch
 from sklearn.metrics import roc_auc_score
 from probelab.metrics import (
   auroc, partial_auroc, accuracy, balanced_accuracy, precision, recall, f1,
+  average_precision, brier_score, confusion_counts,
+  true_negatives, false_positives, false_negatives, true_positives,
+  max_balanced_accuracy_threshold, max_balanced_accuracy,
   recall_at_fpr, fpr, fnr, mean_score, std_score, percentile,
-  weighted_error_rate, optimal_threshold, bootstrap,
+  weighted_error_rate, optimal_threshold, bootstrap, METRICS_REGISTRY,
 )
 
 # =============================================================================
@@ -128,6 +131,50 @@ class TestF1(unittest.TestCase):
     r = recall(y_true, y_pred)
     expected = 2 * p * r / (p + r)
     self.assertAlmostEqual(f1(y_true, y_pred), expected, places=5)
+
+class TestAdditionalClassificationMetrics(unittest.TestCase):
+  def test_average_precision_perfect(self):
+    y_true, y_pred = _perfect()
+    self.assertEqual(average_precision(y_true, y_pred), 1.0)
+
+  def test_average_precision_single_class_raises(self):
+    with self.assertRaises(ValueError):
+      average_precision(np.array([1, 1]), np.array([0.8, 0.9]))
+
+  def test_brier_score(self):
+    y_true = np.array([0, 1])
+    y_pred = np.array([0.25, 0.75])
+    self.assertAlmostEqual(brier_score(y_true, y_pred), 0.0625, places=5)
+
+  def test_confusion_counts(self):
+    y_true = np.array([0, 0, 1, 1])
+    y_pred = np.array([0.1, 0.7, 0.4, 0.9])
+    counts = confusion_counts(y_true, y_pred)
+    self.assertEqual(counts, {"tn": 1, "fp": 1, "fn": 1, "tp": 1})
+    self.assertEqual(true_negatives(y_true, y_pred), 1)
+    self.assertEqual(false_positives(y_true, y_pred), 1)
+    self.assertEqual(false_negatives(y_true, y_pred), 1)
+    self.assertEqual(true_positives(y_true, y_pred), 1)
+
+  def test_max_balanced_accuracy_threshold(self):
+    y_true = np.array([0, 0, 1, 1])
+    y_pred = np.array([0.1, 0.4, 0.35, 0.9])
+    threshold, score = max_balanced_accuracy_threshold(y_true, y_pred)
+    self.assertIn(threshold, set(y_pred.tolist()))
+    self.assertEqual(score, max_balanced_accuracy(y_true, y_pred))
+    self.assertGreaterEqual(score, balanced_accuracy(y_true, y_pred))
+
+  def test_metrics_registry_contains_new_scalar_metrics(self):
+    for key in [
+      "average_precision",
+      "brier_score",
+      "tn",
+      "fp",
+      "fn",
+      "tp",
+      "max_balanced_accuracy",
+    ]:
+      self.assertIn(key, METRICS_REGISTRY)
 
 # =============================================================================
 # Recall at FPR
