@@ -1367,14 +1367,13 @@ def collect_activations(
                 if out is None:
                     out = torch.zeros(
                         n, len(layers), pooled.shape[-1],
-                        dtype=pooled.dtype, device=pooled.device,
+                        dtype=pooled.dtype, device="cpu",
                     )
                 out_idx = torch.tensor(
                     [batch_indices[idx] for idx in chunk_indices],
                     dtype=torch.long,
-                    device=pooled.device,
                 )
-                out[out_idx] = pooled
+                out[out_idx] = pooled.detach().cpu()
 
         if out is None:
             out = torch.zeros(n, len(layers), 0, dtype=torch.float32)

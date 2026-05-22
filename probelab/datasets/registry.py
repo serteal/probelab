@@ -77,6 +77,7 @@ def _init_registry() -> None:
         creative,
         cybersecurity,
         deception,
+        foundation,
         hallucination,
         harmfulness,
         legal_finance,

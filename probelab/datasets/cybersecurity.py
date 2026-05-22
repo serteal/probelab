@@ -73,12 +73,27 @@ def defensive_cybersecurity() -> Dataset:
     dialogues, labels = [], []
 
     for item in data:
-        user = item.get("instruction") or item.get("input") or item.get("question") or ""
-        assistant = item.get("response") or item.get("output") or item.get("answer") or ""
+        user = (
+            item.get("user")
+            or item.get("instruction")
+            or item.get("input")
+            or item.get("question")
+            or ""
+        )
+        assistant = (
+            item.get("assistant")
+            or item.get("response")
+            or item.get("output")
+            or item.get("answer")
+            or ""
+        )
         if not user:
             continue
 
-        dialogue = [Message("user", user)]
+        dialogue = []
+        if system := item.get("system", ""):
+            dialogue.append(Message("system", system))
+        dialogue.append(Message("user", user))
         if assistant:
             dialogue.append(Message("assistant", assistant))
 

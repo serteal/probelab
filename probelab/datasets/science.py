@@ -289,6 +289,259 @@ def wmdp_chem() -> Dataset:
     return Dataset(dialogues, labels, "wmdp_chem").shuffle()
 
 
+_CBRN_SYNTH_TAXONOMY = (
+    "protocol_troubleshooting",
+    "experimental_design",
+    "tacit_lab_failure_diagnosis",
+    "literature_to_procedure_translation",
+    "pathogenicity_host_range_reasoning",
+    "assay_selection_strategy",
+    "operational_constraint_handling",
+)
+
+_CBRN_SYNTH_TRAIN_TAXONOMY = (
+    "protocol_troubleshooting",
+    "experimental_design",
+    "tacit_lab_failure_diagnosis",
+    "literature_to_procedure_translation",
+    "pathogenicity_host_range_reasoning",
+)
+_CBRN_SYNTH_HELDOUT_TAXONOMY = (
+    "assay_selection_strategy",
+    "operational_constraint_handling",
+)
+_CBRN_SYNTH_PRIMARY_GENERATOR = "huihui-ai/gemma-3-27b-it-abliterated"
+_CBRN_SYNTH_HELDOUT_GENERATOR = "huihui-ai/Qwen2.5-72B-Instruct-abliterated"
+
+
+def _load_cbrn_synth_rows(path: str | None = None) -> list[dict]:
+    """Load cbrn_synth_v1 raw rows from HF (preferred) or local JSON."""
+    try:
+        hf_ds = load_dataset("serteal/cbrn-synth-v1", split="train")
+        return list(hf_ds)
+    except Exception as e:
+        logger.debug("HF load failed for serteal/cbrn-synth-v1: %s", e)
+    if path is None:
+        candidates = sorted(
+            Path(__file__).resolve().parents[3]
+            .glob("dataset-generation/cbrn_synth/outputs/cbrn_synth_*/qa_pairs_judged.json")
+        )
+        if not candidates:
+            raise FileNotFoundError(
+                "cbrn-synth-v1 not found on HuggingFace (serteal/cbrn-synth-v1) "
+                "and no local outputs at "
+                "dataset-generation/cbrn_synth/outputs/*/qa_pairs_judged.json. "
+                "Run dataset-generation/cbrn_synth/generate_dataset.py first."
+            )
+        path = str(candidates[-1])
+    with open(path) as f:
+        return json.load(f)
+
+
+def _build_cbrn_synth_dataset(
+    rows: list[dict], name: str, judge_threshold: float = 0.6,
+) -> "Dataset":
+    """Filter judged rows -> Dataset with metadata for downstream split filters."""
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {
+        "id": [], "base_id": [], "generator_model": [], "taxonomy_category": [],
+        "topic": [], "subtopic": [], "language": [], "augmentation": [],
+        "label_reason": [], "judge_score": [],
+    }
+    for row in rows:
+        question = row.get("question", "")
+        answer = row.get("answer", "")
+        if not question or not answer:
+            continue
+        score = float(row.get("judge_score", 0.0))
+        if score < judge_threshold:
+            continue
+        dialogues.append([Message("user", question), Message("assistant", answer)])
+        labels.append(Label.POSITIVE)
+        metadata["id"].append(row.get("id"))
+        metadata["base_id"].append(row.get("base_id"))
+        metadata["generator_model"].append(row.get("generator_model", ""))
+        metadata["taxonomy_category"].append(row.get("taxonomy_category", ""))
+        metadata["topic"].append(row.get("topic", ""))
+        metadata["subtopic"].append(row.get("subtopic", ""))
+        metadata["language"].append(row.get("language", "English"))
+        metadata["augmentation"].append(row.get("augmentation", ""))
+        metadata["label_reason"].append(row.get("label_reason", ""))
+        metadata["judge_score"].append(score)
+    return Dataset(dialogues, labels, name, metadata).shuffle()
+
+
+@_register_dataset(
+    "cbrn_synth_v1", Topic.SCIENCE,
+    "CBRN synthetic positives, taxonomy-tagged, judge-labeled",
+)
+def cbrn_synth_v1(path: str | None = None, judge_threshold: float = 0.6) -> Dataset:
+    """Synthetic CBRN misuse-assistance Q/A from uncensored generators.
+
+    Returns *all* rows that passed the judge. Use the `_train` / `_iid` /
+    `_ood_held_generator` variants below for the actual splits used in E3.
+
+    Args:
+        path: Optional path to the judged JSON file. Defaults to the most recent
+            output in ``dataset-generation/cbrn_synth/outputs/``.
+        judge_threshold: Minimum ``judge_score`` to keep as a positive. Default
+            0.6 (matches the rubric's "materially_increases_misuse_capability"
+            cutoff).
+    """
+    rows = _load_cbrn_synth_rows(path)
+    return _build_cbrn_synth_dataset(rows, "cbrn_synth_v1", judge_threshold)
+
+
+@_register_dataset(
+    "cbrn_synth_v1_train", Topic.SCIENCE,
+    "cbrn_synth_v1 train split (primary generator, training taxonomy)",
+)
+def cbrn_synth_v1_train(path: str | None = None, judge_threshold: float = 0.6) -> Dataset:
+    """Primary-generator rows scoped to the training taxonomy categories."""
+    rows = [
+        r for r in _load_cbrn_synth_rows(path)
+        if r.get("generator_model", "") == _CBRN_SYNTH_PRIMARY_GENERATOR
+        and r.get("taxonomy_category", "") in _CBRN_SYNTH_TRAIN_TAXONOMY
+    ]
+    return _build_cbrn_synth_dataset(rows, "cbrn_synth_v1_train", judge_threshold)
+
+
+@_register_dataset(
+    "cbrn_synth_v1_iid", Topic.SCIENCE,
+    "cbrn_synth_v1 IID split (primary generator, held-out taxonomy)",
+)
+def cbrn_synth_v1_iid(path: str | None = None, judge_threshold: float = 0.6) -> Dataset:
+    """Primary generator on held-out taxonomy categories — IID-style eval."""
+    rows = [
+        r for r in _load_cbrn_synth_rows(path)
+        if r.get("generator_model", "") == _CBRN_SYNTH_PRIMARY_GENERATOR
+        and r.get("taxonomy_category", "") in _CBRN_SYNTH_HELDOUT_TAXONOMY
+    ]
+    return _build_cbrn_synth_dataset(rows, "cbrn_synth_v1_iid", judge_threshold)
+
+
+@_register_dataset(
+    "cbrn_synth_v1_ood_held_generator", Topic.SCIENCE,
+    "cbrn_synth_v1 OOD split (held-out generator, all taxonomy)",
+)
+def cbrn_synth_v1_ood_held_generator(
+    path: str | None = None, judge_threshold: float = 0.6,
+) -> Dataset:
+    """Held-out generator across all taxonomy — final OOD positive."""
+    rows = [
+        r for r in _load_cbrn_synth_rows(path)
+        if r.get("generator_model", "") == _CBRN_SYNTH_HELDOUT_GENERATOR
+    ]
+    return _build_cbrn_synth_dataset(
+        rows, "cbrn_synth_v1_ood_held_generator", judge_threshold,
+    )
+
+
+@_register_dataset(
+    "lab_bench", Topic.SCIENCE,
+    "LAB-Bench: practical biology lab reasoning (FutureHouse)",
+)
+def lab_bench(subtask: str | None = None) -> Dataset:
+    """LAB-Bench: practical wet-lab biology questions used as benign hard
+    negatives for the CBRN probe (the questions test biology *competence* but
+    are not misuse-assistance).
+
+    Args:
+        subtask: Optional LAB-Bench subtask ('LitQA2', 'CloningScenarios',
+            'ProtocolQA', 'SeqQA', 'FigQA', 'TableQA', 'DbQA', 'SuppQA').
+            Default ``None`` loads all available subtasks.
+    """
+    subtasks = (
+        [subtask] if subtask is not None
+        else [
+            "LitQA2", "CloningScenarios", "ProtocolQA", "SeqQA",
+            "FigQA", "TableQA", "DbQA", "SuppQA",
+        ]
+    )
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"subtask": [], "id": []}
+
+    for st in subtasks:
+        try:
+            data = load_dataset("futurehouse/lab-bench", st, split="train")
+        except Exception as e:
+            logger.debug("LAB-Bench subtask %s unavailable: %s", st, e)
+            continue
+        for item in data:
+            question = item.get("question") or item.get("input") or ""
+            if not question:
+                continue
+            choices = item.get("choices") or item.get("options") or []
+            if isinstance(choices, list) and choices:
+                question = question + "\n\n" + "\n".join(
+                    f"{chr(65 + i)}. {c}" for i, c in enumerate(choices)
+                )
+            answer = (
+                item.get("ideal") or item.get("answer")
+                or item.get("correct_answer") or ""
+            )
+            dialogue = [Message("user", question)]
+            if answer:
+                dialogue.append(Message("assistant", str(answer)))
+            dialogues.append(dialogue)
+            labels.append(Label.NEGATIVE)
+            metadata["subtask"].append(st)
+            metadata["id"].append(item.get("id", ""))
+
+    if not dialogues:
+        raise FileNotFoundError(
+            "LAB-Bench not loadable from HuggingFace (futurehouse/lab-bench). "
+            "Check network or HF auth."
+        )
+    return Dataset(dialogues, labels, "lab_bench", metadata).shuffle()
+
+
+@_register_dataset(
+    "pmc_virology_abstracts", Topic.SCIENCE,
+    "PubMed/PMC virology abstracts as benign biology hard negatives",
+)
+def pmc_virology_abstracts(max_samples: int = 10_000) -> Dataset:
+    """Biomedical abstracts presented as user-question / assistant-summary
+    dialogues. Used as benign hard negatives for the CBRN probe (real
+    biological literature, no misuse-assistance content).
+
+    Source: ``qiaojin/PubMedQA`` (pqa_artificial split). Each row's
+    ``question`` becomes the user turn; the ``long_answer`` (which is the
+    abstract conclusion) becomes the assistant turn.
+
+    Args:
+        max_samples: Cap on the number of returned rows. Default 10k keeps
+            the activation collection under ~160 GB at 5 layers × bf16.
+    """
+    try:
+        data = load_dataset("qiaojin/PubMedQA", "pqa_artificial", split="train")
+    except Exception as e:
+        raise FileNotFoundError(
+            "PubMedQA not loadable from HuggingFace (qiaojin/PubMedQA). "
+            f"Original error: {e}"
+        ) from e
+
+    dialogues, labels = [], []
+    metadata: dict[str, list[Any]] = {"pubid": [], "context_size": []}
+    n = 0
+    for item in data:
+        if n >= max_samples:
+            break
+        question = item.get("question", "")
+        answer = item.get("long_answer", "")
+        if not question or not answer:
+            continue
+        dialogues.append([Message("user", question), Message("assistant", answer)])
+        labels.append(Label.NEGATIVE)
+        metadata["pubid"].append(item.get("pubid"))
+        ctx = item.get("context", {}) or {}
+        metadata["context_size"].append(
+            len(ctx.get("contexts", [])) if isinstance(ctx, dict) else 0
+        )
+        n += 1
+    return Dataset(dialogues, labels, "pmc_virology_abstracts", metadata).shuffle()
+
+
 @_register_dataset("virology_qa", Topic.SCIENCE, "Virology Q/A pairs")
 def virology_qa(split: str | None = None, path: str | None = None) -> Dataset:
     """Virology 8.6K+ dual-use virology Q/A pairs (augmented, multilingual).
