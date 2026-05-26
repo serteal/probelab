@@ -35,6 +35,39 @@ class TestHDF5Storage(unittest.TestCase):
         self.assertTrue(torch.equal(loaded.detection_mask, acts.detection_mask.cpu()))
         self.assertEqual(loaded.metadata, acts.metadata)
 
+    def test_stream_hdf5_round_trips_chunks(self):
+        try:
+            import h5py  # noqa: F401
+        except ImportError:
+            self.skipTest("h5py not installed")
+
+        data = torch.arange(24, dtype=torch.float32).reshape(3, 4, 2)
+        detection_mask = torch.tensor([
+            [True, False, True, False],
+            [False, True, True, True],
+            [True, True, False, True],
+        ])
+        acts = Activations.from_padded(
+            data,
+            detection_mask=detection_mask,
+            attention_mask=torch.ones(3, 4, dtype=torch.bool),
+            dims="bsh",
+            metadata={"model": "demo", "split": "stream"},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "acts.h5"
+            storage.save_hdf5(acts, str(path), dtype="float32")
+            chunks = list(storage.stream_hdf5(str(path), chunk_tokens=5))
+
+        streamed = Activations.cat([chunk for chunk, _ in chunks])
+        indices = [idx for _, chunk_indices in chunks for idx in chunk_indices]
+        self.assertEqual(indices, [0, 1, 2])
+        torch.testing.assert_close(streamed.data, acts.data.float())
+        self.assertTrue(torch.equal(streamed.offsets, acts.offsets))
+        self.assertTrue(torch.equal(streamed.detection_mask, acts.detection_mask))
+        self.assertEqual(streamed.metadata, acts.metadata)
+
     def test_hdf5_rejects_non_json_metadata(self):
         try:
             import h5py  # noqa: F401
@@ -96,6 +129,58 @@ class TestMemmapStorage(unittest.TestCase):
             acts.select("l", 8).data.bfloat16().float(),
         )
         self.assertEqual(loaded.metadata, acts.metadata)
+
+    def test_stream_memmap_single_layer_round_trips_chunks(self):
+        data = torch.arange(72, dtype=torch.float32).reshape(3, 2, 4, 3)
+        detection_mask = torch.tensor([
+            [True, False, True, True],
+            [True, True, False, False],
+            [False, True, True, True],
+        ])
+        acts = Activations.from_padded(
+            data,
+            detection_mask=detection_mask,
+            attention_mask=torch.ones(3, 4, dtype=torch.bool),
+            dims="blsh",
+            layers=(4, 8),
+            metadata={"model": "demo", "split": "stream"},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "acts.mm"
+            storage.save_memmap(acts, str(path))
+            chunks = list(storage.stream_memmap(str(path), layer=8, chunk_tokens=5))
+
+        streamed = Activations.cat([chunk for chunk, _ in chunks])
+        expected = acts.select("l", 8)
+        indices = [idx for _, chunk_indices in chunks for idx in chunk_indices]
+        self.assertEqual(indices, [0, 1, 2])
+        self.assertEqual(streamed.dims, "bsh")
+        torch.testing.assert_close(streamed.data.float(), expected.data.bfloat16().float())
+        self.assertTrue(torch.equal(streamed.offsets, expected.offsets))
+        self.assertTrue(torch.equal(streamed.detection_mask, expected.detection_mask))
+        self.assertEqual(streamed.metadata, expected.metadata)
+
+    def test_load_memmap_rejects_unknown_layer(self):
+        acts = Activations.from_padded(
+            torch.randn(2, 2, 3, 4),
+            detection_mask=torch.ones(2, 3, dtype=torch.bool),
+            dims="blsh",
+            layers=(4, 8),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "acts.mm"
+            storage.save_memmap(acts, str(path))
+            with self.assertRaisesRegex(ValueError, "Layer 99 not in stored layers"):
+                storage.load_memmap(str(path), layer=99)
+
+    def test_save_memmap_requires_sequence_and_layer_axes(self):
+        acts = Activations.from_tensor(torch.randn(2, 3), dims="bh")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "requires dims with 's' and 'l'"):
+                storage.save_memmap(acts, str(Path(tmp) / "acts.mm"))
 
     def test_memmap_rejects_non_json_metadata(self):
         acts = Activations.from_padded(

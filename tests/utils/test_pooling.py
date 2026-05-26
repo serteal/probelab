@@ -214,6 +214,18 @@ class TestPoolLastToken:
         torch.testing.assert_close(result[0], torch.tensor([3.0, 4.0]))
         torch.testing.assert_close(result[1], torch.tensor([7.0, 8.0]))
 
+    def test_last_token_non_prefix_mask(self):
+        """Last token means the highest selected position, not count(mask)-1."""
+        tensor = torch.tensor([
+            [[1.0], [2.0], [3.0]],
+            [[4.0], [5.0], [6.0]],
+        ])
+        mask = torch.tensor([[True, False, True], [False, True, False]])
+
+        result = pl.pool.last_token(tensor, mask)
+
+        torch.testing.assert_close(result, torch.tensor([[3.0], [5.0]]))
+
     def test_last_token_empty_sequence(self):
         """Test last_token pooling with empty sequence."""
         tensor = torch.tensor([
@@ -312,6 +324,20 @@ class TestPool4D:
         # Batch 1: last valid (index 2)
         torch.testing.assert_close(result[1, 0], torch.tensor([11.0, 12.0]))
         torch.testing.assert_close(result[1, 1], torch.tensor([12.0, 13.0]))
+
+    def test_last_token_4d_non_prefix_mask(self):
+        """4D last-token pooling also supports arbitrary selection masks."""
+        tensor = torch.tensor([
+            [[[1.0], [2.0], [3.0]], [[4.0], [5.0], [6.0]]],
+            [[[7.0], [8.0], [9.0]], [[10.0], [11.0], [12.0]]],
+        ])
+        mask = torch.tensor([[True, False, True], [False, True, False]])
+
+        result = pl.pool.last_token(tensor, mask, dim=2)
+
+        assert result.shape == (2, 2, 1)
+        torch.testing.assert_close(result[0], torch.tensor([[3.0], [6.0]]))
+        torch.testing.assert_close(result[1], torch.tensor([[8.0], [11.0]]))
 
 
 class TestPoolEdgeCases:

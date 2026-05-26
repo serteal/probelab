@@ -31,6 +31,36 @@ def _dialogues(n=2):
   """Create dummy dialogues."""
   return [None] * n
 
+def _text_metadata(text, *, token_ids=None, attention_mask=None, special_ids=None):
+  """Create one-token-per-character metadata for text mask tests."""
+  seq = len(text)
+  if token_ids is None:
+    token_ids = torch.arange(seq, dtype=torch.long).unsqueeze(0)
+  elif token_ids.ndim == 1:
+    token_ids = token_ids.unsqueeze(0)
+  if attention_mask is None:
+    attention_mask = torch.ones(1, seq, dtype=torch.bool)
+
+  def char_to_token(batch_idx, char_pos):
+    if batch_idx != 0 or char_pos < 0 or char_pos >= seq:
+      return None
+    return char_pos
+
+  return TokenMetadata(
+    token_ids=token_ids,
+    role_ids=torch.ones(1, seq, dtype=torch.long),
+    message_boundaries=torch.zeros(1, seq, dtype=torch.long),
+    attention_mask=attention_mask,
+    formatted_texts=(text,),
+    char_to_token=char_to_token,
+    special_token_ids=special_ids,
+  )
+
+def _expected(seq, positions):
+  out = torch.zeros(1, seq, dtype=torch.bool)
+  out[0, positions] = True
+  return out
+
 # =============================================================================
 # Basic Masks
 # =============================================================================
@@ -119,15 +149,111 @@ class TestLastNTokens(unittest.TestCase):
     with self.assertRaises(ValueError):
       masks.last_n_tokens(0)
 
+  def test_uses_message_boundaries_not_role_changes(self):
+    meta = _metadata(batch=1, seq=6)
+    meta.role_ids = torch.ones(1, 6, dtype=torch.long)
+    meta.message_boundaries = torch.tensor([[0, 0, 1, 1, 1, 2]])
+
+    result = masks.last_n_tokens(2)([None], meta)
+
+    expected = torch.tensor([[True, True, False, True, True, True]])
+    self.assertTrue(torch.equal(result, expected))
+
+  def test_respects_attention_mask_when_selecting_last_tokens(self):
+    meta = _metadata(batch=1, seq=5)
+    meta.message_boundaries = torch.tensor([[0, 0, 0, 0, 0]])
+    meta.attention_mask = torch.tensor([[True, True, False, True, False]])
+
+    result = masks.last_n_tokens(2)([None], meta)
+
+    expected = torch.tensor([[False, True, False, True, False]])
+    self.assertTrue(torch.equal(result, expected))
+
 class TestFirstNTokens(unittest.TestCase):
   def test_invalid_n_raises(self):
     with self.assertRaises(ValueError):
       masks.first_n_tokens(0)
 
+  def test_uses_message_boundaries_not_role_changes(self):
+    meta = _metadata(batch=1, seq=6)
+    meta.role_ids = torch.ones(1, 6, dtype=torch.long)
+    meta.message_boundaries = torch.tensor([[0, 0, 1, 1, 1, 2]])
+
+    result = masks.first_n_tokens(2)([None], meta)
+
+    expected = torch.tensor([[True, True, True, True, False, True]])
+    self.assertTrue(torch.equal(result, expected))
+
 class TestLastToken(unittest.TestCase):
-  def test_returns_mask(self):
-    m = masks.last_token()
-    self.assertIsInstance(m, Mask)
+  def test_selects_one_last_token_per_message(self):
+    meta = _metadata(batch=1, seq=4)
+    meta.role_ids = torch.ones(1, 4, dtype=torch.long)
+    meta.message_boundaries = torch.tensor([[0, 0, 1, 1]])
+
+    result = masks.last_token()([None], meta)
+
+    expected = torch.tensor([[False, True, False, True]])
+    self.assertTrue(torch.equal(result, expected))
+
+class TestTextMasks(unittest.TestCase):
+  def test_contains_selects_exact_text_span_case_insensitive(self):
+    meta = _text_metadata("alpha beta gamma")
+
+    result = masks.contains("BETA")([None], meta)
+
+    self.assertTrue(torch.equal(result, _expected(len("alpha beta gamma"), range(6, 10))))
+
+  def test_regex_selects_matching_span(self):
+    meta = _text_metadata("alpha beta gamma")
+
+    result = masks.regex(r"b.ta")([None], meta)
+
+    self.assertTrue(torch.equal(result, _expected(len("alpha beta gamma"), range(6, 10))))
+
+  def test_between_inclusive_and_exclusive(self):
+    text = "pre <think>abc</think> post"
+    meta = _text_metadata(text)
+
+    inclusive = masks.thinking()([None], meta)
+    exclusive = masks.thinking(inclusive=False)([None], meta)
+
+    self.assertTrue(torch.equal(inclusive, _expected(len(text), range(4, 22))))
+    self.assertTrue(torch.equal(exclusive, _expected(len(text), range(11, 14))))
+
+  def test_after_and_before_bound_text_regions(self):
+    text = "alpha beta gamma"
+    meta = _text_metadata(text)
+
+    after = masks.after("alpha ")([None], meta)
+    before = masks.before(" gamma")([None], meta)
+
+    self.assertTrue(torch.equal(after, _expected(len(text), range(6, len(text)))))
+    self.assertTrue(torch.equal(before, _expected(len(text), range(0, 10))))
+
+  def test_padding_expands_each_contiguous_region(self):
+    meta = _text_metadata("abcdef")
+    base = Mask(
+      lambda _d, _m: torch.tensor([[False, False, True, True, False, False]]),
+      ("base",),
+    )
+
+    result = masks.padding(base, before=1, after=1)([None], meta)
+
+    self.assertTrue(torch.equal(result, torch.tensor([[False, True, True, True, True, False]])))
+
+  def test_special_tokens_uses_metadata_ids_and_attention_mask(self):
+    token_ids = torch.tensor([10, 20, 30, 20, 40])
+    attention_mask = torch.tensor([[True, True, True, False, True]])
+    meta = _text_metadata(
+      "abcde",
+      token_ids=token_ids,
+      attention_mask=attention_mask,
+      special_ids={20, 40},
+    )
+
+    result = masks.special_tokens()([None], meta)
+
+    self.assertTrue(torch.equal(result, torch.tensor([[False, True, False, False, True]])))
 
 # =============================================================================
 # Composition
@@ -260,10 +386,6 @@ class TestMaskEdgeCases(unittest.TestCase):
 # =============================================================================
 
 class TestThinkingMask(unittest.TestCase):
-  def test_returns_mask(self):
-    m = masks.thinking()
-    self.assertIsInstance(m, Mask)
-
   def test_correct_key_default(self):
     m = masks.thinking()
     self.assertEqual(m.key, ("between", "<think>", "</think>", True))
@@ -275,13 +397,6 @@ class TestThinkingMask(unittest.TestCase):
   def test_exclusive_mode(self):
     m = masks.thinking(inclusive=False)
     self.assertEqual(m.key, ("between", "<think>", "</think>", False))
-
-  def test_composable_with_assistant(self):
-    m = masks.assistant() & ~masks.thinking()
-    self.assertIsInstance(m, Mask)
-
-  def test_in_all(self):
-    self.assertIn("thinking", masks.__all__)
 
 if __name__ == '__main__':
   unittest.main()

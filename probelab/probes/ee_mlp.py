@@ -1,10 +1,6 @@
-"""Early-exit MLP probe.
+"""Early-exit MLP probe."""
 
-Multi-layer MLP with output heads at each intermediate layer.
-Joint training of all heads enables cascading early-exit at inference.
-
-Reference: Oldfield et al., "Beyond Linear Probes" (2025), arXiv:2509.26238.
-"""
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Callable
@@ -17,80 +13,8 @@ from ..activations import Activations
 from .base import BaseProbe
 
 
-class _EEMLPNetwork(nn.Module):
-    """Multi-layer MLP with early-exit output heads."""
-
-    def __init__(
-        self,
-        d_model: int,
-        n_layers: int = 3,
-        hidden_dim: int = 128,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.n_layers = n_layers
-        dims = [d_model] + [hidden_dim] * n_layers
-        self.layers = nn.ModuleList()
-        self.heads = nn.ModuleList()
-        # Exit head 0: linear probe on raw input (before any hidden layers)
-        self.heads.append(nn.Linear(d_model, 1))
-        # Hidden layers + exit heads 1..n_layers
-        for i in range(n_layers):
-            self.layers.append(nn.Sequential(
-                nn.Linear(dims[i], dims[i + 1]),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            ))
-            self.heads.append(nn.Linear(dims[i + 1], 1))
-        self._init_weights()
-
-    def _init_weights(self):
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-
-    def forward(self, x: torch.Tensor, exit_at: int | None = None) -> torch.Tensor | list[torch.Tensor]:
-        """Forward pass.
-
-        Args:
-            x: Input features [batch, d_model]
-            exit_at: If set, return logits from this exit point (0 = raw input,
-                     1..n_layers = after each hidden layer).
-                     If None, return list of logits from all exit points.
-
-        Returns:
-            Single logit tensor [batch] if exit_at set, else list of [batch] tensors.
-        """
-        logits_list = []
-        h = x
-        # Exit head 0: linear probe on raw input
-        logits = self.heads[0](h).squeeze(-1)
-        if exit_at is not None and exit_at == 0:
-            return logits
-        logits_list.append(logits)
-        # Exit heads 1..n_layers: after each hidden layer
-        for i, layer in enumerate(self.layers):
-            h = layer(h)
-            logits = self.heads[i + 1](h).squeeze(-1)
-            if exit_at is not None and exit_at == i + 1:
-                return logits
-            logits_list.append(logits)
-        if exit_at is not None:
-            return logits_list[-1]
-        return logits_list
-
-
 class EEMLP(BaseProbe):
-    """Early-exit MLP probe.
-
-    Trains all exit heads jointly. At inference, uses the deepest head by default.
-
-    Adapts to input dimensionality:
-    - If X has SEQ axis: Trains on tokens, returns token-level scores
-    - If X has no SEQ axis: Trains on sequences, returns sequence-level scores
-    """
+    """Multi-layer MLP with output heads at intermediate layers."""
 
     def __init__(
         self,
@@ -116,157 +40,110 @@ class EEMLP(BaseProbe):
         self.weight_decay = weight_decay
         self.n_epochs = n_epochs
         self.batch_size = batch_size
-        self.net = None
-        self.scaler_mean = None
-        self.scaler_std = None
+        self.layers = nn.ModuleList()
+        self.heads = nn.ModuleList()
+        self.register_buffer("scaler_mean", torch.empty(0))
+        self.register_buffer("scaler_std", torch.empty(0))
 
-    @property
-    def fitted(self) -> bool:
-        return self.net is not None and self.scaler_mean is not None
-
-    def fit(self, X: Activations, y: list | torch.Tensor) -> "EEMLP":
-        if "l" in X.dims:
-            raise ValueError(
-                f"EEMLP expects no LAYER axis. "
-                f'Call select("l", layer) first. Current dims: {X.dims}'
-            )
-
-        if self.device is None:
-            self.device = str(X.data.device)
-
-        y_tensor = self._to_labels(y).to(self.device)
-
-        if "s" in X.dims:
-            features, tokens_per_sample = X.extract_tokens()
-            labels = torch.repeat_interleave(y_tensor, tokens_per_sample.to(y_tensor.device))
-        else:
-            features = X.data
-            labels = y_tensor
-
-        if features.shape[0] == 0:
-            return self
-
+    def initialize(self, features: torch.Tensor, labels: torch.Tensor | None = None) -> "EEMLP":
         working_dtype = self._resolve_dtype(features.dtype)
         self._training_dtype = working_dtype
-
-        features = features.to(dtype=working_dtype)
-        labels = labels.to(dtype=working_dtype)
-        d_model = features.shape[1]
-        N = features.shape[0]
-        bs = min(self.batch_size, N)
-
-        self.scaler_mean = features.mean(0).to(self.device)
-        self.scaler_std = features.std(0).clamp(min=1e-8).to(self.device)
-        sc_mean, sc_std = self.scaler_mean, self.scaler_std
-
-        g = self._seed_everything()
-        self.net = _EEMLPNetwork(d_model, self.n_layers, self.hidden_dim, self.dropout).to(
-            self.device, dtype=working_dtype
-        )
-
-        optimizer = self._make_optimizer(
-            self.net.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay,
-        )
-        scheduler = self._make_scheduler(optimizer)
-
-        self.net.train()
-        for _ in range(self.n_epochs):
-            perm = torch.randperm(N, device=features.device)
-            for i in range(0, N, bs):
-                idx = perm[i : i + bs]
-                x_batch = (features[idx].to(self.device) - sc_mean) / sc_std
-                y_batch = labels[idx].to(self.device)
-                optimizer.zero_grad()
-                # Joint loss: mean of BCE across all exit heads
-                all_logits = self.net(x_batch)
-                loss = sum(
-                    F.binary_cross_entropy_with_logits(logits, y_batch)
-                    for logits in all_logits
-                ) / len(all_logits)
-                loss.backward()
-                optimizer.step()
-            if scheduler is not None:
-                scheduler.step()
-
-        self.net.eval()
+        device = torch.device(self.device or features.device)
+        with self._temporary_seed():
+            d_model = features.shape[-1]
+            dims = [d_model] + [self.hidden_dim] * self.n_layers
+            self.layers = nn.ModuleList()
+            self.heads = nn.ModuleList([nn.Linear(d_model, 1)])
+            for i in range(self.n_layers):
+                self.layers.append(
+                    nn.Sequential(
+                        nn.Linear(dims[i], dims[i + 1]),
+                        nn.ReLU(),
+                        nn.Dropout(self.dropout),
+                    )
+                )
+                self.heads.append(nn.Linear(dims[i + 1], 1))
+            for module in self.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+        self.to(device=device, dtype=working_dtype)
+        stats = features.to(dtype=working_dtype)
+        self.scaler_mean = stats.mean(0).to(device)
+        self.scaler_std = stats.std(0, unbiased=False).clamp(min=1e-8).to(device)
+        self._mark_initialized(working_dtype)
         return self
 
-    def __call__(self, x: torch.Tensor, exit_at: int | None = None) -> torch.Tensor:
-        self._check_fitted()
-        x = x.to(self.device)
-        x_scaled = (x - self.scaler_mean) / self.scaler_std
-        result = self.net(x_scaled, exit_at=exit_at)
-        if isinstance(result, list):
-            return result[-1]  # deepest head
-        return result
+    def _scaled(self, features: torch.Tensor) -> torch.Tensor:
+        device, dtype = self._module_device_dtype()
+        x = features.to(device=device, dtype=dtype)
+        return (x - self.scaler_mean) / self.scaler_std
 
-    def predict(self, X: Activations) -> torch.Tensor:
-        """Predict using the deepest exit head."""
-        self._check_fitted()
-        if "l" in X.dims:
-            raise ValueError(f"EEMLP expects no LAYER axis. Current dims: {X.dims}")
+    def forward_all_exits(self, features: torch.Tensor) -> list[torch.Tensor]:
+        self._check_initialized()
+        logits_list: list[torch.Tensor] = []
+        h = self._scaled(features)
+        logits_list.append(self.heads[0](h).squeeze(-1))
+        for i, layer in enumerate(self.layers):
+            h = layer(h)
+            logits_list.append(self.heads[i + 1](h).squeeze(-1))
+        return logits_list
 
-        net_dtype = next(self.net.parameters()).dtype
+    def forward_exit(self, features: torch.Tensor, exit_at: int) -> torch.Tensor:
+        exits = self.forward_all_exits(features)
+        return exits[min(exit_at, len(exits) - 1)]
 
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return self.forward_all_exits(features)[-1]
+
+    def loss_on_batch(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        all_logits = self.forward_all_exits(features)
+        return sum(F.binary_cross_entropy_with_logits(logits, labels) for logits in all_logits) / len(all_logits)
+
+    def fit(self, X: Activations, y: list | torch.Tensor, **kwargs) -> "EEMLP":
+        features, labels = self._feature_data_from_activations(X, y)
+        if self.device is None:
+            self.device = str(X.data.device)
+        if features.shape[0] == 0:
+            return self
+        features = features.to(dtype=self._resolve_dtype(features.dtype))
+        labels = labels.to(dtype=features.dtype)
+        self.initialize(features, labels)
+        return self._fit_feature_default(features, labels, shuffle_with_generator=False, **kwargs)
+
+    def predict_logits(self, X: Activations, **kwargs) -> torch.Tensor:
+        features, _ = self._feature_data_from_activations(X)
+        return self._feature_predict_from_flat(X, self(features))
+
+    def predict(self, X: Activations, **kwargs) -> torch.Tensor:
         with torch.no_grad():
-            if "s" in X.dims:
-                features, _ = X.extract_tokens()
-                flat_probs = torch.sigmoid(self(features.to(dtype=net_dtype)))
-                padded_data, padded_det = X.to_padded()
-                probs = torch.zeros_like(padded_det, dtype=flat_probs.dtype)
-                probs[padded_det] = flat_probs
-                return probs
-            else:
-                return torch.sigmoid(self(X.data.to(dtype=net_dtype)))
+            return torch.sigmoid(self.predict_logits(X, **kwargs))
 
     def save(self, path: Path | str) -> None:
-        self._check_fitted()
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
-            "n_layers": self.n_layers,
-            "hidden_dim": self.hidden_dim,
-            "dropout": self.dropout,
-            "learning_rate": self.learning_rate,
-            "weight_decay": self.weight_decay,
-            "n_epochs": self.n_epochs,
-            "batch_size": self.batch_size,
-            "seed": self.seed,
-            "device": self.device,
-            "cast": self.cast,
-            "training_dtype": str(self._training_dtype),
-            "network_state": self.net.state_dict(),
-            "scaler_mean": self.scaler_mean,
-            "scaler_std": self.scaler_std,
-        }, path)
+        self._save_probe(
+            path,
+            {
+                "n_layers": self.n_layers,
+                "hidden_dim": self.hidden_dim,
+                "dropout": self.dropout,
+                "learning_rate": self.learning_rate,
+                "weight_decay": self.weight_decay,
+                "n_epochs": self.n_epochs,
+                "batch_size": self.batch_size,
+            },
+        )
 
     @classmethod
     def load(cls, path: Path | str, device: str = "cpu") -> "EEMLP":
         state = torch.load(Path(path), map_location="cpu")
-        probe = cls(
-            n_layers=state["n_layers"],
-            hidden_dim=state["hidden_dim"],
-            dropout=state.get("dropout", 0.1),
-            learning_rate=state.get("learning_rate", 1e-3),
-            weight_decay=state.get("weight_decay", 1e-2),
-            n_epochs=state["n_epochs"],
-            batch_size=state.get("batch_size", 1024),
-            seed=state.get("seed"),
-            device=device,
-            cast=state.get("cast"),
-        )
-        dtype_str = state.get("training_dtype")
-        stored_dtype = getattr(torch, dtype_str.split(".")[-1]) if dtype_str else torch.float32
-        probe._training_dtype = stored_dtype
-
-        d_model = state["scaler_mean"].shape[0]
-        probe.net = _EEMLPNetwork(d_model, probe.n_layers, probe.hidden_dim, probe.dropout).to(
-            device, dtype=stored_dtype
-        )
-        probe.net.load_state_dict(state["network_state"])
-        probe.net.eval()
-        probe.scaler_mean = state["scaler_mean"].to(device, dtype=stored_dtype)
-        probe.scaler_std = state["scaler_std"].to(device, dtype=stored_dtype)
+        probe = cls(**state["init_kwargs"], seed=state.get("seed"), device=device, cast=state.get("cast"))
+        dtype = cls._stored_dtype(state)
+        d_model = state["state_dict"]["heads.0.weight"].shape[1]
+        probe.initialize(torch.empty(1, d_model, dtype=dtype, device=device))
+        probe.load_state_dict(state["state_dict"])
+        probe.to(device=device, dtype=dtype)
+        probe.eval()
         return probe
 
     def __repr__(self) -> str:

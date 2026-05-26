@@ -1,48 +1,19 @@
 """Multi-layer perceptron probe."""
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Callable, Literal
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from ..activations import Activations
 from .base import BaseProbe
 
 
-class _MLPNetwork(nn.Module):
-    """Simple MLP architecture for binary classification."""
-
-    def __init__(
-        self,
-        d_model: int,
-        hidden_dim: int = 128,
-        dropout: float | None = None,
-        activation: Literal["relu", "gelu"] = "relu",
-    ):
-        super().__init__()
-        self.fc1 = nn.Linear(d_model, hidden_dim)
-        self.activation = nn.ReLU() if activation == "relu" else nn.GELU()
-        self.dropout = nn.Dropout(dropout) if dropout is not None else None
-        self.fc2 = nn.Linear(hidden_dim, 1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.fc1(x)
-        x = self.activation(x)
-        if self.dropout is not None:
-            x = self.dropout(x)
-        x = self.fc2(x)
-        return x.squeeze(-1)
-
-
 class MLP(BaseProbe):
-    """Multi-layer perceptron probe.
-
-    Adapts to input dimensionality:
-    - If X has SEQ axis: Trains on tokens, returns token-level scores
-    - If X has no SEQ axis: Trains on sequences, returns sequence-level scores
-    """
+    """Single-hidden-layer MLP probe."""
 
     def __init__(
         self,
@@ -68,191 +39,79 @@ class MLP(BaseProbe):
         self.weight_decay = weight_decay
         self.n_epochs = n_epochs
         self.batch_size = batch_size
-        self.net = None
-        self.scaler_mean = None
-        self.scaler_std = None
+        self.fc1: nn.Linear | None = None
+        self.activation_layer: nn.Module | None = None
+        self.dropout_layer: nn.Module | None = None
+        self.fc2: nn.Linear | None = None
 
-    @property
-    def fitted(self) -> bool:
-        return self.net is not None
-
-    def fit(self, X: Activations, y: list | torch.Tensor) -> "MLP":
-        if "l" in X.dims:
-            raise ValueError(
-                f"MLP expects no LAYER axis. "
-                f"Call select(\"l\", layer) first. Current dims: {X.dims}"
-            )
-
-        # Auto-detect device from input if not specified
-        if self.device is None:
-            self.device = str(X.data.device)
-
-        y_tensor = self._to_labels(y)
-
-        if "s" in X.dims:
-            features, tokens_per_sample = X.extract_tokens()
-            if y_tensor.ndim == 1:
-                labels = torch.repeat_interleave(y_tensor, tokens_per_sample.to(y_tensor.device))
-            elif y_tensor.ndim == 2:
-                # 2D token-level labels: extract via det mask
-                det_bool = X.detection_mask.bool()
-                labels = y_tensor.view(-1)[det_bool[:y_tensor.numel()]] if y_tensor.numel() > 0 else y_tensor.new_empty(0)
-            else:
-                raise ValueError(f"Invalid label shape: {y_tensor.shape}")
-        else:
-            features = X.data
-            labels = y_tensor
-
-        if features.shape[0] == 0:
-            return self
-
+    def initialize(self, features: torch.Tensor, labels: torch.Tensor | None = None) -> "MLP":
         working_dtype = self._resolve_dtype(features.dtype)
         self._training_dtype = working_dtype
-
-        features = features.to(dtype=working_dtype)  # keep on CPU
-        labels = labels.to(dtype=working_dtype)       # keep on CPU
-        d_model = features.shape[1]
-
-        # Fresh state every fit()
-        g = self._seed_everything()
-        self.net = _MLPNetwork(
-            d_model=d_model,
-            hidden_dim=self.hidden_dim,
-            dropout=self.dropout,
-            activation=self.activation,
-        ).to(self.device, dtype=working_dtype)
-
-        optimizer = self._make_optimizer(
-            self.net.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
-        )
-        scheduler = self._make_scheduler(optimizer)
-
-        dataset = torch.utils.data.TensorDataset(features, labels)
-        dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=self.batch_size, shuffle=True, generator=g
-        )
-
-        self.net.train()
-        for _ in range(self.n_epochs):
-            for batch_features, batch_labels in dataloader:
-                batch_features = batch_features.to(self.device)
-                batch_labels = batch_labels.to(self.device)
-                optimizer.zero_grad()
-                loss = F.binary_cross_entropy_with_logits(
-                    self.net(batch_features), batch_labels
-                )
-                loss.backward()
-                optimizer.step()
-            if scheduler is not None:
-                scheduler.step()
-
-        self.net.eval()
+        device = torch.device(self.device or features.device)
+        with self._temporary_seed():
+            self.fc1 = nn.Linear(features.shape[-1], self.hidden_dim)
+            self.activation_layer = nn.ReLU() if self.activation == "relu" else nn.GELU()
+            self.dropout_layer = nn.Dropout(self.dropout) if self.dropout is not None else None
+            self.fc2 = nn.Linear(self.hidden_dim, 1)
+        self.to(device=device, dtype=working_dtype)
+        self._mark_initialized(working_dtype)
         return self
 
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
-        """Differentiable forward pass.
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        self._check_initialized()
+        device, dtype = self._module_device_dtype()
+        x = features.to(device=device, dtype=dtype)
+        x = self.fc1(x)
+        x = self.activation_layer(x)
+        if self.dropout_layer is not None:
+            x = self.dropout_layer(x)
+        return self.fc2(x).squeeze(-1)
 
-        Args:
-            x: Features tensor [batch, hidden] or [n_tokens, hidden]
+    def fit(self, X: Activations, y: list | torch.Tensor, **kwargs) -> "MLP":
+        features, labels = self._feature_data_from_activations(X, y)
+        if self.device is None:
+            self.device = str(X.data.device)
+        if features.shape[0] == 0:
+            return self
+        features = features.to(dtype=self._resolve_dtype(features.dtype))
+        labels = labels.to(dtype=features.dtype)
+        self.initialize(features, labels)
+        return self._fit_feature_default(features, labels, dataloader=True, **kwargs)
 
-        Returns:
-            Logits tensor [batch] or [n_tokens] (not probabilities)
-        """
-        self._check_fitted()
-        x = x.to(self.device)
-        if self.scaler_mean is not None:
-            x = (x - self.scaler_mean) / self.scaler_std
-        return self.net(x)
+    def predict_logits(self, X: Activations, **kwargs) -> torch.Tensor:
+        self._check_initialized()
+        features, _ = self._feature_data_from_activations(X)
+        logits = self(features)
+        return self._feature_predict_from_flat(X, logits)
 
-    def predict(self, X: Activations) -> torch.Tensor:
-        """Evaluate on activations.
-
-        Args:
-            X: Activations without LAYER axis
-
-        Returns:
-            Probability of positive class:
-            - [batch, seq] if X has SEQ axis (token-level)
-            - [batch] if X has no SEQ axis (sequence-level)
-        """
-        self._check_fitted()
-
-        if "l" in X.dims:
-            raise ValueError(f"MLP expects no LAYER axis. Current dims: {X.dims}")
-
-        net_dtype = next(self.net.parameters()).dtype
-
+    def predict(self, X: Activations, **kwargs) -> torch.Tensor:
         with torch.no_grad():
-            if "s" in X.dims:
-                features, _ = X.extract_tokens()
-                flat_probs = torch.sigmoid(self(features.to(dtype=net_dtype)))
-
-                # Scatter back to [batch, seq] via to_padded()
-                padded_data, padded_det = X.to_padded()
-                probs = torch.zeros_like(padded_det, dtype=flat_probs.dtype)
-                probs[padded_det] = flat_probs
-                return probs
-            else:
-                return torch.sigmoid(self(X.data.to(dtype=net_dtype)))
+            return torch.sigmoid(self.predict_logits(X, **kwargs))
 
     def save(self, path: Path | str) -> None:
-        self._check_fitted()
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
-            "hidden_dim": self.hidden_dim,
-            "dropout": self.dropout,
-            "activation": self.activation,
-            "learning_rate": self.learning_rate,
-            "weight_decay": self.weight_decay,
-            "n_epochs": self.n_epochs,
-            "batch_size": self.batch_size,
-            "seed": self.seed,
-            "device": self.device,
-            "cast": self.cast,
-            "training_dtype": str(self._training_dtype),
-            "network_state": self.net.state_dict(),
-            "scaler_mean": self.scaler_mean,
-            "scaler_std": self.scaler_std,
-        }, path)
+        self._save_probe(
+            path,
+            {
+                "hidden_dim": self.hidden_dim,
+                "dropout": self.dropout,
+                "activation": self.activation,
+                "learning_rate": self.learning_rate,
+                "weight_decay": self.weight_decay,
+                "n_epochs": self.n_epochs,
+                "batch_size": self.batch_size,
+            },
+        )
 
     @classmethod
     def load(cls, path: Path | str, device: str = "cpu") -> "MLP":
         state = torch.load(Path(path), map_location="cpu")
-        probe = cls(
-            hidden_dim=state["hidden_dim"],
-            dropout=state.get("dropout"),
-            activation=state["activation"],
-            learning_rate=state.get("learning_rate", 0.001),
-            weight_decay=state.get("weight_decay", 0.01),
-            n_epochs=state["n_epochs"],
-            batch_size=state["batch_size"],
-            seed=state.get("seed"),
-            device=device,
-            cast=state.get("cast"),
-        )
-        # Backward compat: old checkpoints without training_dtype default to float32
-        dtype_str = state.get("training_dtype")
-        stored_dtype = getattr(torch, dtype_str.split(".")[-1]) if dtype_str else torch.float32
-        probe._training_dtype = stored_dtype
-
-        # Infer d_model from saved weights
-        d_model = state["network_state"]["fc1.weight"].shape[1]
-        probe.net = _MLPNetwork(
-            d_model=d_model,
-            hidden_dim=probe.hidden_dim,
-            dropout=probe.dropout,
-            activation=probe.activation,
-        ).to(probe.device, dtype=stored_dtype)
-        probe.net.load_state_dict(state["network_state"])
-        probe.net.eval()
-
-        # Restore scaler (backwards compat: old checkpoints lack these keys)
-        sc_mean = state.get("scaler_mean")
-        if sc_mean is not None:
-            probe.scaler_mean = sc_mean.to(probe.device, dtype=stored_dtype)
-            probe.scaler_std = state["scaler_std"].to(probe.device, dtype=stored_dtype)
-
+        probe = cls(**state["init_kwargs"], seed=state.get("seed"), device=device, cast=state.get("cast"))
+        dtype = cls._stored_dtype(state)
+        d_model = state["state_dict"]["fc1.weight"].shape[1]
+        probe.initialize(torch.empty(1, d_model, dtype=dtype, device=device))
+        probe.load_state_dict(state["state_dict"])
+        probe.to(device=device, dtype=dtype)
+        probe.eval()
         return probe
 
     def __repr__(self) -> str:

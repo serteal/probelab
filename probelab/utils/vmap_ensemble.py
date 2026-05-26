@@ -430,12 +430,12 @@ class VmapEnsemble:
 
         Args:
             probes: List of probe objects (same length and order as nets
-                passed to constructor). Each must have a ``.net`` attribute.
+                passed to constructor). Each must expose ``load_state_dict``.
         """
         self.restore_best()
         for i, probe in enumerate(probes):
-            probe.net.load_state_dict(self.extract_state(i))
-            probe.net.eval()
+            probe.load_state_dict(self.extract_state(i))
+            probe.eval()
 
     # ------------------------------------------------------------------
     # Properties

@@ -11,9 +11,16 @@ from probelab.activations import Activations
 from probelab.probes.logistic import Logistic
 from probelab.probes.mlp import MLP
 from probelab.probes.attention import Attention
+from probelab.probes.bilinear import Bilinear
+from probelab.probes.ee_mlp import EEMLP
 from probelab.probes.multimax import MultiMax
 from probelab.probes.gated_bipolar import GatedBipolar
+from probelab.probes.mha import MHA
+from probelab.probes.positional_attention import PositionalAttention
+from probelab.probes.rolling_attention import RollingAttention
+from probelab.probes.soft_attention import SoftAttention
 from probelab.probes.mass_mean import MassMean
+from probelab.probes.tpc import TPC
 from probelab.types import Label
 
 # =============================================================================
@@ -62,7 +69,7 @@ class TestLogisticFit(unittest.TestCase):
         prepared = acts.mean("s")
         p = Logistic(device="cpu").fit(prepared, labels)
         self.assertTrue(p.fitted)
-        self.assertIsNotNone(p.net)
+        self.assertIsNotNone(p.linear)
 
     def test_fit_token_level(self):
         acts, labels = _separable_acts(n_samples=10, seq=5)
@@ -171,7 +178,7 @@ class TestMLPFit(unittest.TestCase):
         prepared = acts.mean("s")
         p = MLP(hidden_dim=32, n_epochs=10, device="cpu").fit(prepared, labels)
         self.assertTrue(p.fitted)
-        self.assertIsNotNone(p.net)
+        self.assertIsNotNone(p.fc1)
 
     def test_fit_token_level(self):
         acts, labels = _separable_acts(n_samples=10, seq=5)
@@ -275,6 +282,135 @@ class TestProbeInterface(unittest.TestCase):
 
     def test_mlp_interface(self):
         self._test_probe_interface(MLP, hidden_dim=32, n_epochs=10)
+
+class TestFeatureProbeFamilies(unittest.TestCase):
+    """Feature probes should train, predict finite probabilities, and serialize."""
+
+    def test_mass_mean_rejects_single_class_data(self):
+        acts, _ = _separable_acts(n_samples=8, seq=4, d_model=6)
+        prepared = acts.mean("s")
+
+        with self.assertRaisesRegex(ValueError, "both classes"):
+            MassMean(device="cpu").fit(prepared, [Label.POSITIVE] * 8)
+
+    def test_quadratic_probe_initial_coefficients_are_trainable_immediately(self):
+        features = torch.randn(6, 5)
+
+        bilinear = Bilinear(rank=4, seed=0, device="cpu").initialize(features)
+        tpc = TPC(max_degree=3, rank=4, seed=0, device="cpu").initialize(features)
+
+        self.assertGreater(bilinear.lam.detach().abs().sum().item(), 0.0)
+        for coeff in tpc.coeffs:
+            self.assertGreater(coeff.detach().abs().sum().item(), 0.0)
+
+    def test_bilinear_keeps_pure_quadratic_design(self):
+        probe = Bilinear(rank=3, seed=0, device="cpu").initialize(torch.randn(6, 4))
+
+        self.assertFalse(hasattr(probe, "linear"))
+        self.assertIn("lam", dict(probe.named_parameters()))
+        self.assertIn("U.weight", dict(probe.named_parameters()))
+
+    def test_feature_probe_roundtrips(self):
+        acts, labels = _separable_acts(n_samples=12, seq=4, d_model=6)
+        prepared = acts.mean("s")
+        cases = [
+            (MassMean, {"normalize": True}),
+            (Bilinear, {"rank": 3, "n_epochs": 2, "batch_size": 4, "seed": 0}),
+            (EEMLP, {"n_layers": 2, "hidden_dim": 8, "dropout": 0.0, "n_epochs": 2, "batch_size": 4, "seed": 0}),
+            (TPC, {"max_degree": 2, "rank": 3, "n_epochs": 1, "batch_size": 4, "seed": 0}),
+        ]
+
+        for ProbeClass, kwargs in cases:
+            with self.subTest(probe=ProbeClass.__name__):
+                probe = ProbeClass(device="cpu", **kwargs).fit(prepared, labels)
+                probs = probe.predict(prepared)
+                self.assertEqual(probs.shape, (12,))
+                self.assertTrue(torch.isfinite(probs).all())
+                self.assertTrue(((probs >= 0) & (probs <= 1)).all())
+
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    path = Path(tmpdir) / "probe.pt"
+                    probe.save(path)
+                    loaded = ProbeClass.load(path, device="cpu")
+
+                torch.testing.assert_close(loaded.predict(prepared), probs, atol=1e-5, rtol=1e-5)
+
+    def test_eemlp_exposes_all_exit_heads(self):
+        acts, labels = _separable_acts(n_samples=8, seq=3, d_model=5)
+        prepared = acts.mean("s")
+        probe = EEMLP(n_layers=2, hidden_dim=6, dropout=0.0, n_epochs=1, device="cpu").fit(prepared, labels)
+
+        exits = probe.forward_all_exits(prepared.data)
+
+        self.assertEqual(len(exits), 3)
+        for logits in exits:
+            self.assertEqual(logits.shape, (8,))
+            self.assertTrue(torch.isfinite(logits).all())
+
+    def test_tpc_cascade_returns_probabilities(self):
+        acts, labels = _separable_acts(n_samples=10, seq=4, d_model=5)
+        prepared = acts.mean("s")
+        probe = TPC(max_degree=2, rank=3, n_epochs=1, batch_size=5, device="cpu").fit(prepared, labels)
+
+        probs = probe.predict_cascade(prepared, threshold=0.55)
+
+        self.assertEqual(probs.shape, (10,))
+        self.assertTrue(torch.isfinite(probs).all())
+        self.assertTrue(((probs >= 0) & (probs <= 1)).all())
+
+class TestSequenceProbeFamilies(unittest.TestCase):
+    """Sequence probes should handle sparse and all-empty detection rows."""
+
+    def _cases(self):
+        return [
+            (Attention, {"hidden_dim": 8, "dropout": 0.0}),
+            (MultiMax, {"n_heads": 3, "mlp_hidden_dim": 8, "dropout": 0.0}),
+            (GatedBipolar, {"mlp_hidden_dim": 8, "gate_dim": 4, "dropout": 0.0}),
+            (SoftAttention, {"n_heads": 3, "hidden_dim": 8, "dropout": 0.0}),
+            (PositionalAttention, {"n_heads": 3}),
+            (RollingAttention, {"n_heads": 3, "hidden_dim": 8, "window_size": 2, "dropout": 0.0}),
+            (MHA, {"proj_dim": 8, "n_heads": 2, "n_enc_layers": 1, "dropout": 0.0}),
+        ]
+
+    def test_forward_is_finite_with_all_false_detection_row(self):
+        sequences = torch.randn(3, 5, 6)
+        mask = torch.tensor([
+            [True, True, False, False, False],
+            [False, False, False, False, False],
+            [False, True, False, True, False],
+        ])
+
+        for ProbeClass, kwargs in self._cases():
+            with self.subTest(probe=ProbeClass.__name__):
+                probe = ProbeClass(device="cpu", seed=0, **kwargs).initialize(sequences, mask)
+                probe.eval()
+                logits = probe(sequences, mask)
+                self.assertEqual(logits.shape, (3,))
+                self.assertTrue(torch.isfinite(logits).all())
+
+    def test_positional_attention_keeps_uniform_start_unit_head_sum_design(self):
+        probe = PositionalAttention(n_heads=3, seed=0, device="cpu").initialize(torch.randn(2, 4, 5))
+
+        self.assertTrue(torch.equal(probe.query_proj, torch.zeros_like(probe.query_proj)))
+        self.assertTrue(torch.equal(probe.position_weights, torch.zeros_like(probe.position_weights)))
+        self.assertFalse(hasattr(probe, "output"))
+
+    def test_initialized_sequence_probe_save_load_preserves_logits(self):
+        sequences = torch.randn(2, 4, 6)
+        mask = torch.tensor([[True, False, True, False], [False, True, True, False]])
+
+        for ProbeClass, kwargs in self._cases():
+            with self.subTest(probe=ProbeClass.__name__):
+                probe = ProbeClass(device="cpu", seed=0, **kwargs).initialize(sequences, mask)
+                probe.eval()
+                logits_before = probe(sequences, mask)
+
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    path = Path(tmpdir) / "probe.pt"
+                    probe.save(path)
+                    loaded = ProbeClass.load(path, device="cpu")
+
+                torch.testing.assert_close(loaded(sequences, mask), logits_before, atol=1e-6, rtol=1e-6)
 
 # =============================================================================
 # Probe Error Handling
@@ -396,6 +532,38 @@ class TestProbeDeviceHandling(unittest.TestCase):
 # =============================================================================
 
 class TestSeedReproducibility(unittest.TestCase):
+    def test_initialize_with_seed_preserves_global_torch_rng_state(self):
+        torch.manual_seed(12345)
+        state_before = torch.random.get_rng_state().clone()
+
+        MLP(hidden_dim=8, seed=999, device="cpu").initialize(torch.zeros(3, 4))
+
+        self.assertTrue(torch.equal(torch.random.get_rng_state(), state_before))
+
+    def test_sequence_fit_with_seed_preserves_global_torch_rng_state(self):
+        data = torch.ones(8, 4, 5)
+        acts = Activations.from_padded(
+            data,
+            detection_mask=torch.ones(8, 4, dtype=torch.bool),
+            dims="bsh",
+        )
+        labels = [Label.POSITIVE] * 4 + [Label.NEGATIVE] * 4
+        torch.manual_seed(12345)
+        state_before = torch.random.get_rng_state().clone()
+
+        Attention(
+            hidden_dim=8,
+            dropout=0.5,
+            n_epochs=2,
+            patience=99,
+            batch_size=4,
+            val_split=0.25,
+            seed=999,
+            device="cpu",
+        ).fit(acts, labels)
+
+        self.assertTrue(torch.equal(torch.random.get_rng_state(), state_before))
+
     def test_mlp_same_seed_same_predictions(self):
         acts, labels = _separable_acts()
         prepared = acts.mean("s")
@@ -484,6 +652,37 @@ class TestOptimizerFactory(unittest.TestCase):
         ).fit(acts, labels)
         self.assertTrue(p.fitted)
 
+    def test_sequence_scheduler_steps_every_epoch_not_every_eval(self):
+        class CountingScheduler:
+            def __init__(self):
+                self.steps = 0
+
+            def step(self):
+                self.steps += 1
+
+        schedulers = []
+
+        def scheduler_fn(_optimizer):
+            scheduler = CountingScheduler()
+            schedulers.append(scheduler)
+            return scheduler
+
+        acts, labels = _separable_acts(n_samples=8, seq=4, d_model=5)
+        Attention(
+            hidden_dim=8,
+            dropout=0.0,
+            n_epochs=3,
+            patience=99,
+            batch_size=4,
+            val_split=0.25,
+            eval_interval=2,
+            scheduler_fn=scheduler_fn,
+            seed=0,
+            device="cpu",
+        ).fit(acts, labels)
+
+        self.assertEqual(schedulers[0].steps, 3)
+
 # =============================================================================
 # Exposed Params Tests
 # =============================================================================
@@ -544,7 +743,7 @@ class TestDtypePolicy(unittest.TestCase):
         acts, labels = _bf16_separable_acts()
         prepared = acts.mean("s")
         p = MLP(hidden_dim=16, n_epochs=5, device="cpu").fit(prepared, labels)
-        net_dtype = next(p.net.parameters()).dtype
+        net_dtype = next(p.parameters()).dtype
         self.assertEqual(net_dtype, torch.bfloat16)
         probs = p.predict(prepared)
         self.assertEqual(probs.dtype, torch.bfloat16)
@@ -554,7 +753,7 @@ class TestDtypePolicy(unittest.TestCase):
         acts, labels = _bf16_separable_acts()
         prepared = acts.mean("s")
         p = MLP(hidden_dim=16, n_epochs=5, device="cpu", cast="float32").fit(prepared, labels)
-        net_dtype = next(p.net.parameters()).dtype
+        net_dtype = next(p.parameters()).dtype
         self.assertEqual(net_dtype, torch.float32)
 
     def test_logistic_lbfgs_preserves_bf16(self):
@@ -562,7 +761,7 @@ class TestDtypePolicy(unittest.TestCase):
         acts, labels = _bf16_separable_acts()
         prepared = acts.mean("s")
         p = Logistic(device="cpu").fit(prepared, labels)
-        net_dtype = next(p.net.parameters()).dtype
+        net_dtype = next(p.parameters()).dtype
         self.assertEqual(net_dtype, torch.bfloat16)
 
     def test_logistic_custom_optimizer_preserves_bf16(self):
@@ -574,7 +773,7 @@ class TestDtypePolicy(unittest.TestCase):
             optimizer_fn=lambda params: torch.optim.Adam(params, lr=0.01),
             device="cpu",
         ).fit(prepared, labels)
-        net_dtype = next(p.net.parameters()).dtype
+        net_dtype = next(p.parameters()).dtype
         self.assertEqual(net_dtype, torch.bfloat16)
 
     def test_predict_autocasts_mismatched_dtype(self):
@@ -583,7 +782,7 @@ class TestDtypePolicy(unittest.TestCase):
         prepared = acts.mean("s")
         p = MLP(hidden_dim=16, n_epochs=5, device="cpu").fit(prepared, labels)
         # Verify network is float32
-        self.assertEqual(next(p.net.parameters()).dtype, torch.float32)
+        self.assertEqual(next(p.parameters()).dtype, torch.float32)
 
         # Create bf16 test acts — predict() should auto-cast to float32
         bf16_acts, _ = _bf16_separable_acts()
@@ -606,11 +805,11 @@ class TestDtypePolicy(unittest.TestCase):
             loaded = MLP.load(path)
 
         self.assertEqual(loaded._training_dtype, torch.bfloat16)
-        net_dtype = next(loaded.net.parameters()).dtype
+        net_dtype = next(loaded.parameters()).dtype
         self.assertEqual(net_dtype, torch.bfloat16)
 
-    def test_old_checkpoint_defaults_to_float32(self):
-        """Old checkpoint without training_dtype key → loads as float32."""
+    def test_checkpoint_requires_training_dtype(self):
+        """New checkpoints are strict: training dtype is required."""
         acts, labels = _separable_acts()
         prepared = acts.mean("s")
         p = MLP(hidden_dim=16, n_epochs=5, device="cpu").fit(prepared, labels)
@@ -618,16 +817,14 @@ class TestDtypePolicy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "probe.pt"
             p.save(path)
-            # Simulate old checkpoint by removing the new keys
+            # Corrupt the checkpoint by removing required metadata.
             state = torch.load(path, map_location="cpu")
             del state["training_dtype"]
             del state["cast"]
             torch.save(state, path)
-            loaded = MLP.load(path)
 
-        self.assertEqual(loaded._training_dtype, torch.float32)
-        net_dtype = next(loaded.net.parameters()).dtype
-        self.assertEqual(net_dtype, torch.float32)
+            with self.assertRaises(KeyError):
+                MLP.load(path)
 
     def test_attention_bf16_trains_and_predicts(self):
         """Attention with bf16 activations → trains and predicts correctly."""
@@ -637,7 +834,7 @@ class TestDtypePolicy(unittest.TestCase):
             device="cpu",
         ).fit(acts, labels)
         self.assertTrue(p.fitted)
-        net_dtype = next(p.net.parameters()).dtype
+        net_dtype = next(p.parameters()).dtype
         self.assertEqual(net_dtype, torch.bfloat16)
         probs = p.predict(acts)
         self.assertEqual(probs.shape, (20,))

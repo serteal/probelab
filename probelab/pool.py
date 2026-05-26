@@ -100,21 +100,25 @@ def last_token(
         return _flat_last_token(x, mask, offsets)
 
     mask = mask.to(x.device).bool()
-    valid_counts = mask.sum(dim=1)
-    last_idx = (valid_counts - 1).clamp(min=0).long()
+    seq_len = x.shape[dim]
+    positions = torch.arange(seq_len, device=x.device)
+    last_idx = torch.where(
+        mask,
+        positions.view(1, seq_len),
+        torch.full((1, seq_len), -1, device=x.device),
+    ).max(dim=1).values.long()
 
-    # Build gather index
     gather_shape = list(x.shape)
     gather_shape[dim] = 1
     index_shape = [1] * x.ndim
     index_shape[0] = last_idx.shape[0]  # batch dim
     index_shape[dim] = 1
 
-    gather_idx = last_idx.view(index_shape).expand(gather_shape)
+    gather_idx = last_idx.clamp(min=0).view(index_shape).expand(gather_shape)
     result = x.gather(dim=dim, index=gather_idx).squeeze(dim)
 
     # Handle empty sequences
-    no_valid = valid_counts == 0
+    no_valid = last_idx < 0
     if no_valid.any():
         indexer = [slice(None)] * result.ndim
         indexer[0] = no_valid  # batch dim
