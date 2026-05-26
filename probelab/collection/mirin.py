@@ -25,7 +25,7 @@ def _import_mirin():
     except ImportError as exc:
         raise ImportError(
             "The mirin collection adapter requires mirin. Install with "
-            "`probelab[collection-mirin]` or `probelab[collection]`."
+            "`probelab[collection]`."
         ) from exc
     return mirin
 

@@ -53,12 +53,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", default="wildguard_mix")
     parser.add_argument("--samples", type=int, default=0, help="0 uses full splits")
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument(
+        "--batch-token-budget",
+        type=int,
+        default=None,
+        help="Maximum padded tokens per activation collection batch",
+    )
     parser.add_argument("--layer", type=int, default=40)
     parser.add_argument(
         "--mask",
         choices=["all", "assistant", "user"],
         default="all",
         help="Detection mask used before mean pooling",
+    )
+    parser.add_argument(
+        "--no-sort-by-length",
+        action="store_true",
+        help="Disable length-sorted activation collection batches",
+    )
+    parser.add_argument(
+        "--truncation",
+        action="store_true",
+        help="Enable tokenizer truncation",
+    )
+    parser.add_argument(
+        "--max-length",
+        type=int,
+        default=2048,
+        help="Tokenizer max_length when --truncation is set",
+    )
+    parser.add_argument(
+        "--tokenize-chunk-size",
+        type=int,
+        default=1024,
+        help="tokenize_dataset chunk_size",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--probe-c", type=float, default=0.01)
@@ -71,6 +99,11 @@ def main() -> None:
         _load_collection_deps()
     )
     mask = _mask_from_name(args.mask)
+    sort_by_length = not args.no_sort_by_length
+    tokenize_kwargs = {"chunk_size": args.tokenize_chunk_size}
+    if args.truncation:
+        tokenize_kwargs["truncation"] = True
+        tokenize_kwargs["max_length"] = args.max_length
 
     log("Loading datasets...")
     t0 = time.perf_counter()
@@ -98,7 +131,12 @@ def main() -> None:
 
     log("\nTokenizing train...")
     t0 = time.perf_counter()
-    train_tokens = pl.tokenize_dataset(train_dataset, tokenizer, mask=mask)
+    train_tokens = pl.tokenize_dataset(
+        train_dataset,
+        tokenizer,
+        mask=mask,
+        **tokenize_kwargs,
+    )
     log(
         f"Train tokenized in {time.perf_counter() - t0:.1f}s: "
         f"{len(train_tokens)} samples, {train_tokens.total_tokens:,} tokens, "
@@ -107,7 +145,12 @@ def main() -> None:
 
     log("Tokenizing test...")
     t0 = time.perf_counter()
-    test_tokens = pl.tokenize_dataset(test_dataset, tokenizer, mask=mask)
+    test_tokens = pl.tokenize_dataset(
+        test_dataset,
+        tokenizer,
+        mask=mask,
+        **tokenize_kwargs,
+    )
     log(
         f"Test tokenized in {time.perf_counter() - t0:.1f}s: "
         f"{len(test_tokens)} samples, {test_tokens.total_tokens:,} tokens, "
@@ -136,6 +179,8 @@ def main() -> None:
         layers=[layer],
         batch_size=args.batch_size,
         pool="mean",
+        sort_by_length=sort_by_length,
+        batch_token_budget=args.batch_token_budget,
         progress=True,
         progress_desc="train collect+pool",
     )
@@ -154,6 +199,8 @@ def main() -> None:
         layers=[layer],
         batch_size=args.batch_size,
         pool="mean",
+        sort_by_length=sort_by_length,
+        batch_token_budget=args.batch_token_budget,
         progress=True,
         progress_desc="test collect+pool",
     )

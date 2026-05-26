@@ -69,9 +69,14 @@ def _collect_once():
     )
     model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
 
-    ds = pl.datasets.load("circuit_breakers")
-    pos = ds.positive.sample(N_SAMPLES // 2, seed=DATASET_SEED)
-    neg = ds.negative.sample(N_SAMPLES // 2, seed=DATASET_SEED)
+    pos = pl.datasets.load("circuit_breakers").sample(
+        N_SAMPLES // 2,
+        seed=DATASET_SEED,
+    )
+    neg = pl.datasets.load("benign_instructions").sample(
+        N_SAMPLES // 2,
+        seed=DATASET_SEED,
+    )
     ds_small = pos + neg
     train_ds, test_ds = ds_small.split(0.75, seed=DATASET_SEED)
 

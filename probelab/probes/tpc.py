@@ -96,13 +96,12 @@ class TPC(BaseProbe):
         for param in trainable:
             param.requires_grad_(True)
 
-        fused = isinstance(self.device, str) and self.device.startswith("cuda")
-        optimizer = torch.optim.AdamW(
+        optimizer = self._make_optimizer(
             trainable,
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
-            fused=fused,
         )
+        scheduler = self._make_scheduler(optimizer)
         n = features.shape[0]
         batch_size = min(self.batch_size, n)
         device, dtype = self._module_device_dtype()
@@ -120,6 +119,7 @@ class TPC(BaseProbe):
                     )
                     loss.backward()
                     optimizer.step()
+                self._step_scheduler(scheduler)
         for param in trainable:
             param.requires_grad_(False)
 

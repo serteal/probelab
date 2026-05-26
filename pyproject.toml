@@ -46,10 +46,8 @@ tokenization = [
     "huggingface-hub>=0.34.0,<1.0",
     "transformers>=4.55.4,<5",
 ]
-collection-mirin = [
-    "mirin @ git+https://github.com/serteal/mirin.git",
-]
 collection = [
+    "accelerate>=1.0",
     "huggingface-hub>=0.34.0,<1.0",
     "mirin @ git+https://github.com/serteal/mirin.git",
     "transformers>=4.55.4,<5",

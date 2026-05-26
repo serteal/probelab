@@ -621,6 +621,57 @@ class TestOptimizerFactory(unittest.TestCase):
         ).fit(prepared, labels)
         self.assertTrue(p.fitted)
 
+    def test_tpc_custom_optimizer(self):
+        acts, labels = _separable_acts()
+        prepared = acts.mean("s")
+        optimizer_calls = 0
+
+        def optimizer_fn(params):
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            return SGD(params, lr=0.01)
+
+        p = TPC(
+            max_degree=2,
+            rank=4,
+            n_epochs=2,
+            batch_size=8,
+            optimizer_fn=optimizer_fn,
+            device="cpu",
+        ).fit(prepared, labels)
+
+        self.assertTrue(p.fitted)
+        self.assertEqual(optimizer_calls, 2)
+
+    def test_tpc_scheduler_steps_once_per_degree_epoch(self):
+        class CountingScheduler:
+            def __init__(self):
+                self.steps = 0
+
+            def step(self):
+                self.steps += 1
+
+        schedulers = []
+
+        def scheduler_fn(_optimizer):
+            scheduler = CountingScheduler()
+            schedulers.append(scheduler)
+            return scheduler
+
+        acts, labels = _separable_acts()
+        prepared = acts.mean("s")
+        TPC(
+            max_degree=2,
+            rank=4,
+            n_epochs=3,
+            batch_size=8,
+            scheduler_fn=scheduler_fn,
+            seed=0,
+            device="cpu",
+        ).fit(prepared, labels)
+
+        self.assertEqual([scheduler.steps for scheduler in schedulers], [3, 3])
+
     def test_save_load_roundtrip_custom_optimizer(self):
         """Custom optimizer not serialized; loaded probe still works for predict."""
         acts, labels = _separable_acts()
