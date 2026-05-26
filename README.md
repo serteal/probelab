@@ -91,6 +91,35 @@ for name, probe in [("logistic", pl.probes.Logistic()), ("mlp", pl.probes.MLP())
 `Activations.metadata` is an arbitrary runtime dictionary for provenance.
 Storage helpers persist it when it is JSON-serializable.
 
+## Custom Probe Training
+
+Probe `fit()` and `predict()` keep the estimator-style API and accept
+`Activations`. Each probe is also a `torch.nn.Module`: `initialize()`,
+`forward()`, `loss_on_batch()`, `predict_tensor()`, and `parameters()` operate
+on tensors for custom training loops.
+
+```python
+features = train_prepared.data
+labels = torch.tensor(
+    [label.value if hasattr(label, "value") else label for label in train_ds.labels],
+    dtype=torch.float32,
+)
+probe = pl.probes.MLP(hidden_dim=256, seed=0).initialize(features, labels)
+optimizer = probe.configure_optimizer()
+
+for batch_x, batch_y, _ in pl.batching.iter_feature_batches(
+    features, labels, batch_size=2048, shuffle=True
+):
+    optimizer.zero_grad()
+    loss = probe.loss_on_batch(batch_x, batch_y.float())
+    loss.backward()
+    optimizer.step()
+```
+
+For sequence probes, use `pl.batching.iter_sequence_batches(...)` to control
+sample ordering, local padding, and `max_padded_tokens`; pass the padded
+`sequences` and `mask` tensors directly to the probe.
+
 ## Optional mirin Collection
 
 ```python

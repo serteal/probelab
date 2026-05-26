@@ -1,4 +1,6 @@
-"""AlphaEvolve Gated Bipolar probe from GDM paper."""
+"""Gated bipolar sequence probe."""
+
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Callable
@@ -11,65 +13,8 @@ from ..activations import Activations
 from .base import BaseProbe
 
 
-class _GatedBipolarNetwork(nn.Module):
-    """Gated Bipolar network with AlphaEvolve architecture."""
-
-    def __init__(
-        self,
-        d_model: int,
-        mlp_hidden_dim: int = 128,
-        gate_dim: int = 64,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.gate_dim = gate_dim
-        self.norm = nn.LayerNorm(d_model)
-        self.mlp = nn.Sequential(
-            nn.Linear(d_model, mlp_hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(mlp_hidden_dim, mlp_hidden_dim),
-        )
-        self.W_proj = nn.Linear(mlp_hidden_dim, gate_dim)
-        self.W_gate = nn.Linear(mlp_hidden_dim, gate_dim)
-        self.output = nn.Linear(2 * gate_dim, 1)
-        self._init_weights()
-
-    def _init_weights(self):
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_normal_(module.weight, gain=0.5)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-
-    def forward(self, sequences: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        H = self.mlp(self.norm(sequences))
-        V = self.W_proj(H) * F.softplus(self.W_gate(H))
-        mask_exp = mask.unsqueeze(-1)
-
-        V_max = V.masked_fill(~mask_exp.bool(), float("-inf")).max(dim=1).values
-        V_min = V.masked_fill(~mask_exp.bool(), float("inf")).min(dim=1).values
-        V_max = torch.nan_to_num(V_max, nan=0.0, posinf=0.0, neginf=0.0)
-        V_min = torch.nan_to_num(V_min, nan=0.0, posinf=0.0, neginf=0.0)
-
-        h_pool = torch.cat([V_max, -V_min], dim=-1)
-        return self.output(h_pool).squeeze(-1)
-
-    def get_regularization_loss(self, lambda_l1: float = 1e-5, lambda_orth: float = 1e-4) -> torch.Tensor:
-        l1_loss = lambda_l1 * self.W_proj.weight.abs().sum()
-        W = self.W_proj.weight
-        WtW = W @ W.T
-        I = torch.eye(self.gate_dim, device=W.device, dtype=W.dtype)
-        orth_loss = lambda_orth * (WtW - I).pow(2).sum()
-        return l1_loss + orth_loss
-
-
 class GatedBipolar(BaseProbe):
-    """AlphaEvolve Gated Bipolar probe.
-
-    Uses gated projections with Softplus and bipolar pooling (max AND -min).
-    REQUIRES SEQ axis.
-    """
+    """Gated projections with max and negative-min pooling."""
 
     def __init__(
         self,
@@ -84,6 +29,7 @@ class GatedBipolar(BaseProbe):
         patience: int = 5,
         batch_size: int = 32,
         val_split: float = 0.2,
+        max_padded_tokens: int | None = None,
         *,
         optimizer_fn: Callable | None = None,
         scheduler_fn: Callable | None = None,
@@ -103,123 +49,77 @@ class GatedBipolar(BaseProbe):
         self.patience = patience
         self.batch_size = batch_size
         self.val_split = val_split
-        self.net = None
+        self.max_padded_tokens = max_padded_tokens
+        self.norm: nn.LayerNorm | None = None
+        self.mlp: nn.Sequential | None = None
+        self.W_proj: nn.Linear | None = None
+        self.W_gate: nn.Linear | None = None
+        self.output: nn.Linear | None = None
 
-    @property
-    def fitted(self) -> bool:
-        return self.net is not None
-
-    def _create_network(self, d_model: int) -> None:
-        self.net = _GatedBipolarNetwork(
-            d_model=d_model,
-            mlp_hidden_dim=self.mlp_hidden_dim,
-            gate_dim=self.gate_dim,
-            dropout=self.dropout,
-        )
-
-    def _regularization_loss(self) -> torch.Tensor:
-        return self.net.get_regularization_loss(self.lambda_l1, self.lambda_orth)
-
-    def fit(self, X: Activations, y: list | torch.Tensor) -> "GatedBipolar":
-        if "l" in X.dims:
-            raise ValueError(
-                f"GatedBipolar expects no LAYER axis. "
-                f"Call select(\"l\", layer) first. Current dims: {X.dims}"
+    def initialize(self, sequences: torch.Tensor, mask: torch.Tensor | None = None, labels: torch.Tensor | None = None):
+        working_dtype = self._resolve_dtype(sequences.dtype)
+        self._training_dtype = working_dtype
+        device = torch.device(self.device or sequences.device)
+        with self._temporary_seed():
+            d_model = sequences.shape[-1]
+            self.norm = nn.LayerNorm(d_model)
+            self.mlp = nn.Sequential(
+                nn.Linear(d_model, self.mlp_hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(self.dropout),
+                nn.Linear(self.mlp_hidden_dim, self.mlp_hidden_dim),
             )
-        if "s" not in X.dims:
-            raise ValueError("GatedBipolar probe requires SEQ axis")
-
-        if self.device is None:
-            self.device = str(X.data.device)
-
-        y_tensor = self._to_labels(y)
-        working_dtype = self._resolve_dtype(X.data.dtype)
-        labels = y_tensor.to(self.device, dtype=working_dtype)
-
-        g = self.setup_training(X.hidden_size, working_dtype)
-
-        n_samples = X.batch_size
-        n_val = max(1, int(self.val_split * n_samples))
-        indices = torch.randperm(n_samples, device="cpu", generator=g)
-        train_idx, val_idx = indices[n_val:].tolist(), indices[:n_val].tolist()
-        batch_size = min(self.batch_size, len(train_idx))
-
-        seq_lengths = self._get_seq_lengths(X)
-        val_y = labels[val_idx]
-
-        self.net.train()
-        for epoch in range(self.n_epochs):
-            batches = self._length_sorted_batches(
-                train_idx, seq_lengths, batch_size, generator=g,
-            )
-            for batch_idx in batches:
-                batch_seq, batch_mask = X.pad_batch(batch_idx)
-                batch_seq = batch_seq.to(self.device)
-                batch_mask = batch_mask.to(self.device)
-                self.train_on_batch(batch_seq, batch_mask, labels[batch_idx])
-
-            if self.should_validate_at(epoch):
-                self.net.eval()
-                with torch.no_grad():
-                    val_logits = self._minibatch_forward(
-                        self.net, X, val_idx, self.device,
-                        working_dtype, batch_size,
-                    )
-                val_loss = F.binary_cross_entropy_with_logits(val_logits, val_y).item()
-                if self.check_val(val_loss):
-                    break
-                self.net.train()
-
-        self.restore_best()
-        self.net.eval()
+            self.W_proj = nn.Linear(self.mlp_hidden_dim, self.gate_dim)
+            self.W_gate = nn.Linear(self.mlp_hidden_dim, self.gate_dim)
+            self.output = nn.Linear(2 * self.gate_dim, 1)
+            for module in self.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_normal_(module.weight, gain=0.5)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
+        self.to(device=device, dtype=working_dtype)
+        self._mark_initialized(working_dtype)
         return self
 
-    def __call__(self, sequences: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """Differentiable forward pass.
+    def forward(self, sequences: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        self._check_initialized()
+        device, dtype = self._module_device_dtype()
+        x = sequences.to(device=device, dtype=dtype)
+        m = mask.to(device=device).bool().unsqueeze(-1)
+        h = self.mlp(self.norm(x))
+        v = self.W_proj(h) * F.softplus(self.W_gate(h))
+        v_max = v.masked_fill(~m, float("-inf")).max(dim=1).values
+        v_min = v.masked_fill(~m, float("inf")).min(dim=1).values
+        v_max = torch.nan_to_num(v_max, nan=0.0, posinf=0.0, neginf=0.0)
+        v_min = torch.nan_to_num(v_min, nan=0.0, posinf=0.0, neginf=0.0)
+        return self.output(torch.cat([v_max, -v_min], dim=-1)).squeeze(-1)
 
-        Args:
-            sequences: Sequence tensor [batch, seq, hidden]
-            mask: Detection mask [batch, seq]
+    def regularization_loss(self) -> torch.Tensor:
+        self._check_initialized()
+        w = self.W_proj.weight
+        l1 = self.lambda_l1 * w.abs().sum()
+        wtw = w @ w.T
+        eye = torch.eye(self.gate_dim, device=w.device, dtype=w.dtype)
+        return l1 + self.lambda_orth * (wtw - eye).pow(2).sum()
 
-        Returns:
-            Logits tensor [batch]
-        """
-        self._check_fitted()
-        sequences = sequences.to(self.device)
-        mask = mask.to(self.device)
-        return self.net(sequences, mask)
+    def fit(self, X: Activations, y: list | torch.Tensor, **kwargs) -> "GatedBipolar":
+        self._require_sequence_activations(X)
+        if self.device is None:
+            self.device = str(X.data.device)
+        self.initialize(X.data[:1].reshape(1, 1, X.hidden_size).to(dtype=self._resolve_dtype(X.data.dtype)))
+        return self._fit_sequence_default(X, self._to_labels(y), **kwargs)
 
-    def predict(self, X: Activations) -> torch.Tensor:
-        """Evaluate on activations.
+    def predict_logits(self, X: Activations, **kwargs) -> torch.Tensor:
+        self._require_sequence_activations(X)
+        opts = self._fit_kwargs(**kwargs)
+        return self._sequence_logits(X, list(range(X.batch_size)), batch_size=opts["batch_size"], max_padded_tokens=opts["max_padded_tokens"])
 
-        Args:
-            X: Activations with SEQ axis, without LAYER axis
-
-        Returns:
-            Probability of positive class [batch]
-        """
-        self._check_fitted()
-
-        if "l" in X.dims:
-            raise ValueError(f"GatedBipolar expects no LAYER axis. Current dims: {X.dims}")
-        if "s" not in X.dims:
-            raise ValueError("GatedBipolar probe requires SEQ axis")
-
-        net_dtype = next(self.net.parameters()).dtype
-        all_indices = list(range(X.batch_size))
-
+    def predict(self, X: Activations, **kwargs) -> torch.Tensor:
         with torch.no_grad():
-            logits = self._minibatch_forward(
-                self.net, X, all_indices, self.device,
-                net_dtype, self.batch_size,
-            )
-            return torch.sigmoid(logits)
+            return torch.sigmoid(self.predict_logits(X, **kwargs))
 
     def save(self, path: Path | str) -> None:
-        self._check_fitted()
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
+        self._save_probe(path, {
             "mlp_hidden_dim": self.mlp_hidden_dim,
             "gate_dim": self.gate_dim,
             "dropout": self.dropout,
@@ -231,46 +131,19 @@ class GatedBipolar(BaseProbe):
             "patience": self.patience,
             "batch_size": self.batch_size,
             "val_split": self.val_split,
-            "seed": self.seed,
-            "device": self.device,
-            "cast": self.cast,
-            "training_dtype": str(self._training_dtype),
-            "network_state_dict": self.net.state_dict(),
-        }, path)
+            "max_padded_tokens": self.max_padded_tokens,
+        })
 
     @classmethod
     def load(cls, path: Path | str, device: str = "cpu") -> "GatedBipolar":
         state = torch.load(Path(path), map_location="cpu")
-        probe = cls(
-            mlp_hidden_dim=state["mlp_hidden_dim"],
-            gate_dim=state["gate_dim"],
-            dropout=state.get("dropout", 0.1),
-            lambda_l1=state.get("lambda_l1", 1e-5),
-            lambda_orth=state.get("lambda_orth", 1e-4),
-            learning_rate=state.get("learning_rate", 5e-4),
-            weight_decay=state.get("weight_decay", 1e-3),
-            n_epochs=state["n_epochs"],
-            patience=state["patience"],
-            batch_size=state.get("batch_size", 32),
-            val_split=state.get("val_split", 0.2),
-            seed=state.get("seed"),
-            device=device,
-            cast=state.get("cast"),
-        )
-        dtype_str = state.get("training_dtype")
-        stored_dtype = getattr(torch, dtype_str.split(".")[-1]) if dtype_str else torch.float32
-        probe._training_dtype = stored_dtype
-
-        # Infer d_model from saved weights
-        d_model = state["network_state_dict"]["norm.weight"].shape[0]
-        probe.net = _GatedBipolarNetwork(
-            d_model=d_model,
-            mlp_hidden_dim=probe.mlp_hidden_dim,
-            gate_dim=probe.gate_dim,
-            dropout=probe.dropout,
-        ).to(probe.device, dtype=stored_dtype)
-        probe.net.load_state_dict(state["network_state_dict"])
-        probe.net.eval()
+        probe = cls(**state["init_kwargs"], seed=state.get("seed"), device=device, cast=state.get("cast"))
+        dtype = cls._stored_dtype(state)
+        d_model = state["state_dict"]["norm.weight"].shape[0]
+        probe.initialize(torch.empty(1, 1, d_model, dtype=dtype, device=device))
+        probe.load_state_dict(state["state_dict"])
+        probe.to(device=device, dtype=dtype)
+        probe.eval()
         return probe
 
     def __repr__(self) -> str:

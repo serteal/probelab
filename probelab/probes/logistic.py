@@ -1,5 +1,7 @@
 """L2-regularized logistic regression probe."""
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Callable
 
@@ -11,26 +13,8 @@ from ..activations import Activations
 from .base import BaseProbe
 
 
-class _LogisticNetwork(nn.Module):
-    """Simple logistic regression network."""
-
-    def __init__(self, d_model: int):
-        super().__init__()
-        self.linear = nn.Linear(d_model, 1, bias=True)
-        nn.init.xavier_uniform_(self.linear.weight)
-        nn.init.zeros_(self.linear.bias)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear(x).squeeze(-1)
-
-
 class Logistic(BaseProbe):
-    """L2-regularized logistic regression probe.
-
-    Adapts to input dimensionality:
-    - If X has SEQ axis: Trains on tokens, returns token-level scores
-    - If X has no SEQ axis: Trains on sequences, returns sequence-level scores
-    """
+    """L2-regularized logistic regression probe."""
 
     def __init__(
         self,
@@ -45,208 +29,151 @@ class Logistic(BaseProbe):
         device: str | None = None,
         cast: str | None = None,
     ):
-        super().__init__(device=device, seed=seed, optimizer_fn=optimizer_fn, scheduler_fn=scheduler_fn, cast=cast)
+        super().__init__(
+            device=device,
+            seed=seed,
+            optimizer_fn=optimizer_fn,
+            scheduler_fn=scheduler_fn,
+            cast=cast,
+        )
         self.C = C
         self.max_iter = max_iter
         self.n_epochs = n_epochs
         self.batch_size = batch_size
-        self.net = None
-        self.scaler_mean = None
-        self.scaler_std = None
+        self.linear: nn.Linear | None = None
+        self.register_buffer("scaler_mean", torch.empty(0))
+        self.register_buffer("scaler_std", torch.empty(0))
 
-    @property
-    def fitted(self) -> bool:
-        return self.net is not None and self.scaler_mean is not None
+    def initialize(self, features: torch.Tensor, labels: torch.Tensor | None = None) -> "Logistic":
+        working_dtype = self._resolve_dtype(features.dtype)
+        self._training_dtype = working_dtype
+        device = torch.device(self.device or features.device)
+        with self._temporary_seed():
+            self.linear = nn.Linear(features.shape[-1], 1, bias=True)
+            nn.init.xavier_uniform_(self.linear.weight)
+            nn.init.zeros_(self.linear.bias)
+        self.to(device=device, dtype=working_dtype)
+        stats = features.to(dtype=working_dtype)
+        self.scaler_mean = stats.mean(0).to(device)
+        self.scaler_std = stats.std(0, unbiased=False).clamp(min=1e-8).to(device)
+        self._mark_initialized(working_dtype)
+        return self
 
-    def fit(self, X: Activations, y: list | torch.Tensor) -> "Logistic":
-        if "l" in X.dims:
-            raise ValueError(
-                f"Logistic expects no LAYER axis. "
-                f"Call select(\"l\", layer) first. Current dims: {X.dims}"
-            )
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        self._check_initialized()
+        device, dtype = self._module_device_dtype()
+        x = features.to(device=device, dtype=dtype)
+        x = (x - self.scaler_mean) / self.scaler_std
+        return self.linear(x).squeeze(-1)
 
-        # Auto-detect device from input if not specified
+    def loss_on_batch(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        logits = self(features)
+        loss = F.binary_cross_entropy_with_logits(logits, labels)
+        if self.C > 0:
+            loss = loss + (1.0 / (2.0 * self.C)) * self.linear.weight.pow(2).sum() / max(1, labels.numel())
+        return loss
+
+    def fit(self, X: Activations, y: list | torch.Tensor, **kwargs) -> "Logistic":
+        features, labels = self._feature_data_from_activations(X, y)
         if self.device is None:
             self.device = str(X.data.device)
-
-        y_tensor = self._to_labels(y).to(self.device)
-
-        # Get features based on shape
-        if "s" in X.dims:
-            features, tokens_per_sample = X.extract_tokens()
-            labels = torch.repeat_interleave(y_tensor, tokens_per_sample.to(y_tensor.device))
-        else:
-            features = X.data
-            labels = y_tensor
-
         if features.shape[0] == 0:
             return self
-
         if features.shape[0] < 2:
             raise ValueError("Logistic requires at least two training samples or tokens.")
         if torch.unique(labels.detach().cpu()).numel() < 2:
             raise ValueError("Logistic requires both classes to be present in training labels.")
+        features = features.to(dtype=self._resolve_dtype(features.dtype))
+        labels = labels.to(dtype=features.dtype)
+        self.initialize(features, labels)
 
-        working_dtype = self._resolve_dtype(features.dtype)
-        self._training_dtype = working_dtype
-
-        features = features.to(dtype=working_dtype)  # keep on CPU
-        labels = labels.to(dtype=working_dtype)       # keep on CPU
-        d_model = features.shape[1]
-
-        # Fresh state every fit()
-        self._seed_everything()  # seeds weight init; no local generator needed
-        self.net = _LogisticNetwork(d_model).to(self.device, dtype=working_dtype)
-
-        # Compute scaler statistics on CPU, then move to device
-        self.scaler_mean = features.mean(0).to(self.device)
-        self.scaler_std = features.std(0, unbiased=False).clamp(min=1e-8).to(self.device)
-        # NOTE: we do NOT pre-scale features here.  Scaling is applied
-        # on-the-fly in chunks during training to avoid allocating a
-        # full-size copy of the feature matrix on GPU.
-
-        N = features.shape[0]
-        bs = min(self.batch_size, N)
-        l2_weight = 1.0 / (2.0 * self.C * N) if self.C > 0 else 0.0
-        weight_param = self.net.linear.weight
+        n = features.shape[0]
+        batch_size = min(kwargs.get("batch_size", self.batch_size), n)
+        l2_weight = 1.0 / (2.0 * self.C * n) if self.C > 0 else 0.0
         sc_mean, sc_std = self.scaler_mean, self.scaler_std
+        device, dtype = self._module_device_dtype()
 
         if self._optimizer_fn is not None:
-            # Custom optimizer: mini-batch training with on-the-fly scaling
-            optimizer = self._optimizer_fn(self.net.parameters())
+            optimizer = self._optimizer_fn(self.parameters())
             scheduler = self._make_scheduler(optimizer)
-            self.net.train()
-            for _ in range(self.n_epochs):
-                perm = torch.randperm(N, device=features.device)
-                for i in range(0, N, bs):
-                    idx = perm[i : i + bs]
-                    x_batch = (features[idx].to(self.device) - sc_mean) / sc_std
-                    optimizer.zero_grad()
-                    loss = F.binary_cross_entropy_with_logits(
-                        self.net(x_batch), labels[idx].to(self.device)
-                    )
-                    if l2_weight > 0:
-                        loss = loss + l2_weight * weight_param.pow(2).sum()
-                    loss.backward()
-                    optimizer.step()
-                if scheduler is not None:
-                    scheduler.step()
-            self.net.eval()
-        else:
-            # Default: LBFGS with chunked gradient accumulation.
-            # Features stay unscaled; each chunk is scaled on-the-fly in
-            # the closure.  Peak memory = features (1×) + one chunk temp.
-            optimizer = torch.optim.LBFGS(
-                self.net.parameters(), max_iter=self.max_iter, line_search_fn="strong_wolfe"
-            )
+            g = self._make_generator()
+            with self._temporary_seed():
+                self.train()
+                for _ in range(self.n_epochs):
+                    perm = torch.randperm(n, device="cpu", generator=g).to(features.device)
+                    for start in range(0, n, batch_size):
+                        idx = perm[start : start + batch_size]
+                        x_batch = (features[idx].to(device=device, dtype=dtype) - sc_mean) / sc_std
+                        y_batch = labels[idx].to(device=device, dtype=dtype)
+                        optimizer.zero_grad()
+                        loss = F.binary_cross_entropy_with_logits(self.linear(x_batch).squeeze(-1), y_batch)
+                        if l2_weight > 0:
+                            loss = loss + l2_weight * self.linear.weight.pow(2).sum()
+                        loss.backward()
+                        optimizer.step()
+                    self._step_scheduler(scheduler)
+            self.eval()
+            return self
 
-            def closure():
-                optimizer.zero_grad()
-                running_loss = 0.0
-                for i in range(0, N, bs):
-                    x_chunk = (features[i : i + bs].to(self.device) - sc_mean) / sc_std
-                    chunk_loss = F.binary_cross_entropy_with_logits(
-                        self.net(x_chunk), labels[i : i + bs].to(self.device), reduction="sum"
-                    )
-                    (chunk_loss / N).backward()
-                    running_loss += chunk_loss.item()
-                total = running_loss / N
-                if l2_weight > 0:
-                    l2 = l2_weight * weight_param.pow(2).sum()
-                    l2.backward()
-                    total += l2.item()
-                return total
+        optimizer = torch.optim.LBFGS(
+            self.parameters(), max_iter=self.max_iter, line_search_fn="strong_wolfe"
+        )
 
-            optimizer.step(closure)
+        def closure():
+            optimizer.zero_grad()
+            running_loss = 0.0
+            for start in range(0, n, batch_size):
+                x_chunk = (features[start : start + batch_size].to(device=device, dtype=dtype) - sc_mean) / sc_std
+                y_chunk = labels[start : start + batch_size].to(device=device, dtype=dtype)
+                chunk_loss = F.binary_cross_entropy_with_logits(
+                    self.linear(x_chunk).squeeze(-1),
+                    y_chunk,
+                    reduction="sum",
+                )
+                (chunk_loss / n).backward()
+                running_loss += chunk_loss.item()
+            total = running_loss / n
+            if l2_weight > 0:
+                l2 = l2_weight * self.linear.weight.pow(2).sum()
+                l2.backward()
+                total += l2.item()
+            return total
 
+        optimizer.step(closure)
+        self.eval()
         return self
 
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
-        """Differentiable forward pass.
+    def predict_logits(self, X: Activations, **kwargs) -> torch.Tensor:
+        self._check_initialized()
+        features, _ = self._feature_data_from_activations(X)
+        logits = self(features)
+        return self._feature_predict_from_flat(X, logits)
 
-        Args:
-            x: Features tensor [batch, hidden] or [n_tokens, hidden]
-
-        Returns:
-            Logits tensor [batch] or [n_tokens] (not probabilities)
-        """
-        self._check_fitted()
-        x = x.to(self.device)
-        x_scaled = (x - self.scaler_mean) / self.scaler_std
-        return self.net(x_scaled)
-
-    def predict(self, X: Activations) -> torch.Tensor:
-        """Evaluate on activations.
-
-        Args:
-            X: Activations without LAYER axis
-
-        Returns:
-            Probability of positive class:
-            - [batch, seq] if X has SEQ axis (token-level)
-            - [batch] if X has no SEQ axis (sequence-level)
-        """
-        self._check_fitted()
-
-        if "l" in X.dims:
-            raise ValueError(f"Logistic expects no LAYER axis. Current dims: {X.dims}")
-
-        net_dtype = next(self.net.parameters()).dtype
-
+    def predict(self, X: Activations, **kwargs) -> torch.Tensor:
         with torch.no_grad():
-            if "s" in X.dims:
-                features, _ = X.extract_tokens()
-                flat_probs = torch.sigmoid(self(features.to(dtype=net_dtype)))
-
-                # Scatter back to [batch, seq] via to_padded()
-                padded_data, padded_det = X.to_padded()
-                probs = torch.zeros_like(padded_det, dtype=flat_probs.dtype)
-                probs[padded_det] = flat_probs
-                return probs
-            else:
-                return torch.sigmoid(self(X.data.to(dtype=net_dtype)))
+            return torch.sigmoid(self.predict_logits(X, **kwargs))
 
     def save(self, path: Path | str) -> None:
-        self._check_fitted()
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
-            "C": self.C,
-            "max_iter": self.max_iter,
-            "n_epochs": self.n_epochs,
-            "batch_size": self.batch_size,
-            "seed": self.seed,
-            "device": self.device,
-            "cast": self.cast,
-            "training_dtype": str(self._training_dtype),
-            "network_state": self.net.state_dict(),
-            "scaler_mean": self.scaler_mean,
-            "scaler_std": self.scaler_std,
-        }, path)
+        self._save_probe(
+            path,
+            {
+                "C": self.C,
+                "max_iter": self.max_iter,
+                "n_epochs": self.n_epochs,
+                "batch_size": self.batch_size,
+            },
+        )
 
     @classmethod
     def load(cls, path: Path | str, device: str = "cpu") -> "Logistic":
         state = torch.load(Path(path), map_location="cpu")
-        probe = cls(
-            C=state["C"],
-            max_iter=state["max_iter"],
-            n_epochs=state.get("n_epochs", 100),
-            batch_size=state.get("batch_size", 8192),
-            seed=state.get("seed"),
-            device=device,
-            cast=state.get("cast"),
-        )
-        # Backward compat: old checkpoints without training_dtype default to float32
-        dtype_str = state.get("training_dtype")
-        stored_dtype = getattr(torch, dtype_str.split(".")[-1]) if dtype_str else torch.float32
-        probe._training_dtype = stored_dtype
-
-        d_model = state["scaler_mean"].shape[0]
-        probe.net = _LogisticNetwork(d_model).to(probe.device, dtype=stored_dtype)
-        probe.net.load_state_dict(state["network_state"])
-        probe.net.eval()
-        probe.scaler_mean = state["scaler_mean"].to(probe.device, dtype=stored_dtype)
-        probe.scaler_std = state["scaler_std"].to(probe.device, dtype=stored_dtype)
+        probe = cls(**state["init_kwargs"], seed=state.get("seed"), device=device, cast=state.get("cast"))
+        dtype = cls._stored_dtype(state)
+        d_model = state["state_dict"]["linear.weight"].shape[1]
+        probe.initialize(torch.empty(1, d_model, dtype=dtype, device=device))
+        probe.load_state_dict(state["state_dict"])
+        probe.to(device=device, dtype=dtype)
+        probe.eval()
         return probe
 
     def __repr__(self) -> str:

@@ -1,10 +1,6 @@
-"""Truncated Polynomial Classifier (TPC).
+"""Truncated Polynomial Classifier probe."""
 
-Progressive polynomial probe with symmetric CP decomposition.
-Evaluates degree-by-degree for cascading early-exit.
-
-Reference: Oldfield et al., "Beyond Linear Probes" (2025), arXiv:2509.26238.
-"""
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Callable
@@ -17,52 +13,8 @@ from ..activations import Activations
 from .base import BaseProbe
 
 
-class _TPCNetwork(nn.Module):
-    """Truncated polynomial with symmetric CP decomposition.
-
-    P(z) = linear(z) + Σ_{k=2}^{N} Σ_{r=1}^{R} λ_r^[k] · (u_r^[k]·z)^k
-    """
-
-    def __init__(self, d_model: int, max_degree: int = 3, rank: int = 64):
-        super().__init__()
-        self.max_degree = max_degree
-        self.rank = rank
-        # Degree 1: standard linear
-        self.linear = nn.Linear(d_model, 1)
-        nn.init.xavier_uniform_(self.linear.weight)
-        nn.init.zeros_(self.linear.bias)
-
-        # Higher degrees: factor matrices U^[k] and coefficient vectors λ^[k]
-        self.factors = nn.ParameterList()
-        self.coeffs = nn.ParameterList()
-        for k in range(2, max_degree + 1):
-            U = nn.Parameter(torch.randn(rank, d_model) * 0.01)
-            lam = nn.Parameter(torch.zeros(rank))
-            self.factors.append(U)
-            self.coeffs.append(lam)
-
-    def forward(self, x: torch.Tensor, max_degree: int | None = None) -> torch.Tensor:
-        if max_degree is None:
-            max_degree = self.max_degree
-        out = self.linear(x).squeeze(-1)  # [batch]
-        for k_idx, k in enumerate(range(2, min(max_degree, self.max_degree) + 1)):
-            U = self.factors[k_idx]  # [R, d_model]
-            lam = self.coeffs[k_idx]  # [R]
-            proj = x @ U.T  # [batch, R]
-            out = out + (lam * proj.pow(k)).sum(-1)
-        return out
-
-
 class TPC(BaseProbe):
-    """Truncated Polynomial Classifier.
-
-    Progressive degree-wise training: freeze lower degrees, train higher.
-    Supports cascading early-exit at inference.
-
-    Adapts to input dimensionality:
-    - If X has SEQ axis: Trains on tokens, returns token-level scores
-    - If X has no SEQ axis: Trains on sequences, returns sequence-level scores
-    """
+    """Progressive polynomial probe with symmetric CP decomposition."""
 
     def __init__(
         self,
@@ -86,217 +38,157 @@ class TPC(BaseProbe):
         self.weight_decay = weight_decay
         self.n_epochs = n_epochs
         self.batch_size = batch_size
-        self.net = None
-        self.scaler_mean = None
-        self.scaler_std = None
+        self.linear: nn.Linear | None = None
+        self.factors = nn.ParameterList()
+        self.coeffs = nn.ParameterList()
+        self.register_buffer("scaler_mean", torch.empty(0))
+        self.register_buffer("scaler_std", torch.empty(0))
 
-    @property
-    def fitted(self) -> bool:
-        return self.net is not None and self.scaler_mean is not None
-
-    def fit(self, X: Activations, y: list | torch.Tensor) -> "TPC":
-        if "l" in X.dims:
-            raise ValueError(
-                f"TPC expects no LAYER axis. "
-                f'Call select("l", layer) first. Current dims: {X.dims}'
-            )
-
-        if self.device is None:
-            self.device = str(X.data.device)
-
-        y_tensor = self._to_labels(y).to(self.device)
-
-        if "s" in X.dims:
-            features, tokens_per_sample = X.extract_tokens()
-            labels = torch.repeat_interleave(y_tensor, tokens_per_sample.to(y_tensor.device))
-        else:
-            features = X.data
-            labels = y_tensor
-
-        if features.shape[0] == 0:
-            return self
-
+    def initialize(self, features: torch.Tensor, labels: torch.Tensor | None = None) -> "TPC":
         working_dtype = self._resolve_dtype(features.dtype)
         self._training_dtype = working_dtype
-
-        features = features.to(dtype=working_dtype)
-        labels = labels.to(dtype=working_dtype)
-        d_model = features.shape[1]
-        N = features.shape[0]
-        bs = min(self.batch_size, N)
-
-        self.scaler_mean = features.mean(0).to(self.device)
-        self.scaler_std = features.std(0).clamp(min=1e-8).to(self.device)
-        sc_mean, sc_std = self.scaler_mean, self.scaler_std
-
-        self._seed_everything()
-        self.net = _TPCNetwork(d_model, self.max_degree, self.rank).to(self.device, dtype=working_dtype)
-
-        # Progressive training: degree by degree
-        # Degree 1: train linear term
-        self._train_degree(features, labels, N, bs, sc_mean, sc_std, degree=1)
-
-        # Higher degrees: freeze lower, train current
-        for k in range(2, self.max_degree + 1):
-            self._train_degree(features, labels, N, bs, sc_mean, sc_std, degree=k)
-
-        self.net.eval()
+        device = torch.device(self.device or features.device)
+        with self._temporary_seed():
+            d_model = features.shape[-1]
+            self.linear = nn.Linear(d_model, 1)
+            nn.init.xavier_uniform_(self.linear.weight)
+            nn.init.zeros_(self.linear.bias)
+            self.factors = nn.ParameterList()
+            self.coeffs = nn.ParameterList()
+            for _ in range(2, self.max_degree + 1):
+                self.factors.append(nn.Parameter(torch.randn(self.rank, d_model) * 0.01))
+                coeff = nn.Parameter(torch.empty(self.rank))
+                nn.init.normal_(coeff, mean=0.0, std=0.01)
+                self.coeffs.append(coeff)
+        self.to(device=device, dtype=working_dtype)
+        stats = features.to(dtype=working_dtype)
+        self.scaler_mean = stats.mean(0).to(device)
+        self.scaler_std = stats.std(0, unbiased=False).clamp(min=1e-8).to(device)
+        self._mark_initialized(working_dtype)
         return self
 
-    def _train_degree(self, features, labels, N, bs, sc_mean, sc_std, degree: int):
-        """Train parameters for a single degree, freezing all others."""
-        # Freeze everything
-        for p in self.net.parameters():
-            p.requires_grad_(False)
+    def _scaled(self, features: torch.Tensor) -> torch.Tensor:
+        device, dtype = self._module_device_dtype()
+        x = features.to(device=device, dtype=dtype)
+        return (x - self.scaler_mean) / self.scaler_std
 
-        # Unfreeze only the current degree's parameters
+    def forward_degree(self, features: torch.Tensor, degree: int | None = None) -> torch.Tensor:
+        self._check_initialized()
+        degree = self.max_degree if degree is None else min(degree, self.max_degree)
+        x = self._scaled(features)
+        out = self.linear(x).squeeze(-1)
+        for k_idx, k in enumerate(range(2, degree + 1)):
+            proj = x @ self.factors[k_idx].T
+            out = out + (self.coeffs[k_idx] * proj.pow(k)).sum(-1)
+        return out
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return self.forward_degree(features, self.max_degree)
+
+    def _train_degree(self, features, labels, degree: int, generator: torch.Generator | None = None):
+        for param in self.parameters():
+            param.requires_grad_(False)
         if degree == 1:
-            self.net.linear.weight.requires_grad_(True)
-            self.net.linear.bias.requires_grad_(True)
-            trainable = [self.net.linear.weight, self.net.linear.bias]
+            trainable = [self.linear.weight, self.linear.bias]
         else:
             k_idx = degree - 2
-            self.net.factors[k_idx].requires_grad_(True)
-            self.net.coeffs[k_idx].requires_grad_(True)
-            trainable = [self.net.factors[k_idx], self.net.coeffs[k_idx]]
+            trainable = [self.factors[k_idx], self.coeffs[k_idx]]
+        for param in trainable:
+            param.requires_grad_(True)
 
         fused = isinstance(self.device, str) and self.device.startswith("cuda")
         optimizer = torch.optim.AdamW(
-            trainable, lr=self.learning_rate, weight_decay=self.weight_decay,
+            trainable,
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
             fused=fused,
         )
+        n = features.shape[0]
+        batch_size = min(self.batch_size, n)
+        device, dtype = self._module_device_dtype()
+        with self._temporary_seed():
+            self.train()
+            for _ in range(self.n_epochs):
+                perm = torch.randperm(n, device="cpu", generator=generator).to(features.device)
+                for start in range(0, n, batch_size):
+                    idx = perm[start : start + batch_size]
+                    optimizer.zero_grad()
+                    logits = self.forward_degree(features[idx], degree)
+                    loss = F.binary_cross_entropy_with_logits(
+                        logits,
+                        labels[idx].to(device=device, dtype=dtype),
+                    )
+                    loss.backward()
+                    optimizer.step()
+        for param in trainable:
+            param.requires_grad_(False)
 
-        self.net.train()
-        for _ in range(self.n_epochs):
-            perm = torch.randperm(N, device=features.device)
-            for i in range(0, N, bs):
-                idx = perm[i : i + bs]
-                x_batch = (features[idx].to(self.device) - sc_mean) / sc_std
-                optimizer.zero_grad()
-                logits = self.net(x_batch, max_degree=degree)
-                loss = F.binary_cross_entropy_with_logits(logits, labels[idx].to(self.device))
-                loss.backward()
-                optimizer.step()
+    def fit(self, X: Activations, y: list | torch.Tensor, **kwargs) -> "TPC":
+        features, labels = self._feature_data_from_activations(X, y)
+        if self.device is None:
+            self.device = str(X.data.device)
+        if features.shape[0] == 0:
+            return self
+        features = features.to(dtype=self._resolve_dtype(features.dtype))
+        labels = labels.to(dtype=features.dtype)
+        self.initialize(features, labels)
+        g = self._make_generator()
+        for degree in range(1, self.max_degree + 1):
+            self._train_degree(features, labels, degree, generator=g)
+        for param in self.parameters():
+            param.requires_grad_(True)
+        self.eval()
+        return self
 
-        # Re-freeze what we just trained
-        for p in trainable:
-            p.requires_grad_(False)
+    def predict_logits(self, X: Activations, **kwargs) -> torch.Tensor:
+        features, _ = self._feature_data_from_activations(X)
+        return self._feature_predict_from_flat(X, self(features))
 
-    def __call__(self, x: torch.Tensor, max_degree: int | None = None) -> torch.Tensor:
-        self._check_fitted()
-        x = x.to(self.device)
-        x_scaled = (x - self.scaler_mean) / self.scaler_std
-        return self.net(x_scaled, max_degree=max_degree)
-
-    def predict(self, X: Activations) -> torch.Tensor:
-        self._check_fitted()
-        if "l" in X.dims:
-            raise ValueError(f"TPC expects no LAYER axis. Current dims: {X.dims}")
-
-        net_dtype = next(self.net.parameters()).dtype
-
+    def predict(self, X: Activations, **kwargs) -> torch.Tensor:
         with torch.no_grad():
-            if "s" in X.dims:
-                features, _ = X.extract_tokens()
-                flat_probs = torch.sigmoid(self(features.to(dtype=net_dtype)))
-                padded_data, padded_det = X.to_padded()
-                probs = torch.zeros_like(padded_det, dtype=flat_probs.dtype)
-                probs[padded_det] = flat_probs
-                return probs
-            else:
-                return torch.sigmoid(self(X.data.to(dtype=net_dtype)))
+            return torch.sigmoid(self.predict_logits(X, **kwargs))
 
     def predict_cascade(self, X: Activations, threshold: float = 0.8) -> torch.Tensor:
-        """Cascading inference: evaluate degree-by-degree, early-exit when confident.
-
-        Args:
-            X: Activations without LAYER axis (pre-pooled or with SEQ for token-level)
-            threshold: Confidence threshold. Exit when sigmoid(logit) > threshold
-                       or sigmoid(logit) < (1 - threshold).
-
-        Returns:
-            Probabilities tensor.
-        """
-        self._check_fitted()
-        if "l" in X.dims:
-            raise ValueError(f"TPC expects no LAYER axis. Current dims: {X.dims}")
-
-        net_dtype = next(self.net.parameters()).dtype
-
+        self._check_initialized()
+        features, _ = self._feature_data_from_activations(X)
+        device, dtype = self._module_device_dtype()
+        features = features.to(device=device, dtype=dtype)
+        probs = torch.full((features.shape[0],), 0.5, device=device, dtype=dtype)
+        remaining = torch.ones(features.shape[0], dtype=torch.bool, device=device)
         with torch.no_grad():
-            if "s" in X.dims:
-                features, _ = X.extract_tokens()
-            else:
-                features = X.data
-
-            features = features.to(dtype=net_dtype, device=self.device)
-            x_scaled = (features - self.scaler_mean) / self.scaler_std
-            N = x_scaled.shape[0]
-            probs = torch.full((N,), 0.5, device=self.device, dtype=net_dtype)
-            remaining = torch.ones(N, dtype=torch.bool, device=self.device)
-
             for degree in range(1, self.max_degree + 1):
                 if not remaining.any():
                     break
-                logits = self.net(x_scaled[remaining], max_degree=degree)
-                p = torch.sigmoid(logits)
+                p = torch.sigmoid(self.forward_degree(features[remaining], degree))
                 probs[remaining] = p
                 confident = (p > threshold) | (p < (1 - threshold))
-                # Mark confident ones as done
                 rem_indices = remaining.nonzero(as_tuple=True)[0]
                 remaining[rem_indices[confident]] = False
-
-            if "s" in X.dims:
-                padded_data, padded_det = X.to_padded()
-                out = torch.zeros_like(padded_det, dtype=probs.dtype)
-                out[padded_det] = probs
-                return out
-            return probs
+        return self._feature_predict_from_flat(X, probs)
 
     def save(self, path: Path | str) -> None:
-        self._check_fitted()
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
-            "max_degree": self.max_degree,
-            "rank": self.rank,
-            "learning_rate": self.learning_rate,
-            "weight_decay": self.weight_decay,
-            "n_epochs": self.n_epochs,
-            "batch_size": self.batch_size,
-            "seed": self.seed,
-            "device": self.device,
-            "cast": self.cast,
-            "training_dtype": str(self._training_dtype),
-            "network_state": self.net.state_dict(),
-            "scaler_mean": self.scaler_mean,
-            "scaler_std": self.scaler_std,
-        }, path)
+        self._save_probe(
+            path,
+            {
+                "max_degree": self.max_degree,
+                "rank": self.rank,
+                "learning_rate": self.learning_rate,
+                "weight_decay": self.weight_decay,
+                "n_epochs": self.n_epochs,
+                "batch_size": self.batch_size,
+            },
+        )
 
     @classmethod
     def load(cls, path: Path | str, device: str = "cpu") -> "TPC":
         state = torch.load(Path(path), map_location="cpu")
-        probe = cls(
-            max_degree=state["max_degree"],
-            rank=state["rank"],
-            learning_rate=state.get("learning_rate", 1e-3),
-            weight_decay=state.get("weight_decay", 1e-2),
-            n_epochs=state["n_epochs"],
-            batch_size=state.get("batch_size", 1024),
-            seed=state.get("seed"),
-            device=device,
-            cast=state.get("cast"),
-        )
-        dtype_str = state.get("training_dtype")
-        stored_dtype = getattr(torch, dtype_str.split(".")[-1]) if dtype_str else torch.float32
-        probe._training_dtype = stored_dtype
-
-        d_model = state["scaler_mean"].shape[0]
-        probe.net = _TPCNetwork(d_model, probe.max_degree, probe.rank).to(device, dtype=stored_dtype)
-        probe.net.load_state_dict(state["network_state"])
-        probe.net.eval()
-        probe.scaler_mean = state["scaler_mean"].to(device, dtype=stored_dtype)
-        probe.scaler_std = state["scaler_std"].to(device, dtype=stored_dtype)
+        probe = cls(**state["init_kwargs"], seed=state.get("seed"), device=device, cast=state.get("cast"))
+        dtype = cls._stored_dtype(state)
+        d_model = state["state_dict"]["linear.weight"].shape[1]
+        probe.initialize(torch.empty(1, d_model, dtype=dtype, device=device))
+        probe.load_state_dict(state["state_dict"])
+        probe.to(device=device, dtype=dtype)
+        probe.eval()
         return probe
 
     def __repr__(self) -> str:
