@@ -4,8 +4,19 @@ import re
 import unittest
 from unittest.mock import patch
 
+import pytest
 import torch
-from transformers import AutoTokenizer
+
+try:
+    import transformers
+except ImportError:
+    transformers = None
+
+pytestmark = pytest.mark.skipif(
+    transformers is None,
+    reason="tokenization tests require the optional tokenization dependency",
+)
+AutoTokenizer = transformers.AutoTokenizer if transformers else None
 
 from probelab import masks
 from probelab.tokenization import Tokens, build_token_metadata, tokenize_dialogues

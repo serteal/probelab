@@ -12,21 +12,44 @@ Or directly:
 """
 
 import os
+import importlib.util
 
 import pytest
-import mirin as mi
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+
+try:
+    import mirin as mi
+except ImportError:
+    mi = None
+
+try:
+    import transformers
+except ImportError:
+    transformers = None
+
+AutoModelForCausalLM = transformers.AutoModelForCausalLM if transformers else None
+AutoTokenizer = transformers.AutoTokenizer if transformers else None
 
 import probelab as pl
 from probelab.collection.mirin import collect_activations
 
-pytest.importorskip("accelerate", reason="device_map='auto' requires accelerate")
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
         os.environ.get("PROBELAB_RUN_SEED_E2E") != "1",
         reason="requires gated 8B model access; set PROBELAB_RUN_SEED_E2E=1 to run",
+    ),
+    pytest.mark.skipif(
+        mi is None,
+        reason="seed e2e requires the optional mirin collection dependency",
+    ),
+    pytest.mark.skipif(
+        importlib.util.find_spec("accelerate") is None,
+        reason="device_map='auto' requires accelerate",
+    ),
+    pytest.mark.skipif(
+        transformers is None,
+        reason="seed e2e requires the optional tokenization dependency",
     ),
 ]
 

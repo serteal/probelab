@@ -6,7 +6,15 @@ import pytest
 import torch
 import torch.nn as nn
 
-import mirin
+try:
+    import mirin
+except ImportError:
+    mirin = None
+
+pytestmark = pytest.mark.skipif(
+    mirin is None,
+    reason="mirin integration tests require the optional collection dependency",
+)
 
 import probelab as pl
 from probelab.activations import Activations
@@ -196,7 +204,7 @@ class TestCollectActivations:
         )
         # They should produce different values (block includes residual + attn)
         assert acts_block.data.shape == acts_ln.data.shape
-        # Not identical (unless the model is degenerate)
+        assert not torch.allclose(acts_block.data, acts_ln.data)
         m.close()
 
     def test_batch_token_budget(self, tiny_model, tiny_tokens):
