@@ -9,6 +9,7 @@ import mirin as mi
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
+from probelab.collection.mirin import collect_activations
 from probelab.types import Label, Message
 
 # Configuration
@@ -109,7 +110,7 @@ print(f"Tokenized shape: {tokens.shape}")
 print(f"Padding side: {tokens.padding_side}")
 
 # Collect activations (single layer returns no LAYER axis)
-acts = pl.collect_activations(model, tokens, layers=[LAYER], batch_size=2)
+acts = collect_activations(model, tokens, layers=[LAYER], batch_size=2)
 prepared = acts.mean("s")
 
 print(f"Activations shape: {prepared.shape}")

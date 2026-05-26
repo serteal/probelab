@@ -1,367 +1,148 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working in this repository.
 
-## Project Information
+## Project
 
 - **Name**: probelab
 - **Version**: 0.1.0
-- **Author**: Alex Serrano
 - **Python**: >=3.11
-- **Build System**: hatchling (modern Python packaging)
+- **Build system**: hatchling
 - **License**: Apache-2.0
 
-## Core Dependencies
+`probelab` is data/probe-first. The core package should be usable with
+activations collected by any backend. Optional collection adapters live under
+`probelab.collection`.
 
-- **PyTorch**: Deep learning framework (v2.7.1+)
-- **Transformers**: HuggingFace models (v4.53.0+)
-- **scikit-learn**: ML utilities (v1.7.0+)
-- **jaxtyping**: Type annotations for arrays
-- **einops**: Tensor operations
-- **accelerate**: GPU/TPU optimization
-
-## Main API Imports
+## Main API
 
 ```python
-import mirin as mi
 import probelab as pl
 
-# Load data via registry
 dataset = pl.datasets.load("circuit_breakers")
-pl.datasets.list_datasets(category="deception")
 
-# Activation collection expects a mirin.Model
-model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
+acts = pl.Activations.from_padded(
+    hidden_states,                 # [batch, seq, hidden]
+    attention_mask=attention_mask, # [batch, seq]
+    dims="bsh",
+    metadata={"model": "my-model", "site": "resid_post", "split": "train"},
+)
 
-# Tokenize and collect activations (single layer returns no LAYER axis)
-tokens = pl.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
-acts = pl.collect_activations(model, tokens, layers=[16])
-
-# Train probe (auto-detects device from input)
-probe = pl.probes.Logistic().fit(acts.mean("s"), labels)
-
-# Evaluate - predict() returns tensor directly
-probs = probe.predict(test_acts)  # [batch]
-score = pl.metrics.auroc(labels, probs)
+prepared = acts.mean("s")
+probe = pl.probes.Logistic().fit(prepared, dataset.labels)
+scores = probe.predict(prepared)
+auroc = pl.metrics.auroc(dataset.labels, scores)
 ```
+
+For mirin-backed collection:
+
+```python
+from probelab.collection.mirin import collect_activations, stream_activations
+
+tokens = pl.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
+acts = collect_activations(model, tokens, layers=[16])
+```
+
+Do not import collection adapters from the top-level package. `import probelab`
+must not import `mirin` or `transformers`.
 
 ## Commands
 
-### Development Setup
-
 ```bash
-# Clone and install in development mode
-git clone <repo_url>
-cd probelab
 uv sync --dev
-
-# Verify installation
-uv run python -c "import probelab; print(probelab.__version__)"
-```
-
-### Testing
-
-```bash
-# Run all tests
 uv run pytest tests/
-
-# Run tests with verbose output
-uv run pytest tests/ -v
-
-# Run specific test modules
-uv run pytest tests/test_activations.py -v   # Activations container
-uv run pytest tests/test_probes.py -v        # Probe implementations
-uv run pytest tests/test_masks.py -v         # Mask functions
-uv run pytest tests/datasets/ -v             # Dataset classes
-uv run pytest tests/utils/ -v                # Utilities
-
-# Run with coverage
-uv run pytest tests/ --cov=probelab --cov-report=html --cov-report=term
-```
-
-### Code Quality
-
-```bash
+uv run pytest tests/test_activations.py -v
+uv run pytest tests/test_probes.py -v
+uv run pytest tests/test_tokenization.py -v
 uv run ruff check probelab/
 uv run ruff format probelab/
 ```
 
-## Architecture Overview
+## Package Structure
 
-probelab is a library for training classifiers (probes) on LLM activations. The design philosophy is **tensor-centric** - probes return raw tensors, not wrapper objects.
-
-### Core Concepts
-
-1. **Activations**: Hidden states extracted from LLM layers, with axis-aware operations
-2. **Probes**: Classifiers that operate on Activations and return probability tensors
-3. **Masks**: Control which tokens are used for training
-4. **Utils**: Standalone pooling functions for aggregation
-
-### Module Structure
-
-```
+```text
 probelab/
-├── __init__.py          # Exports: Activations, collect_activations, tokenize_dataset
-├── types.py             # Core types (Label, Message, Dialogue, Role)
-├── masks.py             # Mask functions (all, assistant, user, nth_message, etc.)
-├── metrics.py           # auroc, recall_at_fpr
-├── logger.py            # Logging config
-│
-├── processing/          # Tokenization + activation collection
-│   ├── tokenization.py     # Tokens, tokenize_dialogues, tokenize_dataset
-│   ├── activations.py      # Activations, collect_activations, stream_activations
-│   └── chat_templates.py   # TEMPLATES dict for tokenizer config
-│
-├── models/              # Model interfaces
-│   ├── architectures.py    # ARCHITECTURES dict for model structure
-│   └── hooks.py            # HookedModel context manager
-│
-├── probes/              # Probe implementations
-│   ├── base.py             # BaseProbe abstract class
-│   ├── logistic.py         # Logistic regression
-│   ├── mlp.py              # MLP
-│   ├── attention.py        # Attention-based
-│   ├── multimax.py         # Multi-head hard max
-│   └── gated_bipolar.py    # AlphaEvolve gated bipolar
-│
-├── datasets/            # Dataset classes (17 files)
-│   ├── base.py             # Dataset base class
-│   └── ...                 # Domain-specific datasets
-│
-└── utils/               # Utilities
-    ├── pooling.py          # pool, ema, rolling functions
-    └── validation.py       # check_activations
+  __init__.py          # backend-agnostic public API
+  activations.py       # Activations container and constructors
+  tokenization.py      # Tokens and HuggingFace-tokenizer helpers
+  chat_templates.py    # tokenizer template metadata
+  masks.py             # token detection masks
+  pool.py              # pooling/reduction functions
+  metrics.py           # probe metrics
+  datasets/            # dataset registry and dataset loaders
+  probes/              # probe implementations
+  collection/          # optional activation collection adapters
+    types.py           # ActivationChunk
+    mirin.py           # mirin adapter
+  storage/             # explicit activation persistence helpers
+  utils/               # validation and internal utilities
 ```
 
-### Core API Pattern
+## Design Rules
 
-The API follows a **two-step** pattern: tokenize first, then collect activations:
+1. Core code must not depend on `mirin` or `transformers` at import time.
+2. Probes consume `Activations`; they should not know how activations were collected.
+3. Collection adapters should return `Activations` or stream `ActivationChunk`.
+4. Public activation constructors should be easy for external collectors:
+   `from_tensor`, `from_padded`, and `from_flat`.
+5. Keep persistence in `probelab.storage`, not on `Activations`.
+6. Add tests for import behavior when changing dependencies or package exports.
 
-```python
-import mirin as mi
-import probelab as pl
+## Activation Shapes
 
-# Activation collection expects a mirin.Model
-model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
+`Activations` supports four dimension strings:
 
-# 1. Tokenize with mask (determines which tokens to extract)
-tokens = pl.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
+- `bh`: `[batch, hidden]`
+- `blh`: `[batch, layer, hidden]`
+- `bsh`: flat token storage for logical `[batch, seq, hidden]`
+- `blsh`: flat token storage for logical `[batch, layer, seq, hidden]`
 
-# 2. Collect activations (single layer has no LAYER axis, multiple layers keep it)
-acts = pl.collect_activations(model, tokens, layers=[16])
+For sequence layouts, the public fields are:
 
-# 3. Pool sequence dimension
-prepared = acts.mean("s")
+- `data`: flat token tensor
+- `offsets`: cumulative per-sample token offsets
+- `detection_mask`: flat boolean token mask
+- `layers`: layer ids when `dims` contains `l`
+- `metadata`: arbitrary provenance dict; JSON-compatible metadata is persisted
+  by `probelab.storage`
 
-# 4. Train probe and predict (chained)
-probs = pl.probes.Logistic().fit(prepared, labels).predict(test_prepared)
-```
+## Common Workflows
 
-### Key Classes
-
-**Tokens** - Tokenized inputs ready for activation collection:
-```python
-# Created via tokenize_dataset or tokenize_dialogues
-tokens = pl.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
-
-# Properties
-tokens.input_ids        # [batch, seq] token IDs
-tokens.attention_mask   # [batch, seq] attention mask
-tokens.detection_mask   # [batch, seq] which tokens to extract (from mask)
-tokens.padding_side     # "left" or "right"
-
-# Methods
-tokens.to("cuda")       # Move to device
-tokens[10:20]           # Slice
-len(tokens)             # Batch size
-```
-
-**Activations** - Axis-aware container for hidden states:
-```python
-# collect_activations behavior:
-# - Single layer (layers=[16]): returns [batch, seq, hidden] - no LAYER axis
-# - Multiple layers (layers=[8, 16, 20]): returns [batch, layer, seq, hidden]
-
-# Methods — tinygrad-style dim-passing API
-acts.mean("s")                  # Mean over sequence dimension
-acts.max("s")                   # Max over sequence dimension
-acts.last()                     # Last token per sample (sugar for select("s", -1))
-acts.select("l", 16)            # Select single layer, removes LAYER axis
-acts.select("l", [8, 16])       # Select multiple layers, keeps LAYER axis
-acts.select("s", 3)             # Select nth token per sample, removes SEQ axis
-acts.mean("l")                  # Mean over layer dimension
-acts.max("l")                   # Max over layer dimension
-acts.flatten()                  # Concat layers into hidden dim, removes LAYER axis
-acts.ema(alpha=0.5)             # EMA + max over sequence
-acts.rolling(window=10)         # Rolling mean + max over sequence
-acts.to("cuda")                 # Move to device
-
-# Concatenation
-Activations.cat([acts1, acts2])  # Concatenate along batch dimension
-
-# Properties
-acts.shape                      # Tensor shape
-acts.dims                       # Dimension string: "bh", "bsh", "blh", or "blsh"
-"l" in acts.dims                # Check if LAYER axis exists
-acts.batch_size                 # Size of batch dimension
-acts.n_layers                   # Size of layer dimension (or None)
-```
-
-**Probes** - Classifiers with two interfaces:
-```python
-# probe(x) - Differentiable forward pass, returns logits tensor
-logits = probe(features)  # [batch] or [n_tokens]
-
-# probe.predict(X) - Convenience method, returns probabilities tensor
-probs = probe.predict(activations)  # [batch] or [batch, seq] for token-level
-
-# Save/load
-probe.save("probe.pt")
-probe = pl.probes.Logistic.load("probe.pt", device="cuda")
-```
-
-**Pool** - Functions for aggregating token-level predictions:
-```python
-# Pool token-level predictions to sequence-level
-probs = pl.pool.mean(token_probs, mask)       # mean over valid tokens
-probs = pl.pool.max(token_probs, mask)        # max over valid tokens
-probs = pl.pool.last_token(token_probs, mask) # last valid token
-probs = pl.pool.ema(token_probs, mask, alpha=0.5)  # EMA, then max
-probs = pl.pool.rolling(token_probs, mask, window_size=10)  # rolling mean, then max
-```
-
-### Common Workflows
-
-**1. Basic Training**
-```python
-import probelab as pl
-
-# Load and split data
-train_ds, test_ds = pl.datasets.load("circuit_breakers").split(0.8)
-
-# Tokenize
-train_tokens = pl.tokenize_dataset(train_ds, tokenizer, mask=pl.masks.assistant())
-test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=pl.masks.assistant())
-
-# Collect activations (single layer, no LAYER axis)
-train_acts = pl.collect_activations(model, train_tokens, layers=[16])
-test_acts = pl.collect_activations(model, test_tokens, layers=[16])
-
-# Pool and train
-train_prepared = train_acts.mean("s")
-test_prepared = test_acts.mean("s")
-probe = pl.probes.Logistic().fit(train_prepared, train_ds.labels)
-
-# Evaluate
-probs = probe.predict(test_prepared)
-print(f"AUROC: {pl.metrics.auroc(test_ds.labels, probs):.3f}")
-```
-
-**2. Multi-Layer Analysis**
-```python
-# Collect from multiple layers
-tokens = pl.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
-acts = pl.collect_activations(model, tokens, layers=[8, 12, 16, 20])
-
-# Train probe on each layer
-results = {}
-for layer in [8, 12, 16, 20]:
-    prepared = acts.select("l", layer).mean("s")
-    probe = pl.probes.Logistic().fit(prepared, labels)
-    probs = probe.predict(test_prepared)
-    results[layer] = pl.metrics.auroc(test_labels, probs)
-```
-
-**3. Token-Level with Aggregation**
-```python
-# Collect single layer (no LAYER axis, keeps SEQ)
-acts = pl.collect_activations(model, tokens, layers=[16])
-
-# Train on tokens (don't pool - keep SEQ axis)
-probe = pl.probes.Logistic().fit(acts, labels)
-
-# Predict token-level [batch, seq], then aggregate
-token_probs = probe.predict(test_acts)
-pooled = pl.pool.mean(token_probs, mask)  # [batch]
-```
-
-**4. Using Masks**
-```python
-# Only detect on last assistant message (compose with & operator)
-mask = pl.masks.assistant() & pl.masks.nth_message(-1)
-
-tokens = pl.tokenize_dataset(dataset, tokenizer, mask=mask)
-acts = pl.collect_activations(model, tokens, layers=[16])
-prepared = acts.mean("s")
-```
-
-**5. Combining Pre-Collected Activations**
-```python
-# Concatenate activations from separate collection runs
-acts_a = pl.collect_activations(model, tokens_a, layers=[16])
-acts_b = pl.collect_activations(model, tokens_b, layers=[16])
-combined = Activations.cat([acts_a, acts_b])
-prepared = combined.mean("s")
-probe = pl.probes.Logistic().fit(prepared, labels_a + labels_b)
-```
-
-**6. Streaming for Large Datasets**
-```python
-# Stream activations to avoid OOM
-tokens = pl.tokenize_dataset(large_dataset, tokenizer, mask=pl.masks.all())
-
-for flat_data, det, offsets, indices in pl.processing.stream_activations(model, tokens, layers=[16]):
-    pooled = pl.pool.mean(flat_data[:, 0, :], det, offsets=offsets)
-    # ... accumulate results
-```
-
-**7. Differentiable Probe for Fine-tuning**
-```python
-# Use probe(x) for gradient-based training.
-# This path uses raw model hidden states directly because it needs autograd.
-hidden_states = model(..., output_hidden_states=True).hidden_states[layer]
-logits = probe(hidden_states)  # Differentiable!
-loss = some_loss_fn(logits, targets)
-loss.backward()
-```
-
-### Adding New Probes
-
-1. Create class inheriting from `BaseProbe` in `probes/`
-2. Implement:
-   - `__call__(x: Tensor) -> Tensor` - differentiable forward, returns logits
-   - `predict(X: Activations) -> Tensor` - returns probabilities
-   - `fit(X: Activations, y) -> self`
-   - `save()`, `load()`
-3. Add tests in `tests/test_probes.py`
-
-### Adding New Model Architectures
-
-Model and tokenizer configs are separate:
-
-1. **New model structure** → Edit `models/architectures.py`, add to `ARCHITECTURES` dict
-2. **New chat template** → Edit `processing/chat_templates.py`, add to `TEMPLATES` dict
+Bring your own activations:
 
 ```python
-# models/architectures.py
-ARCHITECTURES["mistral"] = Arch(
-    get_layers=lambda m: list(m.model.layers),
-    get_layer=lambda m, i: m.model.layers[i],
-    get_layernorm=lambda m, i: m.model.layers[i].input_layernorm,
-    set_layers=lambda m, layers: setattr(m.model, "layers", ...),
-    num_layers=_num_layers_from_config,
+acts = pl.Activations.from_flat(
+    data=flat_hidden,
+    offsets=offsets,
+    detection_mask=detection_mask,
+    dims="bsh",
 )
-
-# processing/chat_templates.py
-TEMPLATES["mistral"] = {
-    "prefix_pattern": re.compile(r"..."),
-    "fold_system": False,
-    "token_padding": (0, 0),
-}
+probe = pl.probes.Logistic().fit(acts.mean("s"), labels)
 ```
 
-### Best Practices
+Use probelab datasets and masks with an external collector:
 
-1. **Memory**: Use `stream_activations()` for large datasets
-2. **Reproducibility**: Save probes with `probe.save()`, log hyperparameters
-3. **Testing**: Test on both CPU and GPU, include edge cases
+```python
+dataset = pl.datasets.load("wildguard_mix")
+tokens = pl.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
+# collect however you want, then:
+acts = pl.Activations.from_padded(hidden, attention_mask=attention, dims="bsh")
+```
+
+Stream mirin activations:
+
+```python
+for chunk in stream_activations(model, tokens, layers=[16]):
+    pooled = pl.pool.mean(
+        chunk.data[:, 0, :],
+        chunk.detection_mask,
+        offsets=chunk.offsets,
+    )
+```
+
+## Adding Code
+
+- New probes go in `probelab/probes/` and inherit `BaseProbe`.
+- New datasets go in `probelab/datasets/` and register through the registry.
+- New collection backends go in `probelab/collection/<backend>.py`.
+- New chat-template rules go in `probelab/chat_templates.py`.

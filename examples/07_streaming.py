@@ -13,6 +13,7 @@ import mirin as mi
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
+from probelab.collection.mirin import collect_activations, stream_activations
 
 # Configuration
 MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
@@ -54,22 +55,26 @@ train_features = torch.zeros(len(train_ds), d_model)
 train_indices_seen = set()
 
 # Stream through training data
-for flat_data, det, offsets, indices in pl.processing.stream_activations(
+for chunk in stream_activations(
     model, train_tokens, layers=[LAYER], batch_size=BATCH_SIZE
 ):
-    # flat_data: [total_batch_tokens, 1, hidden] (1 layer)
+    # chunk.data: [total_batch_tokens, 1, hidden] (1 layer)
     # Squeeze layer dim for single-layer
-    data = flat_data.squeeze(1)  # [total_batch_tokens, hidden]
+    data = chunk.data.squeeze(1)  # [total_batch_tokens, hidden]
 
     # Mean pool over sequence using flat+offsets
-    pooled = pl.pool.mean(data, det, offsets=offsets)  # [batch_chunk, hidden]
+    pooled = pl.pool.mean(
+        data,
+        chunk.detection_mask,
+        offsets=chunk.offsets,
+    )  # [batch_chunk, hidden]
 
     # Store in pre-allocated tensor
-    for i, idx in enumerate(indices):
+    for i, idx in enumerate(chunk.indices):
         train_features[idx] = pooled[i].cpu()
         train_indices_seen.add(idx)
 
-    print(f"  Processed batch: {len(indices)} samples, total: {len(train_indices_seen)}/{len(train_ds)}")
+    print(f"  Processed batch: {len(chunk.indices)} samples, total: {len(train_indices_seen)}/{len(train_ds)}")
 
 print(f"Accumulated {len(train_indices_seen)} training samples")
 
@@ -91,14 +96,14 @@ probe_streamed.fit(train_acts_streamed, train_ds.labels)
 print("\n--- Method 2: Built-in pooling during collection ---")
 
 # collect_activations can pool on-the-fly, reducing memory
-train_acts_pooled = pl.collect_activations(
+train_acts_pooled = collect_activations(
     model,
     train_tokens,
     layers=[LAYER],
     batch_size=BATCH_SIZE,
     pool="mean",  # Pool during collection
 )
-test_acts_pooled = pl.collect_activations(
+test_acts_pooled = collect_activations(
     model,
     test_tokens,
     layers=[LAYER],

@@ -12,6 +12,7 @@ import mirin as mi
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
+from probelab.collection.mirin import collect_activations
 
 # Configuration
 MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
@@ -65,8 +66,8 @@ test_tokens = pl.tokenize_dataset(test_ds, tokenizer, mask=mask)
 
 # Collect activations (single layer returns no LAYER axis)
 print(f"\nCollecting activations from layer {LAYER}...")
-train_acts = pl.collect_activations(model, train_tokens, layers=[LAYER])
-test_acts = pl.collect_activations(model, test_tokens, layers=[LAYER])
+train_acts = collect_activations(model, train_tokens, layers=[LAYER])
+test_acts = collect_activations(model, test_tokens, layers=[LAYER])
 
 # Prepare
 train_prepared = train_acts.mean("s")
@@ -94,7 +95,7 @@ for name, ds in datasets_to_eval:
     # Get fresh samples not in training
     test_sample = ds.sample(30, stratified=True, seed=123)
     tokens = pl.tokenize_dataset(test_sample, tokenizer, mask=mask)
-    acts = pl.collect_activations(model, tokens, layers=[LAYER])
+    acts = collect_activations(model, tokens, layers=[LAYER])
     prepared = acts.mean("s")
     probs = probe.predict(prepared)
     auroc = pl.metrics.auroc(test_sample.labels, probs)

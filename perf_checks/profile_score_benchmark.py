@@ -9,10 +9,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
 from probelab import pool as P
-from probelab.processing.activations import stream_activations
+from probelab.collection.mirin import collect_activations, stream_activations
 
 
-def summarize_lengths(tokens: pl.processing.Tokens, name: str) -> None:
+def summarize_lengths(tokens: pl.Tokens, name: str) -> None:
     lengths = tokens.lengths.float().cpu()
     if lengths.numel() == 0:
         print(f"{name}: empty tokens")
@@ -36,7 +36,7 @@ def _stats_str(values: list[float]) -> str:
 
 def profile_collect_with_breakdown(
     model: object,
-    tokens: pl.processing.Tokens,
+    tokens: pl.Tokens,
     layer: int,
     batch_size: int,
     pool_name: str = "mean",
@@ -57,24 +57,24 @@ def profile_collect_with_breakdown(
     while True:
         extract_start = time.perf_counter()
         try:
-            flat_data, det, offsets, idx = next(it)
+            chunk = next(it)
         except StopIteration:
             break
         extract_times.append(time.perf_counter() - extract_start)
 
-        batch_chunk = int(offsets.shape[0] - 1)
-        batch_tokens = int(offsets[-1].item()) if offsets.numel() else 0
+        batch_chunk = int(chunk.offsets.shape[0] - 1)
+        batch_tokens = int(chunk.offsets[-1].item()) if chunk.offsets.numel() else 0
         batch_sample_counts.append(batch_chunk)
         batch_token_counts.append(batch_tokens)
 
         if out is None:
             out = torch.zeros(
-                n, 1, flat_data.shape[-1], dtype=flat_data.dtype, device=flat_data.device
+                n, 1, chunk.data.shape[-1], dtype=chunk.data.dtype, device=chunk.data.device
             )
 
         pool_start = time.perf_counter()
-        pooled = pool_fn(flat_data[:, 0, :], det, offsets=offsets)
-        out_idx = torch.tensor(idx, dtype=torch.long, device=pooled.device)
+        pooled = pool_fn(chunk.data[:, 0, :], chunk.detection_mask, offsets=chunk.offsets)
+        out_idx = torch.tensor(chunk.indices, dtype=torch.long, device=pooled.device)
         out[out_idx, 0] = pooled
         pool_times.append(time.perf_counter() - pool_start)
 
@@ -153,7 +153,7 @@ def main() -> None:
     parser.add_argument(
         "--compare-collect-api",
         action="store_true",
-        help="Also run pl.collect_activations(pool='mean') once for comparison",
+        help="Also run collect_activations(pool='mean') once for comparison",
     )
     args = parser.parse_args()
 
@@ -277,9 +277,9 @@ def main() -> None:
         print(f"Peak GPU alloc (test collect): {torch.cuda.max_memory_allocated()/1e9:.2f} GB")
 
     if args.compare_collect_api:
-        print("\nComparing against pl.collect_activations(pool='mean') on train...")
+        print("\nComparing against collect_activations(pool='mean') on train...")
         t0 = time.perf_counter()
-        _ = pl.collect_activations(
+        _ = collect_activations(
             model, train_tokens, layers=[layer], batch_size=args.batch_size, pool="mean"
         )
         print(f"collect_activations() elapsed: {time.perf_counter() - t0:.2f}s")

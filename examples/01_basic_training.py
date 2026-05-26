@@ -13,6 +13,7 @@ import mirin as mi
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
+from probelab.collection.mirin import collect_activations
 
 # Configuration
 MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
@@ -43,8 +44,8 @@ print(f"Token shapes: train={train_tokens.shape}, test={test_tokens.shape}")
 
 # Collect activations from target layer
 print(f"\nCollecting activations from layer {LAYER}...")
-train_acts = pl.collect_activations(model, train_tokens, layers=[LAYER], batch_size=8)
-test_acts = pl.collect_activations(model, test_tokens, layers=[LAYER], batch_size=8)
+train_acts = collect_activations(model, train_tokens, layers=[LAYER], batch_size=8)
+test_acts = collect_activations(model, test_tokens, layers=[LAYER], batch_size=8)
 
 # Pool sequence dimension (single layer already has no LAYER axis)
 train_prepared = train_acts.mean("s")

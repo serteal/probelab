@@ -14,7 +14,7 @@ from transformers import AutoTokenizer
 from utils import TimingResult, measure_with_warmup
 
 import probelab as pl
-from probelab.processing.tokenization import tokenize_dataset
+from probelab.tokenization import tokenize_dataset
 
 torch.set_float32_matmul_precision("high")
 pl.logger.setLevel(logging.WARNING)
@@ -22,7 +22,7 @@ pl.logger.setLevel(logging.WARNING)
 
 def benchmark_tokenization_only(
     tokenizer: Any,
-    dataset: pl.datasets.DialogueDataset,
+    dataset: pl.Dataset,
     device: str = "cpu",
 ) -> Dict[str, TimingResult]:
     """Benchmark just tokenization without masks."""
@@ -49,7 +49,7 @@ def benchmark_tokenization_only(
 
 def benchmark_mask_evaluation(
     tokenizer: Any,
-    dataset: pl.datasets.DialogueDataset,
+    dataset: pl.Dataset,
     device: str = "cpu",
 ) -> Dict[str, TimingResult]:
     """Benchmark tokenization with different mask types."""
@@ -110,7 +110,7 @@ def benchmark_mask_evaluation(
 
 def analyze_scaling(
     tokenizer: Any,
-    base_dataset: pl.datasets.DialogueDataset,
+    base_dataset: pl.Dataset,
     sizes: List[int],
     device: str = "cpu",
 ) -> Dict[int, Dict[str, TimingResult]]:

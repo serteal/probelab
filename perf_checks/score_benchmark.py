@@ -7,6 +7,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
+from probelab.collection.mirin import collect_activations
 
 # Force unbuffered output
 print = lambda *a, **kw: (sys.stdout.write(" ".join(str(x) for x in a) + "\n"), sys.stdout.flush())
@@ -48,7 +49,7 @@ print(f"Model loaded in {time.time() - t0:.1f}s")
 # Collect activations with inline mean pooling (avoids storing all tokens)
 print("\nCollecting + pooling train activations...")
 t0 = time.time()
-train_prepared = pl.collect_activations(
+train_prepared = collect_activations(
     model,
     train_tokens,
     layers=[layer],
@@ -62,7 +63,7 @@ print(f"Train done in {elapsed:.0f}s ({len(train_tokens)/elapsed:.1f} samples/s)
 
 print("Collecting + pooling test activations...")
 t0 = time.time()
-test_prepared = pl.collect_activations(
+test_prepared = collect_activations(
     model,
     test_tokens,
     layers=[layer],
