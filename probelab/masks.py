@@ -173,45 +173,17 @@ def last_n_tokens(n: int) -> Mask:
     def _impl(dialogues, metadata):
         batch_size, seq_len = metadata.attention_mask.shape
         mask = torch.zeros_like(metadata.attention_mask, dtype=torch.bool)
-        role_ids = metadata.role_ids
 
         for b in range(batch_size):
             valid_mask = metadata.attention_mask[b].bool()
             if not valid_mask.any():
                 continue
-
-            has_role = role_ids[b] != -1
-
-            # Find message boundaries (where role changes)
-            role_changes = torch.zeros(seq_len, dtype=torch.bool, device=role_ids.device)
-            for i in range(seq_len - 1):
-                if valid_mask[i] and has_role[i]:
-                    if not valid_mask[i + 1] or not has_role[i + 1] or role_ids[b, i] != role_ids[b, i + 1]:
-                        role_changes[i] = True
-
-            # Last valid position with a role is also a boundary
-            valid_with_role = valid_mask & has_role
-            last_valid = torch.where(valid_with_role)[0]
-            if len(last_valid) > 0:
-                role_changes[last_valid[-1]] = True
-
-            boundaries = torch.where(role_changes)[0]
-
-            # Mark last n tokens of each segment
-            for i, end_idx in enumerate(boundaries):
-                if i == 0:
-                    start_candidates = torch.where(has_role[: end_idx + 1])[0]
-                    if len(start_candidates) > 0:
-                        start_idx = start_candidates[0].item()
-                    else:
-                        continue
-                else:
-                    start_idx = boundaries[i - 1].item() + 1
-
-                segment_length = end_idx - start_idx + 1
-                tokens_to_select = min(n, segment_length)
-                for j in range(tokens_to_select):
-                    mask[b, end_idx - j] = True
+            boundaries = metadata.message_boundaries[b]
+            valid_message_tokens = valid_mask & (boundaries >= 0)
+            for message_idx in torch.unique(boundaries[valid_message_tokens], sorted=True):
+                positions = torch.where(valid_message_tokens & (boundaries == message_idx))[0]
+                if positions.numel() > 0:
+                    mask[b, positions[-n:]] = True
 
         return mask & metadata.attention_mask.bool()
 
@@ -231,42 +203,17 @@ def first_n_tokens(n: int) -> Mask:
     def _impl(dialogues, metadata):
         batch_size, seq_len = metadata.attention_mask.shape
         mask = torch.zeros_like(metadata.attention_mask, dtype=torch.bool)
-        role_ids = metadata.role_ids
 
         for b in range(batch_size):
             valid_mask = metadata.attention_mask[b].bool()
             if not valid_mask.any():
                 continue
-
-            has_role = role_ids[b] != -1
-            valid_with_role = valid_mask & has_role
-
-            # Find message starts (where role changes from previous)
-            role_changes = torch.zeros(seq_len, dtype=torch.bool, device=role_ids.device)
-
-            first_valid = torch.where(valid_with_role)[0]
-            if len(first_valid) > 0:
-                role_changes[first_valid[0]] = True
-
-            for i in range(1, seq_len):
-                if valid_mask[i] and has_role[i]:
-                    if not valid_mask[i - 1] or not has_role[i - 1] or role_ids[b, i] != role_ids[b, i - 1]:
-                        role_changes[i] = True
-
-            boundaries = torch.where(role_changes)[0]
-
-            # Mark first n tokens of each segment
-            for i, start_idx in enumerate(boundaries):
-                if i + 1 < len(boundaries):
-                    end_idx = boundaries[i + 1] - 1
-                else:
-                    last_valid = torch.where(valid_with_role)[0]
-                    end_idx = last_valid[-1] if len(last_valid) > 0 else start_idx
-
-                segment_length = end_idx - start_idx + 1
-                tokens_to_select = min(n, segment_length)
-                for j in range(tokens_to_select):
-                    mask[b, start_idx + j] = True
+            boundaries = metadata.message_boundaries[b]
+            valid_message_tokens = valid_mask & (boundaries >= 0)
+            for message_idx in torch.unique(boundaries[valid_message_tokens], sorted=True):
+                positions = torch.where(valid_message_tokens & (boundaries == message_idx))[0]
+                if positions.numel() > 0:
+                    mask[b, positions[:n]] = True
 
         return mask & metadata.attention_mask.bool()
 
