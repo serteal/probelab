@@ -18,6 +18,7 @@ def test_import_probelab_exposes_top_level_api():
     """`import probelab` should expose the expected top-level API."""
     result = _run_python_snippet(textwrap.dedent("""
         import json
+        import importlib.util
         import sys
         import probelab
 
@@ -27,14 +28,22 @@ def test_import_probelab_exposes_top_level_api():
             "has_tokenize_dataset": hasattr(probelab, "tokenize_dataset"),
             "has_datasets": hasattr(probelab, "datasets"),
             "has_metrics": hasattr(probelab, "metrics"),
+            "has_tokenization": hasattr(probelab, "tokenization"),
+            "has_processing_module": importlib.util.find_spec("probelab.processing") is not None,
+            "mirin_imported": "mirin" in sys.modules,
+            "transformers_imported": "transformers" in sys.modules,
         }))
     """))
 
     assert result["has_activations"] is True
-    assert result["has_collect"] is True
+    assert result["has_collect"] is False
     assert result["has_tokenize_dataset"] is True
     assert result["has_datasets"] is True
     assert result["has_metrics"] is True
+    assert result["has_tokenization"] is True
+    assert result["has_processing_module"] is False
+    assert result["mirin_imported"] is False
+    assert result["transformers_imported"] is False
 
 
 def test_dataset_registry_initializes_on_first_use():

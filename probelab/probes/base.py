@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
 
-from ..processing.activations import Activations
+from ..activations import Activations
 
 
 class BaseProbe(ABC):

@@ -7,12 +7,13 @@ import torch
 from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
 
-from probelab.processing.activations import Activations
+from probelab.activations import Activations
 from probelab.probes.logistic import Logistic
 from probelab.probes.mlp import MLP
 from probelab.probes.attention import Attention
 from probelab.probes.multimax import MultiMax
 from probelab.probes.gated_bipolar import GatedBipolar
+from probelab.probes.mass_mean import MassMean
 from probelab.types import Label
 
 # =============================================================================
@@ -75,6 +76,20 @@ class TestLogisticFit(unittest.TestCase):
         p = Logistic(device="cpu")
         result = p.fit(prepared, labels)
         self.assertIs(result, p)
+
+    def test_one_sample_raises_clear_error(self):
+        acts = Activations(data=torch.randn(1, 4), dims="bh")
+        p = Logistic(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "at least two"):
+            p.fit(acts, [Label.POSITIVE])
+
+    def test_one_class_raises_clear_error(self):
+        acts = Activations(data=torch.randn(3, 4), dims="bh")
+        p = Logistic(device="cpu")
+
+        with self.assertRaisesRegex(ValueError, "both classes"):
+            p.fit(acts, [Label.POSITIVE, Label.POSITIVE, Label.POSITIVE])
 
 class TestLogisticPredict(unittest.TestCase):
     def test_predict_returns_scores(self):
@@ -358,6 +373,23 @@ class TestProbeDeviceHandling(unittest.TestCase):
 
         # If device handling is wrong, this would fail during fit
         self.assertTrue(p.fitted)
+
+    @unittest.skipUnless(
+        hasattr(torch.backends, "mps") and torch.backends.mps.is_available(),
+        "requires MPS",
+    )
+    def test_mass_mean_trains_on_mps_activations(self):
+        data = torch.randn(4, 3, device="mps")
+        data[:2, 0] += 2
+        data[2:, 0] -= 2
+        acts = Activations(data=data, dims="bh")
+        labels = [Label.POSITIVE, Label.POSITIVE, Label.NEGATIVE, Label.NEGATIVE]
+
+        probe = MassMean(device="mps").fit(acts, labels)
+        scores = probe.predict(acts)
+
+        self.assertEqual(scores.device.type, "mps")
+        self.assertEqual(scores.shape, (4,))
 
 # =============================================================================
 # Seed Reproducibility Tests

@@ -204,6 +204,11 @@ class TestRecallAtFPR(unittest.TestCase):
       self.assertGreaterEqual(r, 0.0)
       self.assertLessEqual(r, 1.0)
 
+  def test_invalid_fpr_raises_value_error(self):
+    y_true, y_pred = _perfect()
+    with self.assertRaises(ValueError):
+      recall_at_fpr(y_true, y_pred, fpr=2.0)
+
   def test_no_positives(self):
     y_true = np.array([0, 0, 0, 0])
     y_pred = np.array([0.1, 0.2, 0.3, 0.4])

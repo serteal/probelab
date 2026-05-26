@@ -11,14 +11,24 @@ Or directly:
     cd probelab && uv run pytest tests/test_seed_e2e.py -v -s
 """
 
+import os
+
 import pytest
 import mirin as mi
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
+from probelab.collection.mirin import collect_activations
 
 pytest.importorskip("accelerate", reason="device_map='auto' requires accelerate")
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.environ.get("PROBELAB_RUN_SEED_E2E") != "1",
+        reason="requires gated 8B model access; set PROBELAB_RUN_SEED_E2E=1 to run",
+    ),
+]
 
 
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
@@ -46,8 +56,8 @@ def _collect_once():
     train_tok = pl.tokenize_dataset(train_ds, tokenizer, mask=mask)
     test_tok = pl.tokenize_dataset(test_ds, tokenizer, mask=mask)
 
-    train_acts = pl.collect_activations(model, train_tok, layers=[LAYER], batch_size=4)
-    test_acts = pl.collect_activations(model, test_tok, layers=[LAYER], batch_size=4)
+    train_acts = collect_activations(model, train_tok, layers=[LAYER], batch_size=4)
+    test_acts = collect_activations(model, test_tok, layers=[LAYER], batch_size=4)
 
     return (
         train_acts, train_ds.labels,

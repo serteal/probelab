@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from probelab.processing.activations import Activations
+from probelab.activations import Activations
 from probelab.utils.validation import check_activations
 
 

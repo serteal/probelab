@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..processing.activations import Activations
+from ..activations import Activations
 from .base import BaseProbe
 
 
@@ -82,6 +82,11 @@ class Logistic(BaseProbe):
         if features.shape[0] == 0:
             return self
 
+        if features.shape[0] < 2:
+            raise ValueError("Logistic requires at least two training samples or tokens.")
+        if torch.unique(labels.detach().cpu()).numel() < 2:
+            raise ValueError("Logistic requires both classes to be present in training labels.")
+
         working_dtype = self._resolve_dtype(features.dtype)
         self._training_dtype = working_dtype
 
@@ -95,7 +100,7 @@ class Logistic(BaseProbe):
 
         # Compute scaler statistics on CPU, then move to device
         self.scaler_mean = features.mean(0).to(self.device)
-        self.scaler_std = features.std(0).clamp(min=1e-8).to(self.device)
+        self.scaler_std = features.std(0, unbiased=False).clamp(min=1e-8).to(self.device)
         # NOTE: we do NOT pre-scale features here.  Scaling is applied
         # on-the-fly in chunks during training to avoid allocating a
         # full-size copy of the feature matrix on GPU.

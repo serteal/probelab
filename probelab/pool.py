@@ -270,7 +270,6 @@ def _flat_mean(
     bytes in one shot. On 12M-token datasets that's >80 GB transient.
     """
     batch = offsets.shape[0] - 1
-    total = data.shape[0]
     extra_dims = data.shape[1:]
 
     if batch == 0:
@@ -333,8 +332,9 @@ def _flat_max(
     det_bool = det.to(data.device).bool()
     total = data.shape[0]
     extra_dims = data.shape[1:]
+    offsets_dev = offsets.to(data.device)
 
-    seg_ids = _segment_ids(offsets, total)
+    seg_ids = _segment_ids(offsets_dev, total)
     # Mask out non-detected tokens with -inf
     masked_data = data.clone()
     masked_data[~det_bool] = float("-inf")
@@ -356,8 +356,9 @@ def _flat_last_token(
     det_bool = det.to(data.device).bool()
     total = data.shape[0]
     extra_dims = data.shape[1:]
+    offsets_dev = offsets.to(data.device)
 
-    seg_ids = _segment_ids(offsets, total)
+    seg_ids = _segment_ids(offsets_dev, total)
     # For each segment, we want the LAST valid token.
     # Create ascending indices; scatter_reduce with "amax" on (seg_id, index) pairs
     # gives the last valid index per segment.
@@ -382,7 +383,8 @@ def _pad_flat_for_pool(
     Used by ema/rolling which need rectangular form for their vectorized ops.
     """
     batch = offsets.shape[0] - 1
-    lengths = offsets[1:] - offsets[:-1]
+    offsets_dev = offsets.to(data.device)
+    lengths = offsets_dev[1:] - offsets_dev[:-1]
     max_seq = int(lengths.max().item()) if lengths.numel() > 0 else 0
     extra_dims = data.shape[1:]
     det_bool = det.to(data.device).bool()
@@ -391,8 +393,8 @@ def _pad_flat_for_pool(
     padded_mask = torch.zeros(batch, max_seq, dtype=torch.bool, device=data.device)
 
     # Vectorized: build flat indices into the padded tensor
-    seg_ids = _segment_ids(offsets, data.shape[0])
-    local_pos = torch.arange(data.shape[0], device=data.device) - offsets[seg_ids]
+    seg_ids = _segment_ids(offsets_dev, data.shape[0])
+    local_pos = torch.arange(data.shape[0], device=data.device) - offsets_dev[seg_ids]
     padded[seg_ids, local_pos] = data
     padded_mask[seg_ids, local_pos] = det_bool
     return padded, padded_mask

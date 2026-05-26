@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from probelab.processing.activations import Activations, DIMS
+from probelab.activations import Activations, DIMS
 
 
 def _make_flat(data, det_mask):
@@ -86,17 +86,47 @@ class TestActivationsConstruction(unittest.TestCase):
         offsets = torch.tensor([0, 16, 32], dtype=torch.int64)
         det = torch.ones(32, dtype=torch.bool)
         with self.assertRaises(ValueError):
-            Activations(data=t, dims="blsh", offsets=offsets, det=det)  # layers required
+            Activations(data=t, dims="blsh", offsets=offsets, detection_mask=det)  # layers required
 
     def test_direct_flat_construction(self):
         """Test directly constructing flat+offsets Activations."""
         data = torch.randn(10, 8)  # 10 total tokens, hidden=8
         offsets = torch.tensor([0, 3, 7, 10], dtype=torch.int64)  # 3 samples
         det = torch.ones(10, dtype=torch.bool)
-        a = Activations(data=data, dims="bsh", offsets=offsets, det=det)
+        a = Activations(data=data, dims="bsh", offsets=offsets, detection_mask=det)
         self.assertEqual(a.batch_size, 3)
         self.assertEqual(a.total_tokens, 10)
         self.assertEqual(a.seq_len, 4)  # max(3, 4, 3)
+
+    def test_metadata_stored_and_copied(self):
+        metadata = {
+            "model": "test-model",
+            "layers": [1, 2],
+            "nested": {"split": "train"},
+        }
+
+        acts = Activations.from_tensor(
+            torch.randn(3, 4),
+            dims="bh",
+            metadata=metadata,
+        )
+
+        self.assertEqual(acts.metadata, metadata)
+        self.assertIsNot(acts.metadata, metadata)
+
+    @unittest.skipUnless(
+        hasattr(torch.backends, "mps") and torch.backends.mps.is_available(),
+        "requires MPS",
+    )
+    def test_from_padded_keeps_flat_metadata_on_input_device(self):
+        data = torch.randn(2, 3, 4, device="mps")
+        detection_mask = torch.ones(2, 3, dtype=torch.bool, device="mps")
+
+        acts = Activations.from_padded(data, detection_mask, dims="bsh")
+
+        self.assertEqual(acts.data.device.type, "mps")
+        self.assertEqual(acts.detection_mask.device.type, "mps")
+        self.assertEqual(acts.offsets.device.type, "mps")
 
 
 class TestActivationsDims(unittest.TestCase):
@@ -152,7 +182,7 @@ class TestActivationsSelect(unittest.TestCase):
         a = self._acts([0, 5])
         s = a.select("l", 5)
         self.assertTrue(torch.equal(s.offsets, a.offsets))
-        self.assertTrue(torch.equal(s.det, a.det))
+        self.assertTrue(torch.equal(s.detection_mask, a.detection_mask))
 
     def test_select_invalid_layer_raises(self):
         a = self._acts([0, 5, 10])
@@ -263,7 +293,7 @@ class TestActivationsDevice(unittest.TestCase):
         a = self._acts()
         c = a.to("cpu")
         self.assertTrue(torch.equal(c.offsets, a.offsets))
-        self.assertTrue(torch.equal(c.det, a.det))
+        self.assertTrue(torch.equal(c.detection_mask, a.detection_mask))
 
 
 class TestActivationsEdgeCases(unittest.TestCase):
@@ -293,6 +323,32 @@ class TestActivationsEdgeCases(unittest.TestCase):
         self.assertEqual(p.shape, (3, 4))
         # Second sample should be zeros (no valid tokens)
         self.assertTrue(torch.allclose(p.data[1], torch.zeros(4)))
+
+
+class TestActivationsMetadata(unittest.TestCase):
+    def _acts(self):
+        return Activations.from_padded(
+            torch.randn(2, 3, 4, 5),
+            detection_mask=torch.ones(2, 4, dtype=torch.bool),
+            dims="blsh",
+            layers=(3, 7, 11),
+            metadata={"model": "demo", "collector": "unit-test"},
+        )
+
+    def test_metadata_preserved_through_transforms(self):
+        acts = self._acts()
+
+        transformed = acts.select("l", 7).mean("s").to("cpu")
+
+        self.assertEqual(transformed.metadata, acts.metadata)
+        self.assertIsNot(transformed.metadata, acts.metadata)
+
+    def test_metadata_preserved_through_flatten(self):
+        acts = self._acts()
+
+        flattened = acts.flatten()
+
+        self.assertEqual(flattened.metadata, acts.metadata)
 
 
 class TestActivationsDtypes(unittest.TestCase):
@@ -403,11 +459,11 @@ class TestFromPadded(unittest.TestCase):
         a = Activations.from_padded(t, det, dims="bsh")
 
         padded, padded_det = a.to_padded()
-        # Without attention_mask, only det=True tokens are kept:
+        # Without attention_mask, only detection_mask=True tokens are kept:
         # sample 0: 3 tokens, sample 1: 5 tokens → max_seq=5
         self.assertEqual(padded.shape, (2, 5, 4))
         self.assertEqual(padded_det.shape, (2, 5))
-        # Within each sample's valid range, all tokens should be det=True
+        # Within each sample's valid range, all tokens should be detection_mask=True
         self.assertTrue(padded_det[0, :3].all())
         self.assertTrue(padded_det[1, :5].all())
         # Padding positions should be False
@@ -428,7 +484,7 @@ class TestFromPadded(unittest.TestCase):
         # Sample 1: 2 tokens kept, 1 is det
         self.assertEqual(a.total_tokens, 5)  # 3 + 2
         self.assertEqual(a.batch_size, 2)
-        self.assertEqual(a.det.sum().item(), 3)  # 2 + 1
+        self.assertEqual(a.detection_mask.sum().item(), 3)  # 2 + 1
 
     def test_from_padded_blsh_roundtrip(self):
         """Test blsh round-trip."""
@@ -470,7 +526,7 @@ class TestTotalTokens(unittest.TestCase):
         data = torch.randn(10, 8)
         offsets = torch.tensor([0, 3, 7, 10], dtype=torch.int64)
         det = torch.ones(10, dtype=torch.bool)
-        a = Activations(data=data, dims="bsh", offsets=offsets, det=det)
+        a = Activations(data=data, dims="bsh", offsets=offsets, detection_mask=det)
         self.assertEqual(a.total_tokens, 10)
 
     def test_total_tokens_none_for_bh(self):
@@ -686,6 +742,34 @@ class TestCat(unittest.TestCase):
         self.assertTrue(torch.equal(c.data[:2], torch.ones(2, 4)))
         self.assertTrue(torch.equal(c.data[2:], torch.zeros(3, 4)))
 
+    def test_cat_preserves_identical_metadata(self):
+        metadata = {"model": "demo", "split": "train"}
+        a = Activations(data=torch.ones(2, 4), dims="bh", metadata=metadata)
+        b = Activations(data=torch.zeros(3, 4), dims="bh", metadata=metadata)
+
+        c = Activations.cat([a, b])
+
+        self.assertEqual(c.metadata, metadata)
+
+    def test_cat_tracks_distinct_metadata_sources(self):
+        a = Activations(
+            data=torch.ones(2, 4),
+            dims="bh",
+            metadata={"dataset": "a"},
+        )
+        b = Activations(
+            data=torch.zeros(3, 4),
+            dims="bh",
+            metadata={"dataset": "b"},
+        )
+
+        c = Activations.cat([a, b])
+
+        self.assertEqual(
+            c.metadata,
+            {"sources": [{"dataset": "a"}, {"dataset": "b"}]},
+        )
+
     # --- blh ---
 
     def test_cat_blh_basic(self):
@@ -721,12 +805,12 @@ class TestCat(unittest.TestCase):
         data_a = torch.randn(7, 4)
         off_a = torch.tensor([0, 3, 7], dtype=torch.int64)
         det_a = torch.ones(7, dtype=torch.bool)
-        a = Activations(data=data_a, dims="bsh", offsets=off_a, det=det_a)
+        a = Activations(data=data_a, dims="bsh", offsets=off_a, detection_mask=det_a)
 
         data_b = torch.randn(8, 4)
         off_b = torch.tensor([0, 5, 8], dtype=torch.int64)
         det_b = torch.ones(8, dtype=torch.bool)
-        b = Activations(data=data_b, dims="bsh", offsets=off_b, det=det_b)
+        b = Activations(data=data_b, dims="bsh", offsets=off_b, detection_mask=det_b)
 
         c = Activations.cat([a, b])
         expected_offsets = torch.tensor([0, 3, 7, 12, 15], dtype=torch.int64)
@@ -737,18 +821,18 @@ class TestCat(unittest.TestCase):
         data_a = torch.ones(5, 4)
         off_a = torch.tensor([0, 2, 5], dtype=torch.int64)
         det_a = torch.ones(5, dtype=torch.bool)
-        a = Activations(data=data_a, dims="bsh", offsets=off_a, det=det_a)
+        a = Activations(data=data_a, dims="bsh", offsets=off_a, detection_mask=det_a)
 
         data_b = torch.zeros(3, 4)
         off_b = torch.tensor([0, 3], dtype=torch.int64)
         det_b = torch.zeros(3, dtype=torch.bool)
-        b = Activations(data=data_b, dims="bsh", offsets=off_b, det=det_b)
+        b = Activations(data=data_b, dims="bsh", offsets=off_b, detection_mask=det_b)
 
         c = Activations.cat([a, b])
         self.assertTrue(torch.equal(c.data[:5], torch.ones(5, 4)))
         self.assertTrue(torch.equal(c.data[5:], torch.zeros(3, 4)))
-        self.assertTrue(c.det[:5].all())
-        self.assertFalse(c.det[5:].any())
+        self.assertTrue(c.detection_mask[:5].all())
+        self.assertFalse(c.detection_mask[5:].any())
 
     def test_cat_bsh_variable_lengths(self):
         """Samples with different sequence lengths."""
@@ -756,13 +840,13 @@ class TestCat(unittest.TestCase):
         data_a = torch.randn(4, 8)
         off_a = torch.tensor([0, 3, 4], dtype=torch.int64)
         det_a = torch.ones(4, dtype=torch.bool)
-        a = Activations(data=data_a, dims="bsh", offsets=off_a, det=det_a)
+        a = Activations(data=data_a, dims="bsh", offsets=off_a, detection_mask=det_a)
 
         # 5 tokens
         data_b = torch.randn(5, 8)
         off_b = torch.tensor([0, 5], dtype=torch.int64)
         det_b = torch.ones(5, dtype=torch.bool)
-        b = Activations(data=data_b, dims="bsh", offsets=off_b, det=det_b)
+        b = Activations(data=data_b, dims="bsh", offsets=off_b, detection_mask=det_b)
 
         c = Activations.cat([a, b])
         self.assertEqual(c.batch_size, 3)

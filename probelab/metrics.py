@@ -137,7 +137,8 @@ def brier_score(y_true, y_pred):
 
 def recall_at_fpr(y_true, y_pred, fpr=0.05):
     """Recall at a specified false positive rate."""
-    assert 0.0 <= fpr <= 1.0, "fpr must be between 0 and 1"
+    if not 0.0 <= fpr <= 1.0:
+        raise ValueError("fpr must be between 0 and 1")
     y_true, proba = _prep(y_true, y_pred)
 
     pos_scores = proba[y_true == 1]

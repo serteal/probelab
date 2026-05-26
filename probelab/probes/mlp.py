@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..processing.activations import Activations
+from ..activations import Activations
 from .base import BaseProbe
 
 
@@ -95,7 +95,7 @@ class MLP(BaseProbe):
                 labels = torch.repeat_interleave(y_tensor, tokens_per_sample.to(y_tensor.device))
             elif y_tensor.ndim == 2:
                 # 2D token-level labels: extract via det mask
-                det_bool = X.det.bool()
+                det_bool = X.detection_mask.bool()
                 labels = y_tensor.view(-1)[det_bool[:y_tensor.numel()]] if y_tensor.numel() > 0 else y_tensor.new_empty(0)
             else:
                 raise ValueError(f"Invalid label shape: {y_tensor.shape}")

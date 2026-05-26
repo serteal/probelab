@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import torch
 
 if TYPE_CHECKING:
-    from ..processing.activations import Activations
+    from ..activations import Activations
 
 
 def check_activations(
@@ -51,7 +51,7 @@ def check_activations(
         >>> X = check_activations(X, forbid_layer=True, estimator_name="Logistic")
     """
     # Import here to avoid circular imports
-    from ..processing.activations import Activations
+    from ..activations import Activations
 
     prefix = f"{estimator_name}: " if estimator_name else ""
 

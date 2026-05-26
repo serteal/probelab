@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING, Any
 import torch
 import torch.nn.functional as F
 
-from ..datasets import Dataset
-from ..logger import logger
-from ..masks import Mask, TokenMetadata
-from ..types import Dialogue, Message
+from .datasets import Dataset
+from .logger import logger
+from .masks import Mask, TokenMetadata
+from .types import Dialogue, Message
 from .chat_templates import detect_template, get_template
 
 if TYPE_CHECKING:
@@ -84,14 +84,31 @@ class Tokens:
         elif isinstance(idx, slice):
             indices = list(range(*idx.indices(len(self))))
         elif isinstance(idx, torch.Tensor):
-            indices = idx.tolist()
+            if idx.dtype == torch.bool:
+                if idx.numel() != len(self):
+                    raise IndexError(
+                        f"Boolean index has {idx.numel()} entries, expected {len(self)}"
+                    )
+                indices = idx.flatten().nonzero(as_tuple=False).flatten().tolist()
+            else:
+                indices = idx.flatten().tolist()
         else:
             indices = list(idx)
 
+        normalised: list[int] = []
+        n = len(self)
+        for raw_idx in indices:
+            i = int(raw_idx)
+            if i < 0:
+                i += n
+            if i < 0 or i >= n:
+                raise IndexError(f"Token sample index {raw_idx} out of range for length {n}")
+            normalised.append(i)
+
         chunks_ids: list[torch.Tensor] = []
         chunks_det: list[torch.Tensor] = []
-        new_offsets = torch.zeros(len(indices) + 1, dtype=torch.int64)
-        for j, i in enumerate(indices):
+        new_offsets = self.offsets.new_zeros(len(normalised) + 1)
+        for j, i in enumerate(normalised):
             s, e = int(self.offsets[i]), int(self.offsets[i + 1])
             chunks_ids.append(self.input_ids[s:e])
             chunks_det.append(self.detection_mask[s:e])
@@ -99,12 +116,12 @@ class Tokens:
 
         texts = None
         if self.formatted_texts is not None:
-            texts = tuple(self.formatted_texts[i] for i in indices)
+            texts = tuple(self.formatted_texts[i] for i in normalised)
 
         return Tokens(
             input_ids=torch.cat(chunks_ids) if chunks_ids else self.input_ids.new_empty(0),
             offsets=new_offsets,
-            detection_mask=torch.cat(chunks_det) if chunks_det else torch.empty(0, dtype=torch.bool),
+            detection_mask=torch.cat(chunks_det) if chunks_det else self.detection_mask.new_empty(0),
             pad_token_id=self.pad_token_id,
             padding_side=self.padding_side,
             formatted_texts=texts,
@@ -607,8 +624,6 @@ def tokenize_dialogues(
         chunk_end = min(chunk_start + chunk_size, n)
         chunk_formatted = all_formatted[chunk_start:chunk_end]
         chunk_processed = processed_dialogues[chunk_start:chunk_end]
-        chunk_dialogues = dialogues[chunk_start:chunk_end]
-
         # Tokenize chunk (pads to chunk-local max only)
         token_dict = tokenizer(chunk_formatted, **default_tokenize_kwargs)  # type: ignore
 
@@ -628,7 +643,7 @@ def tokenize_dialogues(
         )
 
         # Evaluate mask
-        detection_mask_chunk = mask(chunk_dialogues, metadata)
+        detection_mask_chunk = mask(chunk_processed, metadata)
 
         # Strip padding per sample, append to flat lists
         attn = token_dict["attention_mask"]

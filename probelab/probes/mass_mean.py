@@ -12,7 +12,7 @@ from typing import Callable
 import torch
 import torch.nn as nn
 
-from ..processing.activations import Activations
+from ..activations import Activations
 from .base import BaseProbe
 
 
@@ -91,21 +91,22 @@ class MassMean(BaseProbe):
         self._training_dtype = working_dtype
 
         features = features.to(dtype=working_dtype)
-        labels = labels.to(dtype=working_dtype)
+        labels = labels.to(device=features.device, dtype=working_dtype)
         d_model = features.shape[1]
 
         # Center only (no z-scoring per Marks & Tegmark 2024)
         if self.center:
-            self.global_mean = features.mean(0).to(self.device)
+            center = features.mean(0)
         else:
-            self.global_mean = torch.zeros(d_model, device=self.device, dtype=working_dtype)
-        z = features - self.global_mean.cpu()
+            center = features.new_zeros(d_model)
+        self.global_mean = center.to(self.device)
+        z = features - center
 
         # Compute class means on (optionally centered) data
         pos_mask = labels > 0.5
         neg_mask = ~pos_mask
-        mean_pos = z[pos_mask].mean(0) if pos_mask.any() else torch.zeros(d_model)
-        mean_neg = z[neg_mask].mean(0) if neg_mask.any() else torch.zeros(d_model)
+        mean_pos = z[pos_mask].mean(0) if pos_mask.any() else features.new_zeros(d_model)
+        mean_neg = z[neg_mask].mean(0) if neg_mask.any() else features.new_zeros(d_model)
         direction = mean_pos - mean_neg
 
         if self.normalize:
@@ -121,7 +122,7 @@ class MassMean(BaseProbe):
 
         self.net = _MassMeanNetwork(d_model).to(self.device, dtype=working_dtype)
         self.net.direction.copy_(direction.to(self.device))
-        self.net.bias.copy_(torch.tensor([bias], device=self.device, dtype=working_dtype))
+        self.net.bias.copy_(bias.reshape(1).to(self.device, dtype=working_dtype))
         return self
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:

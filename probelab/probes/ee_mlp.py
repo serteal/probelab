@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..processing.activations import Activations
+from ..activations import Activations
 from .base import BaseProbe
 
 

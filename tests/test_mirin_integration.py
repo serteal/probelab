@@ -9,12 +9,8 @@ import torch.nn as nn
 import mirin
 
 import probelab as pl
-from probelab.processing.activations import (
-    Activations,
-    _ensure_model,
-    collect_activations,
-    stream_activations,
-)
+from probelab.activations import Activations
+from probelab.collection.mirin import _ensure_model, collect_activations, stream_activations
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +57,7 @@ def tiny_model():
 @pytest.fixture
 def tiny_tokens():
     """Build synthetic Tokens with IDs in [0, 99] for the tiny model."""
-    from probelab.processing.tokenization import Tokens
+    from probelab.tokenization import Tokens
 
     # 8 samples with variable lengths (5-12 tokens each)
     sample_lengths = [5, 7, 8, 6, 10, 9, 12, 7]
@@ -117,20 +113,20 @@ class TestStreamActivations:
         m = mirin.Model(tiny_model)
         results = list(stream_activations(m, tiny_tokens, layers=[1], batch_size=4))
         assert len(results) > 0
-        for flat_data, det, offsets, idx in results:
-            assert flat_data.ndim == 3  # [T, n_layers, hidden] where n_layers=1
-            assert flat_data.shape[1] == 1
-            assert isinstance(det, torch.Tensor)
-            assert isinstance(offsets, torch.Tensor)
-            assert isinstance(idx, list)
+        for chunk in results:
+            assert chunk.data.ndim == 3  # [T, n_layers, hidden] where n_layers=1
+            assert chunk.data.shape[1] == 1
+            assert isinstance(chunk.detection_mask, torch.Tensor)
+            assert isinstance(chunk.offsets, torch.Tensor)
+            assert isinstance(chunk.indices, list)
         m.close()
 
     def test_multi_layer(self, tiny_model, tiny_tokens):
         m = mirin.Model(tiny_model)
         results = list(stream_activations(m, tiny_tokens, layers=[0, 2], batch_size=4))
-        for flat_data, det, offsets, idx in results:
-            assert flat_data.ndim == 3  # [T, 2, hidden]
-            assert flat_data.shape[1] == 2
+        for chunk in results:
+            assert chunk.data.ndim == 3  # [T, 2, hidden]
+            assert chunk.data.shape[1] == 2
         m.close()
 
 
@@ -167,9 +163,13 @@ class TestCollectActivations:
         try:
             collected = collect_activations(m, tiny_tokens, layers=[1], batch_size=4, pool="mean")
             pooled_batches: list[tuple[torch.Tensor, list[int]]] = []
-            for flat_data, det, offsets, idx in stream_activations(m, tiny_tokens, layers=[1], batch_size=4):
-                pooled = pl.pool.mean(flat_data, det, offsets=offsets).squeeze(1).cpu()
-                pooled_batches.append((pooled, idx))
+            for chunk in stream_activations(m, tiny_tokens, layers=[1], batch_size=4):
+                pooled = pl.pool.mean(
+                    chunk.data,
+                    chunk.detection_mask,
+                    offsets=chunk.offsets,
+                ).squeeze(1).cpu()
+                pooled_batches.append((pooled, chunk.indices))
             manual = torch.zeros_like(collected.data)
             for pooled, idx in pooled_batches:
                 manual[torch.tensor(idx, dtype=torch.long)] = pooled

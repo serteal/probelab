@@ -5,12 +5,12 @@ import re
 import unittest
 from types import SimpleNamespace
 
-from probelab.processing.chat_templates import (
+from probelab.chat_templates import (
     TEMPLATES,
     _QWEN_PREFIX,
     detect_template,
 )
-from probelab.processing.tokenization import tokenize_dataset, tokenize_dialogues
+from probelab.tokenization import tokenize_dataset, tokenize_dialogues
 
 
 # =============================================================================

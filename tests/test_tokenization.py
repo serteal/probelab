@@ -8,7 +8,7 @@ import torch
 from transformers import AutoTokenizer
 
 from probelab import masks
-from probelab.processing.tokenization import Tokens, build_token_metadata, tokenize_dialogues
+from probelab.tokenization import Tokens, build_token_metadata, tokenize_dialogues
 from probelab.types import Message
 
 
@@ -172,8 +172,8 @@ class TestPaddingExpansion(unittest.TestCase):
             "token_padding": (pad_left, pad_right),
         }
         with (
-            patch("probelab.processing.tokenization.get_template", return_value=template_config),
-            patch("probelab.processing.tokenization.detect_template", return_value="test"),
+            patch("probelab.tokenization.get_template", return_value=template_config),
+            patch("probelab.tokenization.detect_template", return_value="test"),
         ):
             return build_token_metadata(
                 dialogues, formatted, self.tokenizer, encoding
@@ -292,8 +292,8 @@ class TestTokenizeDialoguesIntegration(unittest.TestCase):
             "token_padding": (0, 0),
         }
         with (
-            patch("probelab.processing.tokenization.get_template", return_value=template_config),
-            patch("probelab.processing.tokenization.detect_template", return_value="test"),
+            patch("probelab.tokenization.get_template", return_value=template_config),
+            patch("probelab.tokenization.detect_template", return_value="test"),
         ):
             return tokenize_dialogues(
                 self.tokenizer, dialogues, mask=mask,
@@ -359,6 +359,35 @@ class TestTokenizeDialoguesIntegration(unittest.TestCase):
                 tokens.detection_mask[s:e].any(),
                 f"Sample {i} should have detected tokens",
             )
+
+    def test_custom_mask_receives_processed_dialogues(self):
+        """Custom masks should see the same processed messages used for metadata."""
+        seen: list[list[Message]] = []
+
+        def mask(dialogues, metadata):
+            seen.extend(dialogues)
+            return metadata.attention_mask.bool()
+
+        dialogues = [[
+            Message("system", "Follow rules"),
+            Message("user", "Hello"),
+            Message("user", "again"),
+        ]]
+        template_config = {
+            "prefix_pattern": re.compile(r"(\n\n)?"),
+            "fold_system": True,
+            "token_padding": (0, 0),
+        }
+
+        with (
+            patch("probelab.tokenization.get_template", return_value=template_config),
+            patch("probelab.tokenization.detect_template", return_value="test"),
+        ):
+            tokenize_dialogues(self.tokenizer, dialogues, mask=mask)
+
+        self.assertEqual([[m.role for m in d] for d in seen], [["user"]])
+        self.assertIn("Follow rules", seen[0][0].content)
+        self.assertIn("Hello again", seen[0][0].content)
 
 
 class TestTokensTruncate(unittest.TestCase):
@@ -426,6 +455,39 @@ class TestTokensTruncate(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             tokens.truncate(3, preserve_mask=torch.ones(3, dtype=torch.bool))
+
+
+class TestTokensIndexing(unittest.TestCase):
+    """Tests for flat+offsets sample slicing."""
+
+    def _tokens(self):
+        return Tokens(
+            input_ids=torch.tensor([10, 11, 20, 21, 22]),
+            offsets=torch.tensor([0, 2, 5]),
+            detection_mask=torch.tensor([True, False, False, True, True]),
+            pad_token_id=0,
+            padding_side="right",
+            formatted_texts=("first", "second"),
+        )
+
+    def test_negative_integer_index_selects_last_sample(self):
+        tokens = self._tokens()
+
+        selected = tokens[-1]
+
+        self.assertEqual(selected.input_ids.tolist(), [20, 21, 22])
+        self.assertEqual(selected.offsets.tolist(), [0, 3])
+        self.assertEqual(selected.detection_mask.tolist(), [False, True, True])
+        self.assertEqual(selected.formatted_texts, ("second",))
+
+    def test_negative_list_index_selects_last_sample(self):
+        tokens = self._tokens()
+
+        selected = tokens[[-1]]
+
+        self.assertEqual(selected.input_ids.tolist(), [20, 21, 22])
+        self.assertEqual(selected.offsets.tolist(), [0, 3])
+        self.assertEqual(selected.detection_mask.tolist(), [False, True, True])
 
 
 if __name__ == "__main__":
