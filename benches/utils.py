@@ -1,9 +1,10 @@
-import gc
-import numpy as np
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Callable, List
+from typing import Callable
+
+import gc
+import numpy as np
 
 import torch
 
@@ -16,15 +17,17 @@ class TimingResult:
     std: float
     min: float
     max: float
-    samples: List[float]
+    samples: list[float]
 
     def throughput(self, num_samples: int) -> float:
         """Calculate throughput in samples/sec."""
+        if self.mean <= 0:
+            return 0.0
         return num_samples / self.mean
 
     def __str__(self) -> str:
         return (
-            f"Mean: {self.mean:.3f}s ± {self.std:.3f}s | "
+            f"Mean: {self.mean:.3f}s +/- {self.std:.3f}s | "
             f"Min: {self.min:.3f}s | Max: {self.max:.3f}s"
         )
 
@@ -61,6 +64,11 @@ def measure_with_warmup(
     Returns:
         TimingResult with statistics
     """
+    if measurement_runs <= 0:
+        raise ValueError("measurement_runs must be positive")
+    if warmup_runs < 0:
+        raise ValueError("warmup_runs must be non-negative")
+
     print(f"\n{'=' * 60}")
     print(f"Measuring: {name}")
     print(f"{'=' * 60}")

@@ -1,15 +1,31 @@
+"""Profile mirin activation collection, pooling, and probe scoring."""
+
+from __future__ import annotations
+
 import argparse
 import gc
 import statistics
 import time
+from typing import Any
 
-import mirin as mi
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import probelab as pl
 from probelab import pool as P
-from probelab.collection.mirin import collect_activations, stream_activations
+
+
+def _load_collection_deps() -> tuple[Any, Any, Any, Any, Any]:
+    try:
+        import mirin as mi
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from probelab.collection.mirin import collect_activations, stream_activations
+    except ImportError as exc:
+        raise SystemExit(
+            "This benchmark requires optional collection dependencies. "
+            "Install with `uv sync --extra collection` or `pip install "
+            "probelab[collection]`."
+        ) from exc
+    return mi, AutoModelForCausalLM, AutoTokenizer, collect_activations, stream_activations
 
 
 def summarize_lengths(tokens: pl.Tokens, name: str) -> None:
@@ -20,8 +36,9 @@ def summarize_lengths(tokens: pl.Tokens, name: str) -> None:
     quantiles = torch.quantile(lengths, torch.tensor([0.5, 0.9, 0.95, 0.99]))
     print(
         f"{name}: samples={len(tokens)}, total_tokens={tokens.total_tokens:,}, "
-        f"max_seq={tokens.seq_len}, p50={int(quantiles[0])}, p90={int(quantiles[1])}, "
-        f"p95={int(quantiles[2])}, p99={int(quantiles[3])}"
+        f"max_seq={tokens.seq_len}, p50={int(quantiles[0])}, "
+        f"p90={int(quantiles[1])}, p95={int(quantiles[2])}, "
+        f"p99={int(quantiles[3])}"
     )
 
 
@@ -29,9 +46,24 @@ def _stats_str(values: list[float]) -> str:
     if not values:
         return "n/a"
     return (
-        f"mean={statistics.mean(values):.4f}s, p50={statistics.median(values):.4f}s, "
-        f"max={max(values):.4f}s"
+        f"mean={statistics.mean(values):.4f}s, "
+        f"p50={statistics.median(values):.4f}s, max={max(values):.4f}s"
     )
+
+
+def _maybe_sample(dataset: pl.Dataset, n: int, *, seed: int) -> pl.Dataset:
+    if n <= 0 or n >= len(dataset):
+        return dataset
+    return dataset.sample(n, stratified=len(set(dataset.labels)) > 1, seed=seed)
+
+
+def _mask_from_name(name: str) -> pl.masks.Mask:
+    masks = {
+        "all": pl.masks.all,
+        "user": pl.masks.user,
+        "assistant": pl.masks.assistant,
+    }
+    return masks[name]()
 
 
 def profile_collect_with_breakdown(
@@ -39,9 +71,16 @@ def profile_collect_with_breakdown(
     tokens: pl.Tokens,
     layer: int,
     batch_size: int,
+    *,
+    stream_activations: Any,
     pool_name: str = "mean",
+    hook_point: str = "block",
+    sort_by_length: bool = True,
+    batch_token_budget: int | None = None,
 ) -> tuple[pl.Activations, dict[str, float | int | str]]:
-    pool_fn = getattr(P, pool_name)
+    pool_fn = getattr(P, pool_name, None)
+    if pool_fn is None:
+        raise ValueError(f"Unknown pool function: {pool_name}")
 
     n = len(tokens)
     out: torch.Tensor | None = None
@@ -51,13 +90,21 @@ def profile_collect_with_breakdown(
     batch_token_counts: list[int] = []
     batch_sample_counts: list[int] = []
 
-    it = iter(
-        stream_activations(model, tokens, layers=[layer], batch_size=batch_size)
+    iterator = iter(
+        stream_activations(
+            model,
+            tokens,
+            layers=[layer],
+            batch_size=batch_size,
+            hook_point=hook_point,
+            sort_by_length=sort_by_length,
+            batch_token_budget=batch_token_budget,
+        )
     )
     while True:
         extract_start = time.perf_counter()
         try:
-            chunk = next(it)
+            chunk = next(iterator)
         except StopIteration:
             break
         extract_times.append(time.perf_counter() - extract_start)
@@ -69,19 +116,27 @@ def profile_collect_with_breakdown(
 
         if out is None:
             out = torch.zeros(
-                n, 1, chunk.data.shape[-1], dtype=chunk.data.dtype, device=chunk.data.device
+                n,
+                chunk.data.shape[1],
+                chunk.data.shape[-1],
+                dtype=chunk.data.dtype,
+                device=chunk.data.device,
             )
 
         pool_start = time.perf_counter()
-        pooled = pool_fn(chunk.data[:, 0, :], chunk.detection_mask, offsets=chunk.offsets)
+        pooled = pool_fn(
+            chunk.data,
+            chunk.detection_mask,
+            offsets=chunk.offsets,
+        )
         out_idx = torch.tensor(chunk.indices, dtype=torch.long, device=pooled.device)
-        out[out_idx, 0] = pooled
+        out[out_idx] = pooled
         pool_times.append(time.perf_counter() - pool_start)
 
     if out is None:
         out = torch.zeros(n, 1, 0, dtype=torch.float32)
 
-    prepared = pl.Activations(data=out.squeeze(1), dims="bh", layers=None)
+    prepared = pl.Activations.from_tensor(out.squeeze(1), dims="bh")
     total_extract = sum(extract_times)
     total_pool = sum(pool_times)
     total = total_extract + total_pool
@@ -106,7 +161,32 @@ def profile_collect_with_breakdown(
     return prepared, metrics
 
 
-def main() -> None:
+def _print_profile_metrics(
+    label: str,
+    prepared: pl.Activations,
+    tokens: pl.Tokens,
+    elapsed: float,
+    metrics: dict[str, float | int | str],
+) -> None:
+    print(
+        f"{label} prepared shape={tuple(prepared.data.shape)} in {elapsed:.2f}s, "
+        f"{len(tokens) / elapsed:.2f} samples/s, "
+        f"{tokens.total_tokens / elapsed:,.0f} tok/s"
+    )
+    print(
+        f"{label} breakdown: "
+        f"extract={metrics['total_extract_s']:.2f}s "
+        f"({metrics['extract_share']:.1f}%), "
+        f"pool={metrics['total_pool_s']:.2f}s ({metrics['pool_share']:.1f}%), "
+        f"batches={metrics['num_batches']}, "
+        f"batch_tokens(mean/max)="
+        f"{metrics['mean_batch_tokens']}/{metrics['max_batch_tokens']}"
+    )
+    print(f"  extract per-batch: {metrics['extract_stats']}")
+    print(f"  pool per-batch:    {metrics['pool_stats']}")
+
+
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--model",
@@ -122,10 +202,19 @@ def main() -> None:
         "--samples",
         type=int,
         default=1000,
-        help="Sample size for train and test",
+        help="Sample size for train and test; 0 uses full splits",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=8, help="Activation extraction batch size"
+        "--batch-size",
+        type=int,
+        default=8,
+        help="Activation extraction batch size",
+    )
+    parser.add_argument(
+        "--batch-token-budget",
+        type=int,
+        default=None,
+        help="Maximum padded tokens per collection batch",
     )
     parser.add_argument(
         "--layer",
@@ -134,10 +223,26 @@ def main() -> None:
         help="Requested layer index (clipped to model max)",
     )
     parser.add_argument(
+        "--hook-point",
+        default="block",
+        help="mirin hook point passed to collect_activations/stream_activations",
+    )
+    parser.add_argument(
         "--mask",
         choices=["all", "user", "assistant"],
         default="all",
         help="Detection mask",
+    )
+    parser.add_argument(
+        "--pool",
+        choices=["mean", "max", "last_token"],
+        default="mean",
+        help="Pooling function used for stream breakdown and collect API compare",
+    )
+    parser.add_argument(
+        "--no-sort-by-length",
+        action="store_true",
+        help="Disable length-sorted activation collection batches",
     )
     parser.add_argument(
         "--truncation",
@@ -151,25 +256,40 @@ def main() -> None:
         help="Tokenizer max_length when --truncation is set",
     )
     parser.add_argument(
+        "--tokenize-chunk-size",
+        type=int,
+        default=1024,
+        help="tokenize_dataset chunk_size",
+    )
+    parser.add_argument(
         "--compare-collect-api",
         action="store_true",
-        help="Also run collect_activations(pool='mean') once for comparison",
+        help="Also run collect_activations(pool=...) once for comparison",
     )
-    args = parser.parse_args()
+    parser.add_argument("--seed", type=int, default=42)
+    return parser.parse_args()
 
-    mask_map = {
-        "all": pl.masks.all,
-        "user": pl.masks.user,
-        "assistant": pl.masks.assistant,
-    }
-    mask = mask_map[args.mask]()
+
+def main() -> None:
+    args = parse_args()
+    mi, AutoModelForCausalLM, AutoTokenizer, collect_activations, stream_activations = (
+        _load_collection_deps()
+    )
+    mask = _mask_from_name(args.mask)
+    sort_by_length = not args.no_sort_by_length
 
     print("Loading datasets...")
     t0 = time.perf_counter()
-    full_train = pl.datasets.load(args.dataset).sample(args.samples, stratified=True)
-    train_dataset, val_dataset = full_train.split(0.8, stratified=True)
-    test_dataset = pl.datasets.load(args.dataset, split="test").sample(
-        args.samples, stratified=True
+    full_train = _maybe_sample(
+        pl.datasets.load(args.dataset),
+        args.samples,
+        seed=args.seed,
+    )
+    train_dataset, val_dataset = full_train.split(0.8, stratified=True, seed=args.seed)
+    test_dataset = _maybe_sample(
+        pl.datasets.load(args.dataset, split="test"),
+        args.samples,
+        seed=args.seed,
     )
     print(f"Datasets loaded in {time.perf_counter() - t0:.2f}s")
     print(
@@ -181,20 +301,30 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     print(f"Tokenizer loaded in {time.perf_counter() - t0:.2f}s")
 
-    tokenize_kwargs = {}
+    tokenize_kwargs = {"chunk_size": args.tokenize_chunk_size}
     if args.truncation:
         tokenize_kwargs["truncation"] = True
         tokenize_kwargs["max_length"] = args.max_length
 
     print("\nTokenizing train...")
     t0 = time.perf_counter()
-    train_tokens = pl.tokenize_dataset(train_dataset, tokenizer, mask=mask, **tokenize_kwargs)
+    train_tokens = pl.tokenize_dataset(
+        train_dataset,
+        tokenizer,
+        mask=mask,
+        **tokenize_kwargs,
+    )
     print(f"Train tokenized in {time.perf_counter() - t0:.2f}s")
     summarize_lengths(train_tokens, "train")
 
     print("Tokenizing test...")
     t0 = time.perf_counter()
-    test_tokens = pl.tokenize_dataset(test_dataset, tokenizer, mask=mask, **tokenize_kwargs)
+    test_tokens = pl.tokenize_dataset(
+        test_dataset,
+        tokenizer,
+        mask=mask,
+        **tokenize_kwargs,
+    )
     print(f"Test tokenized in {time.perf_counter() - t0:.2f}s")
     summarize_lengths(test_tokens, "test")
 
@@ -202,7 +332,7 @@ def main() -> None:
     t0 = time.perf_counter()
     hf_model = AutoModelForCausalLM.from_pretrained(
         args.model,
-        dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
     ).eval()
     for p in hf_model.parameters():
@@ -229,24 +359,19 @@ def main() -> None:
         tokens=train_tokens,
         layer=layer,
         batch_size=args.batch_size,
-        pool_name="mean",
+        stream_activations=stream_activations,
+        pool_name=args.pool,
+        hook_point=args.hook_point,
+        sort_by_length=sort_by_length,
+        batch_token_budget=args.batch_token_budget,
     )
     elapsed = time.perf_counter() - t0
-    print(
-        f"Train prepared shape={tuple(train_prepared.data.shape)} in {elapsed:.2f}s, "
-        f"{len(train_tokens)/elapsed:.2f} samples/s, {train_tokens.total_tokens/elapsed:,.0f} tok/s"
-    )
-    print(
-        "Train breakdown: "
-        f"extract={train_metrics['total_extract_s']:.2f}s ({train_metrics['extract_share']:.1f}%), "
-        f"pool={train_metrics['total_pool_s']:.2f}s ({train_metrics['pool_share']:.1f}%), "
-        f"batches={train_metrics['num_batches']}, "
-        f"batch_tokens(mean/max)={train_metrics['mean_batch_tokens']}/{train_metrics['max_batch_tokens']}"
-    )
-    print(f"  extract per-batch: {train_metrics['extract_stats']}")
-    print(f"  pool per-batch:    {train_metrics['pool_stats']}")
+    _print_profile_metrics("Train", train_prepared, train_tokens, elapsed, train_metrics)
     if torch.cuda.is_available():
-        print(f"Peak GPU alloc (train collect): {torch.cuda.max_memory_allocated()/1e9:.2f} GB")
+        print(
+            "Peak GPU alloc (train collect): "
+            f"{torch.cuda.max_memory_allocated() / 1e9:.2f} GB"
+        )
 
     print("\nProfiling test activation collection (stream + pooled)...")
     if torch.cuda.is_available():
@@ -257,42 +382,51 @@ def main() -> None:
         tokens=test_tokens,
         layer=layer,
         batch_size=args.batch_size,
-        pool_name="mean",
+        stream_activations=stream_activations,
+        pool_name=args.pool,
+        hook_point=args.hook_point,
+        sort_by_length=sort_by_length,
+        batch_token_budget=args.batch_token_budget,
     )
     elapsed = time.perf_counter() - t0
-    print(
-        f"Test prepared shape={tuple(test_prepared.data.shape)} in {elapsed:.2f}s, "
-        f"{len(test_tokens)/elapsed:.2f} samples/s, {test_tokens.total_tokens/elapsed:,.0f} tok/s"
-    )
-    print(
-        "Test breakdown: "
-        f"extract={test_metrics['total_extract_s']:.2f}s ({test_metrics['extract_share']:.1f}%), "
-        f"pool={test_metrics['total_pool_s']:.2f}s ({test_metrics['pool_share']:.1f}%), "
-        f"batches={test_metrics['num_batches']}, "
-        f"batch_tokens(mean/max)={test_metrics['mean_batch_tokens']}/{test_metrics['max_batch_tokens']}"
-    )
-    print(f"  extract per-batch: {test_metrics['extract_stats']}")
-    print(f"  pool per-batch:    {test_metrics['pool_stats']}")
+    _print_profile_metrics("Test", test_prepared, test_tokens, elapsed, test_metrics)
     if torch.cuda.is_available():
-        print(f"Peak GPU alloc (test collect): {torch.cuda.max_memory_allocated()/1e9:.2f} GB")
+        print(
+            "Peak GPU alloc (test collect): "
+            f"{torch.cuda.max_memory_allocated() / 1e9:.2f} GB"
+        )
 
     if args.compare_collect_api:
-        print("\nComparing against collect_activations(pool='mean') on train...")
+        print(f"\nComparing against collect_activations(pool={args.pool!r}) on train...")
         t0 = time.perf_counter()
         _ = collect_activations(
-            model, train_tokens, layers=[layer], batch_size=args.batch_size, pool="mean"
+            model,
+            train_tokens,
+            layers=[layer],
+            batch_size=args.batch_size,
+            pool=args.pool,
+            hook_point=args.hook_point,
+            sort_by_length=sort_by_length,
+            batch_token_budget=args.batch_token_budget,
         )
         print(f"collect_activations() elapsed: {time.perf_counter() - t0:.2f}s")
 
     print("\nFreeing model...")
+    close = getattr(model, "close", None)
+    if callable(close):
+        close()
     del model
+    del hf_model
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
     print("Training logistic probe...")
     t0 = time.perf_counter()
-    probe = pl.probes.Logistic(C=0.01, device="cuda" if torch.cuda.is_available() else "cpu")
+    probe = pl.probes.Logistic(
+        C=0.01,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+    )
     probe.fit(train_prepared, train_dataset.labels)
     print(f"Probe fit in {time.perf_counter() - t0:.3f}s")
 
