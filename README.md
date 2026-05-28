@@ -55,6 +55,26 @@ make test-gpu
 make test-e2e
 ```
 
+### Release
+
+PyPI publishing runs from GitHub Releases using Trusted Publishing.
+
+1. Update `version` in `pyproject.toml`.
+2. Add the release notes to `CHANGELOG.md`.
+3. Run `make check`.
+4. Commit, push, and wait for CI to pass on `main`.
+5. Create the GitHub release:
+
+```bash
+gh release create v0.1.1 \
+  --target main \
+  --title "v0.1.1" \
+  --notes-file CHANGELOG.md
+```
+
+PyPI versions are immutable. If a published release has a bug, publish a new
+patch version instead of trying to replace the existing one.
+
 ## Citation
 
 ```bibtex
