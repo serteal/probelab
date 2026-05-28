@@ -1,6 +1,5 @@
 """Deception detection datasets."""
 
-import copy
 import csv
 import datetime
 import json
@@ -9,7 +8,7 @@ import random
 from collections import defaultdict
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, cast
+from typing import cast
 
 import pandas as pd
 import yaml

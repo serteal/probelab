@@ -24,8 +24,9 @@ def _import_mirin():
         import mirin
     except ImportError as exc:
         raise ImportError(
-            "The mirin collection adapter requires mirin. Install with "
-            "`probelab[collection]`."
+            "The mirin collection adapter requires mirin. Install collection "
+            "dependencies with `probelab[collection]`, then install mirin "
+            "from https://github.com/serteal/mirin."
         ) from exc
     return mirin
 
@@ -306,12 +307,12 @@ def collect_activations(
             out = torch.zeros(n, len(layer_list), 0, dtype=torch.float32)
 
         if single_layer:
-            return Activations.from_tensor(
+            return Activations(
                 data=out.squeeze(1),
                 dims="bh",
                 metadata=metadata,
             )
-        return Activations.from_tensor(
+        return Activations(
             data=out,
             dims="blh",
             layers=tuple(layer_list),

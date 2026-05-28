@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import copy
 import logging
-from functools import partial
 from typing import Callable
 
 import torch
@@ -477,8 +476,8 @@ def gated_bipolar_regularization(
     W = params["W_proj.weight"]  # [N, gate_dim, mlp_hidden_dim]
     l1 = lambda_l1 * W.abs().sum(dim=(1, 2))  # [N]
     WtW = torch.bmm(W, W.transpose(1, 2))  # [N, gate_dim, gate_dim]
-    I = torch.eye(gate_dim, device=W.device, dtype=W.dtype).unsqueeze(0)
-    orth = lambda_orth * (WtW - I).pow(2).sum(dim=(1, 2))  # [N]
+    identity = torch.eye(gate_dim, device=W.device, dtype=W.dtype).unsqueeze(0)
+    orth = lambda_orth * (WtW - identity).pow(2).sum(dim=(1, 2))  # [N]
     return l1 + orth
 
 

@@ -197,8 +197,8 @@ class Dataset:
             indices = rng.choice(len(self), size=n, replace=False).tolist()
         else:
             # Stratified: sample proportionally from each class
-            pos_idx = [i for i, l in enumerate(self.labels) if l == Label.POSITIVE]
-            neg_idx = [i for i, l in enumerate(self.labels) if l == Label.NEGATIVE]
+            pos_idx = [i for i, label in enumerate(self.labels) if label == Label.POSITIVE]
+            neg_idx = [i for i, label in enumerate(self.labels) if label == Label.NEGATIVE]
 
             # Calculate proportional sample sizes
             pos_ratio = len(pos_idx) / len(self) if len(self) > 0 else 0.5
@@ -233,8 +233,8 @@ class Dataset:
 
         # Stratified split
         rng = np.random.default_rng(seed)
-        pos_idx = [i for i, l in enumerate(self.labels) if l == Label.POSITIVE]
-        neg_idx = [i for i, l in enumerate(self.labels) if l == Label.NEGATIVE]
+        pos_idx = [i for i, label in enumerate(self.labels) if label == Label.POSITIVE]
+        neg_idx = [i for i, label in enumerate(self.labels) if label == Label.NEGATIVE]
 
         rng.shuffle(pos_idx)
         rng.shuffle(neg_idx)
@@ -256,14 +256,14 @@ class Dataset:
 
     @property
     def positive(self) -> "Dataset":
-        return self.where([l == Label.POSITIVE for l in self.labels])
+        return self.where([label == Label.POSITIVE for label in self.labels])
 
     @property
     def negative(self) -> "Dataset":
-        return self.where([l == Label.NEGATIVE for l in self.labels])
+        return self.where([label == Label.NEGATIVE for label in self.labels])
 
     def __repr__(self) -> str:
-        pos = sum(1 for l in self.labels if l == Label.POSITIVE)
+        pos = sum(1 for label in self.labels if label == Label.POSITIVE)
         neg = len(self) - pos
         return f"Dataset({self.name!r}, n={len(self)}, pos={pos}, neg={neg})"
 

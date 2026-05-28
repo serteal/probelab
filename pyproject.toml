@@ -5,11 +5,11 @@ build-backend = "hatchling.build"
 [project]
 name = "probelab"
 version = "0.1.0"
-description = "A library for training activation monitors on language models."
+description = "A library for training activation monitors on language model activations."
 readme = "README.md"
 license = "Apache-2.0"
-authors = [{ name = "Alex Serrano", email = "mail@alexserrano.org" }]
-requires-python = ">=3.11"
+authors = [{ name = "Alex Serrano", email = "oss@alexserrano.org" }]
+requires-python = ">=3.10"
 keywords = [
     "machine-learning",
     "deep-learning",
@@ -27,6 +27,7 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -38,19 +39,13 @@ dependencies = [
     "pandas>=2.3.0",
     "scikit-learn>=1.7.0",
     "torch>=2.6",
+    "transformers>=4.55.4",
     "tqdm>=4.66.0",
 ]
 
 [project.optional-dependencies]
-tokenization = [
-    "huggingface-hub>=0.34.0,<1.0",
-    "transformers>=4.55.4,<5",
-]
 collection = [
     "accelerate>=1.0",
-    "huggingface-hub>=0.34.0,<1.0",
-    "mirin @ git+https://github.com/serteal/mirin.git",
-    "transformers>=4.55.4,<5",
 ]
 storage = [
     "h5py>=3.10",
@@ -64,35 +59,51 @@ Issues = "https://github.com/serteal/probelab/issues"
 [dependency-groups]
 dev = [
     "pytest>=8.4.1",
-    "huggingface-hub>=0.34.0,<1.0",
-    "transformers>=4.55.4,<5",
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.7",
     "pre-commit>=4.3.0",
     "python-dotenv>=1.1.1",
     "pytest-cov>=6.2.1",
-    "py-spy>=0.4.1",
     "matplotlib>=3.10.8",
-    "scalene>=2.1.3",
-    "pyinstrument>=5.1.2",
+    "ruff>=0.11.5,<1",
 ]
 
-[tool.ruff]
-lint.ignore = ["F821"]  # forward annotation errors
+[tool.ruff.lint]
+ignore = ["F821"]  # forward annotation errors
+per-file-ignores = { "tests/test_mirin_integration.py" = ["E402"], "tests/test_seed_e2e.py" = ["E402"], "tests/test_tokenization.py" = ["E402"] }
 
 [tool.ty.rules]
 invalid-syntax-in-forward-annotation = "ignore"
 
-[tool.hatch.metadata]
-allow-direct-references = true
-
 [tool.pytest.ini_options]
+addopts = ["-m", "not e2e"]
 testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 markers = [
-    "integration: marks integration tests (GPU heavy)",
-    "llama3: tests that run against LLaMA 3 models/tokenizers",
-    "gemma2: tests that run against Gemma 2 models/tokenizers",
+    "integration: tests that exercise optional dependencies or external integrations",
+    "e2e: full external workflows, excluded from default test runs",
+    "slow: tests that are too slow for normal local feedback",
+    "gpu: tests that require accelerator hardware",
+]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.coverage",
+    "/.DS_Store",
+    "/.claude",
+    "/.github",
+    "/.pre-commit-config.yaml",
+    "/.pytest_cache",
+    "/.python-version",
+    "/.ruff_cache",
+    "/.venv",
+    "/CLAUDE.md",
+    "/Makefile",
+    "/benches",
+    "/build",
+    "/dist",
+    "/external",
+    "/uv.lock",
 ]

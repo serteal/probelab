@@ -11,10 +11,13 @@ try:
 except ImportError:
     mirin = None
 
-pytestmark = pytest.mark.skipif(
-    mirin is None,
-    reason="mirin integration tests require the optional collection dependency",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        mirin is None,
+        reason="mirin integration tests require the optional collection dependency",
+    ),
+]
 
 import probelab as pl
 from probelab.activations import Activations

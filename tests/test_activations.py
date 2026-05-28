@@ -24,7 +24,7 @@ class TestActivationsConstruction(unittest.TestCase):
     def test_4d_blsh(self):
         """Test flat+offsets [batch, layer, seq, hidden] tensor."""
         t = torch.randn(4, 2, 8, 16)
-        a = _make_flat_blsh(t, torch.ones(4, 8), layers=(0, 1))
+        a = Activations(t, dims="blsh", layers=(0, 1))
         # data should be [total_tokens, n_layers, hidden] = [32, 2, 16]
         self.assertEqual(a.data.shape, (32, 2, 16))
         self.assertEqual(a.n_layers, 2)
@@ -35,12 +35,49 @@ class TestActivationsConstruction(unittest.TestCase):
     def test_3d_bsh(self):
         """Test flat+offsets [batch, seq, hidden] tensor."""
         t = torch.randn(4, 8, 16)
-        a = _make_flat(t, torch.ones(4, 8))
+        a = Activations(t, dims="bsh")
         # data: [32, 16]
         self.assertEqual(a.data.shape, (32, 16))
         self.assertIsNone(a.n_layers)
         self.assertEqual(a.batch_size, 4)
         self.assertEqual(a.seq_len, 8)
+
+    def test_direct_padded_bsh_with_attention_mask(self):
+        t = torch.arange(2 * 4 * 3).reshape(2, 4, 3).float()
+        attention_mask = torch.tensor([
+            [True, True, False, False],
+            [True, True, True, False],
+        ])
+
+        a = Activations(t, dims="bsh", attention_mask=attention_mask)
+
+        self.assertEqual(a.data.shape, (5, 3))
+        self.assertEqual(a.offsets.tolist(), [0, 2, 5])
+        torch.testing.assert_close(
+            a.data,
+            torch.cat([t[0, :2], t[1, :3]], dim=0),
+        )
+
+    def test_direct_padded_bsh_with_detection_and_attention_masks(self):
+        t = torch.randn(2, 4, 3)
+        attention_mask = torch.tensor([
+            [True, True, False, False],
+            [True, True, True, False],
+        ])
+        detection_mask = torch.tensor([
+            [False, True, True, False],
+            [True, False, True, False],
+        ])
+
+        a = Activations(
+            t,
+            dims="bsh",
+            attention_mask=attention_mask,
+            detection_mask=detection_mask,
+        )
+
+        self.assertEqual(a.offsets.tolist(), [0, 2, 5])
+        self.assertEqual(a.detection_mask.tolist(), [False, True, True, False, True])
 
     def test_2d_bh(self):
         """Test [batch, hidden] tensor (pooled)."""

@@ -102,6 +102,7 @@ class TestPoolMean:
 
         torch.testing.assert_close(flat_result, padded_result)
 
+    @pytest.mark.gpu
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     def test_mean_pool_flat_offsets_bfloat16_is_repeatable_on_cuda(self):
         """Flat bf16 mean should be stable for identical inputs on CUDA."""
@@ -743,6 +744,8 @@ class TestPoolLargeSequences:
 
 class TestPoolDeterminismCUDA:
     """Repeatability checks for flat CUDA bf16 pooling paths."""
+
+    pytestmark = pytest.mark.gpu
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     @pytest.mark.parametrize(

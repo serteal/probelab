@@ -151,7 +151,7 @@ def load(
         layer_tensors.append(tensor)
 
     if isinstance(layer, int):
-        return Activations(
+        return Activations.from_flat(
             data=layer_tensors[0],
             dims="bsh",
             offsets=offsets,
@@ -159,7 +159,7 @@ def load(
             metadata=metadata,
         )
 
-    return Activations(
+    return Activations.from_flat(
         data=torch.stack(layer_tensors, dim=1),
         dims="blsh",
         offsets=offsets,
@@ -251,7 +251,7 @@ def stream(
         for i in range(chunk_start, chunk_end):
             local_offsets[i - chunk_start + 1] = int(offsets_np[i + 1]) - tok_start
 
-        yield Activations(
+        yield Activations.from_flat(
             data=chunk_data,
             dims=dims,
             offsets=local_offsets,

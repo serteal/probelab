@@ -35,14 +35,14 @@ def _separable_acts(n_samples=20, seq=8, d_model=8, gap=2.0):
     t[:half, :, 0] = gap
     t[half:, :, 0] = -gap
     t[:, :, 1:] = torch.randn(n_samples, seq, d_model - 1) * 0.1
-    return Activations.from_padded(
+    return Activations(
         data=t, detection_mask=torch.ones(n_samples, seq), dims="bsh",
     ), [Label.POSITIVE] * half + [Label.NEGATIVE] * half
 
 def _acts(n_samples=10, seq=8, d_model=16):
     """Create random activations."""
     t = torch.randn(n_samples, seq, d_model)
-    return Activations.from_padded(
+    return Activations(
         data=t, detection_mask=torch.ones(n_samples, seq), dims="bsh",
     )
 
@@ -420,7 +420,7 @@ class TestProbeErrors(unittest.TestCase):
     def test_logistic_rejects_multi_layer(self):
         # [batch, layer, seq, hidden] - 2 layers
         t = torch.randn(10, 2, 8, 16)
-        acts = Activations.from_padded(
+        acts = Activations(
             data=t, detection_mask=torch.ones(10, 8),
             dims="blsh", layers=(0, 1),
         )
@@ -432,7 +432,7 @@ class TestProbeErrors(unittest.TestCase):
     def test_mlp_rejects_multi_layer(self):
         # [batch, layer, seq, hidden] - 2 layers
         t = torch.randn(10, 2, 8, 16)
-        acts = Activations.from_padded(
+        acts = Activations(
             data=t, detection_mask=torch.ones(10, 8),
             dims="blsh", layers=(0, 1),
         )
@@ -448,7 +448,7 @@ class TestProbeErrors(unittest.TestCase):
 class TestProbeEdgeCases(unittest.TestCase):
     def test_small_batch(self):
         t = torch.randn(4, 8, 8)  # [batch, seq, hidden]
-        acts = Activations.from_padded(
+        acts = Activations(
             data=t, detection_mask=torch.ones(4, 8), dims="bsh",
         )
         labels = [Label.POSITIVE, Label.POSITIVE, Label.NEGATIVE, Label.NEGATIVE]
@@ -542,7 +542,7 @@ class TestSeedReproducibility(unittest.TestCase):
 
     def test_sequence_fit_with_seed_preserves_global_torch_rng_state(self):
         data = torch.ones(8, 4, 5)
-        acts = Activations.from_padded(
+        acts = Activations(
             data,
             detection_mask=torch.ones(8, 4, dtype=torch.bool),
             dims="bsh",
@@ -781,7 +781,7 @@ def _bf16_separable_acts(n_samples=20, seq=8, d_model=8, gap=2.0):
     t[:half, :, 0] = gap
     t[half:, :, 0] = -gap
     t[:, :, 1:] = torch.randn(n_samples, seq, d_model - 1, dtype=torch.bfloat16) * 0.1
-    return Activations.from_padded(
+    return Activations(
         data=t, detection_mask=torch.ones(n_samples, seq), dims="bsh",
     ), [Label.POSITIVE] * half + [Label.NEGATIVE] * half
 

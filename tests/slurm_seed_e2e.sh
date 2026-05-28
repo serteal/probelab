@@ -16,7 +16,7 @@ echo "=== $(date) ==="
 echo "Node: $(hostname), GPU: $(nvidia-smi -L | head -1)"
 echo ""
 
-uv run pytest tests/test_seed_e2e.py -v -s 2>&1
+uv run pytest -m e2e tests/test_seed_e2e.py -v -s 2>&1
 
 echo ""
 echo "=== Done $(date) ==="

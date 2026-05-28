@@ -8,10 +8,9 @@ Usage (via SLURM):
     sbatch tests/slurm_seed_e2e.sh
 
 Or directly:
-    cd probelab && uv run pytest tests/test_seed_e2e.py -v -s
+    cd probelab && uv run pytest -m e2e tests/test_seed_e2e.py -v -s
 """
 
-import os
 import importlib.util
 
 import pytest
@@ -35,10 +34,9 @@ from probelab.collection.mirin import collect_activations
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(
-        os.environ.get("PROBELAB_RUN_SEED_E2E") != "1",
-        reason="requires gated 8B model access; set PROBELAB_RUN_SEED_E2E=1 to run",
-    ),
+    pytest.mark.e2e,
+    pytest.mark.slow,
+    pytest.mark.gpu,
     pytest.mark.skipif(
         mi is None,
         reason="seed e2e requires the optional mirin collection dependency",
@@ -50,6 +48,10 @@ pytestmark = [
     pytest.mark.skipif(
         transformers is None,
         reason="seed e2e requires the optional tokenization dependency",
+    ),
+    pytest.mark.skipif(
+        not torch.cuda.is_available(),
+        reason="seed e2e requires a CUDA GPU and gated model access",
     ),
 ]
 

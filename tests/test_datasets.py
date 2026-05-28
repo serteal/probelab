@@ -1,7 +1,5 @@
 """Tests for base Dataset class."""
 
-import numpy as np
-
 from probelab.datasets.base import Dataset
 from probelab.types import Label, Message
 
@@ -76,11 +74,11 @@ class TestDataset:
 
         positive = dataset.positive
         assert len(positive) == 2
-        assert all(l == Label.POSITIVE for l in positive.labels)
+        assert all(label == Label.POSITIVE for label in positive.labels)
 
         negative = dataset.negative
         assert len(negative) == 3
-        assert all(l == Label.NEGATIVE for l in negative.labels)
+        assert all(label == Label.NEGATIVE for label in negative.labels)
 
     def test_dataset_where(self):
         """Test where() method for conditional filtering."""
@@ -89,7 +87,7 @@ class TestDataset:
 
         dataset = Dataset(dialogues, labels, "test")
 
-        positive = dataset.where([l == Label.POSITIVE for l in labels])
+        positive = dataset.where([label == Label.POSITIVE for label in labels])
         assert len(positive) == 2
 
     def test_dataset_add(self):
@@ -278,8 +276,8 @@ class TestDataset:
         sampled = dataset.sample(50, stratified=True, seed=42)
         assert len(sampled) == 50
 
-        pos_count = sum(1 for l in sampled.labels if l == Label.POSITIVE)
-        neg_count = sum(1 for l in sampled.labels if l == Label.NEGATIVE)
+        pos_count = sum(1 for label in sampled.labels if label == Label.POSITIVE)
+        neg_count = sum(1 for label in sampled.labels if label == Label.NEGATIVE)
 
         # Should preserve 80/20 ratio (40 pos, 10 neg)
         assert pos_count == 40
@@ -295,8 +293,8 @@ class TestDataset:
         sampled = dataset.sample(20, stratified=True, seed=42)
         assert len(sampled) == 20
 
-        pos_count = sum(1 for l in sampled.labels if l == Label.POSITIVE)
-        neg_count = sum(1 for l in sampled.labels if l == Label.NEGATIVE)
+        pos_count = sum(1 for label in sampled.labels if label == Label.POSITIVE)
+        neg_count = sum(1 for label in sampled.labels if label == Label.NEGATIVE)
 
         # Should roughly preserve proportions
         assert pos_count >= 18  # ~95% of 20
@@ -315,14 +313,14 @@ class TestDataset:
         assert len(test) == 20
 
         # Check proportions in train set (should be 60% pos)
-        train_pos = sum(1 for l in train.labels if l == Label.POSITIVE)
-        train_neg = sum(1 for l in train.labels if l == Label.NEGATIVE)
+        train_pos = sum(1 for label in train.labels if label == Label.POSITIVE)
+        train_neg = sum(1 for label in train.labels if label == Label.NEGATIVE)
         assert train_pos == 48  # 60% of 80
         assert train_neg == 32  # 40% of 80
 
         # Check proportions in test set
-        test_pos = sum(1 for l in test.labels if l == Label.POSITIVE)
-        test_neg = sum(1 for l in test.labels if l == Label.NEGATIVE)
+        test_pos = sum(1 for label in test.labels if label == Label.POSITIVE)
+        test_neg = sum(1 for label in test.labels if label == Label.NEGATIVE)
         assert test_pos == 12  # 60% of 20
         assert test_neg == 8   # 40% of 20
 

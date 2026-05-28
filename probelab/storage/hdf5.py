@@ -139,14 +139,22 @@ def load(
             else {}
         )
 
-    activations = Activations(
-        data=data,
-        dims=dims,
-        offsets=offsets,
-        detection_mask=detection_mask,
-        layers=stored_layers,
-        metadata=metadata,
-    )
+    if "s" in dims:
+        activations = Activations.from_flat(
+            data=data,
+            dims=dims,
+            offsets=offsets,
+            detection_mask=detection_mask,
+            layers=stored_layers,
+            metadata=metadata,
+        )
+    else:
+        activations = Activations(
+            data=data,
+            dims=dims,
+            layers=stored_layers,
+            metadata=metadata,
+        )
     if layers is not None and "l" in dims:
         activations = activations.select("l", layers)
     return activations
@@ -214,7 +222,7 @@ def stream(
                 local_offsets[i - chunk_start + 1] = int(offsets_np[i + 1]) - tok_start
 
             indices = list(range(chunk_start, chunk_end))
-            yield Activations(
+            yield Activations.from_flat(
                 data=chunk_data,
                 dims=dims,
                 offsets=local_offsets,

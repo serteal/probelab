@@ -13,7 +13,7 @@ def acts(n_layers=1, batch=4, seq=8, d_model=16, layer_indices=None, detection_m
     layer_indices = list(range(n_layers))
   t = torch.randn(batch, n_layers, seq, d_model)
   det = detection_mask if detection_mask is not None else torch.ones(batch, seq)
-  return Activations.from_padded(
+  return Activations(
     data=t,
     dims="blsh",
     detection_mask=det,
@@ -29,7 +29,7 @@ def separable_acts(n_samples=20, seq=8, d_model=8, gap=2.0):
   t[:, :, :, 1:] = torch.randn(n_samples, 1, seq, d_model - 1) * 0.1  # noise
   det = torch.ones(n_samples, seq)
   labels = [Label.POSITIVE] * half + [Label.NEGATIVE] * half
-  return Activations.from_padded(
+  return Activations(
     data=t,
     dims="blsh",
     detection_mask=det,

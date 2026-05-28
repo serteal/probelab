@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import Any, Iterator
 
 import torch
@@ -32,9 +32,89 @@ def _cat_metadata(items: list["Activations"]) -> dict[str, Any]:
     return {"sources": [_copy_metadata(item.metadata) for item in items]}
 
 
+def _flatten_padded(
+    data: torch.Tensor,
+    dims: str,
+    *,
+    detection_mask: torch.Tensor | None,
+    attention_mask: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Convert natural padded sequence data to flat+offsets storage."""
+    if "s" not in dims:
+        raise ValueError("_flatten_padded requires dims with 's'")
+    if data.ndim != len(dims):
+        raise ValueError(
+            f"padded data has {data.ndim}D but dims={dims!r} requires {len(dims)}D"
+        )
+
+    batch = data.shape[0]
+    seq_dim = dims.index("s")
+    seq_len = data.shape[seq_dim]
+    expected_mask_shape = (batch, seq_len)
+
+    if attention_mask is not None:
+        keep = attention_mask.to(data.device).bool()
+    elif detection_mask is not None:
+        keep = detection_mask.to(data.device).bool()
+    else:
+        keep = torch.ones(expected_mask_shape, dtype=torch.bool, device=data.device)
+
+    if detection_mask is None:
+        det_bool = keep
+    else:
+        det_bool = detection_mask.to(data.device).bool()
+
+    if tuple(keep.shape) != expected_mask_shape:
+        raise ValueError(
+            f"attention_mask must have shape {expected_mask_shape}, got {tuple(keep.shape)}"
+        )
+    if tuple(det_bool.shape) != expected_mask_shape:
+        raise ValueError(
+            f"detection_mask must have shape {expected_mask_shape}, got {tuple(det_bool.shape)}"
+        )
+
+    lengths = keep.sum(dim=1)
+
+    if attention_mask is None and detection_mask is None:
+        if seq_dim == 1:
+            # [batch, seq, hidden] -> [batch * seq, hidden]
+            flat_data = data.reshape(batch * seq_len, *data.shape[2:])
+        elif seq_dim == 2:
+            # [batch, layer, seq, hidden] -> [batch * seq, layer, hidden]
+            flat_data = data.transpose(1, 2).reshape(
+                batch * seq_len,
+                data.shape[1],
+                *data.shape[3:],
+            )
+        else:  # pragma: no cover - DIMS constrains this today
+            raise ValueError(f"unsupported sequence dimension for dims={dims!r}")
+        flat_det = det_bool.reshape(-1)
+    elif seq_dim == 1:
+        # Vectorized gather: [batch, seq, hidden] -> [total_real_tokens, hidden]
+        flat_data = data[keep]
+        flat_det = det_bool[keep]
+    elif seq_dim == 2:
+        # Move layer behind tokens before masking: [batch, seq, layer, hidden].
+        flat_data = data.transpose(1, 2)[keep]
+        flat_det = det_bool[keep]
+    else:  # pragma: no cover - DIMS constrains this today
+        raise ValueError(f"unsupported sequence dimension for dims={dims!r}")
+
+    offsets = torch.zeros(batch + 1, dtype=torch.int64, device=data.device)
+    offsets[1:] = lengths.to(torch.int64).cumsum(0)
+    return flat_data, offsets, flat_det
+
+
 @dataclass(slots=True)
 class Activations:
     """Activation tensor with explicit dimension labels.
+
+    The public constructor accepts natural dense layouts:
+
+    * ``dims="bh"``: ``data`` is ``[batch, hidden]``
+    * ``dims="blh"``: ``data`` is ``[batch, layer, hidden]``
+    * ``dims="bsh"``: ``data`` is padded ``[batch, seq, hidden]``
+    * ``dims="blsh"``: ``data`` is padded ``[batch, layer, seq, hidden]``
 
     When ``"s"`` is in *dims* the sequence dimension is stored in a
     **flat+offsets** layout:
@@ -55,6 +135,9 @@ class Activations:
         dims: Dimension format – one of ``"bh"``, ``"bsh"``, ``"blh"``, ``"blsh"``
         offsets: ``[batch+1]`` int64 cumulative token counts (required when ``"s"`` in dims)
         detection_mask: ``[total_tokens]`` bool detection mask (required when ``"s"`` in dims)
+            for flat inputs, or ``[batch, seq]`` for padded inputs.
+        attention_mask: Optional ``[batch, seq]`` bool/float mask marking real
+            tokens for padded sequence inputs.
         layers: Layer indices tuple (required when ``"l"`` in dims)
         metadata: Arbitrary runtime metadata dict for provenance.
     """
@@ -65,21 +148,36 @@ class Activations:
     detection_mask: torch.Tensor | None = None
     layers: tuple[int, ...] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    attention_mask: InitVar[torch.Tensor | None] = None
 
-    def __post_init__(self):
+    def __post_init__(self, attention_mask: torch.Tensor | None):
         self.metadata = _copy_metadata(self.metadata)
         if self.dims not in DIMS:
             raise ValueError(f"dims must be one of {DIMS}, got {self.dims!r}")
 
         if "s" in self.dims:
-            expected_ndim = len(self.dims) - 1
-            if self.data.ndim != expected_ndim:
+            padded_ndim = len(self.dims)
+            flat_ndim = len(self.dims) - 1
+            if self.offsets is None and self.data.ndim == padded_ndim:
+                self.data, self.offsets, self.detection_mask = _flatten_padded(
+                    self.data,
+                    self.dims,
+                    detection_mask=self.detection_mask,
+                    attention_mask=attention_mask,
+                )
+            elif attention_mask is not None:
+                raise ValueError("attention_mask is only valid for padded sequence inputs")
+
+            if self.data.ndim != flat_ndim:
                 raise ValueError(
                     f"data has {self.data.ndim}D but dims={self.dims!r} "
-                    f"requires {expected_ndim}D (flat+offsets layout)"
+                    f"requires either padded {padded_ndim}D input or flat+offsets {flat_ndim}D input"
                 )
             if self.offsets is None:
-                raise ValueError("offsets required when dims contains 's'")
+                raise ValueError(
+                    "offsets required for flat sequence inputs. For padded "
+                    f"{self.dims!r} tensors, pass data with {padded_ndim} dimensions."
+                )
             if self.detection_mask is None:
                 raise ValueError("detection_mask required when dims contains 's'")
             if self.offsets.ndim != 1:
@@ -133,7 +231,10 @@ class Activations:
     ) -> "Activations":
         """Build dense Activations without a sequence axis."""
         if "s" in dims:
-            raise ValueError("from_tensor does not accept dims with 's'; use from_padded or from_flat")
+            raise ValueError(
+                "from_tensor does not accept dims with 's'; use Activations(...) "
+                "for padded tensors or from_flat(...) for flat+offsets tensors"
+            )
         return cls(data=data, dims=dims, layers=layers, metadata=_copy_metadata(metadata))
 
     @classmethod
@@ -190,65 +291,12 @@ class Activations:
         """
         if "s" not in dims:
             raise ValueError("from_padded requires dims with 's'")
-        if data.ndim != len(dims):
-            raise ValueError(
-                f"padded data has {data.ndim}D but dims={dims!r} requires {len(dims)}D"
-            )
-
-        batch = data.shape[0]
-        seq_dim = dims.index("s")
-        seq_len = data.shape[seq_dim]
-        expected_mask_shape = (batch, seq_len)
-        if attention_mask is not None:
-            keep = attention_mask.to(data.device).bool()
-        elif detection_mask is not None:
-            keep = detection_mask.to(data.device).bool()
-        else:
-            keep = torch.ones(expected_mask_shape, dtype=torch.bool, device=data.device)
-        if detection_mask is None:
-            det_bool = keep
-        else:
-            det_bool = detection_mask.to(data.device).bool()
-        if tuple(keep.shape) != expected_mask_shape:
-            raise ValueError(
-                f"attention_mask must have shape {expected_mask_shape}, got {tuple(keep.shape)}"
-            )
-        if tuple(det_bool.shape) != expected_mask_shape:
-            raise ValueError(
-                f"detection_mask must have shape {expected_mask_shape}, got {tuple(det_bool.shape)}"
-            )
-        lengths = keep.sum(dim=1)  # [batch]
-
-        # Build flat data and detection_mask
-        flat_chunks: list[torch.Tensor] = []
-        det_chunks: list[torch.Tensor] = []
-        for i in range(batch):
-            mask_i = keep[i]  # [seq]
-            if seq_dim == 1:
-                # dims "bsh": data is [batch, seq, hidden]
-                flat_chunks.append(data[i][mask_i])
-            elif seq_dim == 2:
-                # dims "blsh": data is [batch, layer, seq, hidden]
-                flat_chunks.append(data[i][:, mask_i].transpose(0, 1))
-            det_chunks.append(det_bool[i][mask_i])
-
-        if flat_chunks:
-            flat_data = torch.cat(flat_chunks, dim=0)
-        elif seq_dim == 1:
-            flat_data = data.new_empty(0, *data.shape[2:])
-        else:
-            flat_data = data.new_empty(0, data.shape[1], *data.shape[3:])
-        flat_det = torch.cat(det_chunks, dim=0) if det_chunks else det_bool.new_empty(0)
-
-        offsets = torch.zeros(batch + 1, dtype=torch.int64, device=data.device)
-        offsets[1:] = lengths.to(torch.int64).cumsum(0)
-
         return cls(
-            data=flat_data,
+            data=data,
             dims=dims,
-            offsets=offsets,
-            detection_mask=flat_det,
+            detection_mask=detection_mask,
             layers=layers,
+            attention_mask=attention_mask,
             metadata=_copy_metadata(metadata),
         )
 

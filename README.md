@@ -1,163 +1,68 @@
-# `probelab`
+# probelab
 
-A library for training probes on LLM activations.
+`probelab` trains probes and activation monitors on language model activations.
+It is collector-agnostic: use activations from Transformers, TransformerLens,
+NNsight, nnterp, vLLM-Lens, mirin, PyTorch hooks, or saved tensors.
 
 ## Installation
 
-Install the base library for datasets, masks, activation containers, pooling,
-metrics, and probes:
-
 ```bash
-uv add git+https://github.com/serteal/probelab.git
+pip install probelab
+# or
+uv add probelab
 ```
+`probelab` does not choose a CUDA, ROCm, XPU, or CPU PyTorch build for you. Use
+your environment or lockfile to select the torch backend.
 
-Install tokenization or activation-collection dependencies only when you need
-them:
+## Quick Start
 
-```bash
-uv add "probelab[tokenization] @ git+https://github.com/serteal/probelab.git"
-uv add "probelab[collection] @ git+https://github.com/serteal/probelab.git"
-```
-
-`probelab` does not choose a CUDA, ROCm, XPU, or CPU PyTorch build for you.
-Use your application environment or lockfile to select the torch backend. For
-example:
-
-```bash
-# Let uv select the best local torch backend.
-uv pip install torch --torch-backend=auto
-
-# Or pin an explicit CUDA build in an application/project environment.
-uv pip install torch --index-url https://download.pytorch.org/whl/cu128
-```
-
-For source development:
-
-```bash
-git clone https://github.com/serteal/probelab.git
-cd probelab
-uv sync --extra collection
-```
-
-## Quick Start: Bring Your Own Activations
+This example trains a probe on synthetic activations. Replace `dataset` with
+activations from any collector and the probing code stays the same.
 
 ```python
 import torch
 import probelab as pl
 
-train_ds, test_ds = (
-    pl.datasets.load("circuit_breakers") + pl.datasets.load("benign_instructions")
-).split(0.8)
+n_train, n_test = 96, 32
+seq_len, hidden_size = 24, 128
+n = n_train + n_test
 
-# These tensors can come from any collector: raw PyTorch hooks,
-# TransformerLens, nnsight, mirin, saved files, etc.
-train_hidden = torch.randn(len(train_ds), 128, 4096)
-test_hidden = torch.randn(len(test_ds), 128, 4096)
-train_attention = torch.ones(len(train_ds), 128, dtype=torch.bool)
-test_attention = torch.ones(len(test_ds), 128, dtype=torch.bool)
+dataset = torch.randn(n, seq_len, hidden_size)
+# shape: [(B)atch_size, (S)eq_len, (H)idden_size]
+labels = torch.tensor([0, 1] * (n // 2))
 
-train_acts = pl.Activations.from_padded(
-    train_hidden,
-    attention_mask=train_attention,
-    dims="bsh",
-    metadata={
-        "model": "my-model",
-        "site": "resid_post",
-        "collector": "custom-hooks",
-        "split": "train",
-    },
-)
-test_acts = pl.Activations.from_padded(
-    test_hidden,
-    attention_mask=test_attention,
-    dims="bsh",
-    metadata={
-        "model": "my-model",
-        "site": "resid_post",
-        "collector": "custom-hooks",
-        "split": "test",
-    },
-)
+train_acts = pl.Activations(dataset[:n_train], dims="bsh")
+test_acts = pl.Activations(dataset[n_train:], dims="bsh")
 
-train_prepared = train_acts.mean("s")
-test_prepared = test_acts.mean("s")
+# Simple probes train on one feature vector per sample.
+train_features = train_acts.mean("s")  # [B, H]
+test_features = test_acts.mean("s")  # [B, H]
 
-for name, probe in [("logistic", pl.probes.Logistic()), ("mlp", pl.probes.MLP())]:
-    probe.fit(train_prepared, train_ds.labels)
-    probs = probe.predict(test_prepared)
-    print(f"{name}: AUROC={pl.metrics.auroc(test_ds.labels, probs):.3f}")
-```
+probe = pl.probes.Logistic().fit(train_features, labels[:n_train])
 
-`Activations.metadata` is an arbitrary runtime dictionary for provenance.
-Storage helpers persist it when it is JSON-serializable.
-
-## Custom Probe Training
-
-Probe `fit()` and `predict()` keep the estimator-style API and accept
-`Activations`. Each probe is also a `torch.nn.Module`: `initialize()`,
-`forward()`, `loss_on_batch()`, `predict_tensor()`, and `parameters()` operate
-on tensors for custom training loops.
-
-```python
-features = train_prepared.data
-labels = torch.tensor(
-    [label.value if hasattr(label, "value") else label for label in train_ds.labels],
-    dtype=torch.float32,
-)
-probe = pl.probes.MLP(hidden_dim=256, seed=0).initialize(features, labels)
-optimizer = probe.configure_optimizer()
-
-for batch_x, batch_y, _ in pl.batching.iter_feature_batches(
-    features, labels, batch_size=2048, shuffle=True
-):
-    optimizer.zero_grad()
-    loss = probe.loss_on_batch(batch_x, batch_y.float())
-    loss.backward()
-    optimizer.step()
-```
-
-For sequence probes, use `pl.batching.iter_sequence_batches(...)` to control
-sample ordering, local padding, and `max_padded_tokens`; pass the padded
-`sequences` and `mask` tensors directly to the probe.
-
-## Optional mirin Collection
-
-```python
-import mirin as mi
-import probelab as pl
-from probelab.collection.mirin import collect_activations
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-model_name = "meta-llama/Llama-3.1-8B-Instruct"
-hf_model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    torch_dtype="auto",
-    device_map="auto",
-)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = mi.Model(hf_model, rename=mi.renames.llm, tokenizer=tokenizer)
-
-dataset = pl.datasets.load("circuit_breakers")
-tokens = pl.tokenize_dataset(dataset, tokenizer, mask=pl.masks.assistant())
-acts = collect_activations(model, tokens, layers=[16])
-probe = pl.probes.Logistic().fit(acts.mean("s"), dataset.labels)
+scores = probe.predict(test_features)
+print("AUROC:", pl.metrics.auroc(labels[n_train:], scores))
+print("Recall@1%FPR:", pl.metrics.recall_at_fpr(labels[n_train:], scores, fpr=0.01))
 ```
 
 ## Development
 
 ```bash
-uv run pytest tests/
-uv run pytest tests/ --cov=probelab --cov-report=html
+make test
+make test-cov
+make test-integration
+make test-gpu
+make test-e2e
 ```
 
 ## Citation
 
 ```bibtex
-@software{probelab2025,
+@software{probelab2026,
   title = {probelab: A library for training probes on LLM activations},
   author = {Alex Serrano},
   url = {https://github.com/serteal/probelab},
   version = {0.1.0},
-  year = {2025},
+  year = {2026},
 }
 ```

@@ -17,7 +17,7 @@ class TestHDF5Storage(unittest.TestCase):
         except ImportError:
             self.skipTest("h5py not installed")
 
-        acts = Activations.from_padded(
+        acts = Activations(
             torch.randn(2, 3, 4),
             detection_mask=torch.tensor([[1, 1, 0], [1, 0, 0]]),
             dims="bsh",
@@ -47,7 +47,7 @@ class TestHDF5Storage(unittest.TestCase):
             [False, True, True, True],
             [True, True, False, True],
         ])
-        acts = Activations.from_padded(
+        acts = Activations(
             data,
             detection_mask=detection_mask,
             attention_mask=torch.ones(3, 4, dtype=torch.bool),
@@ -74,7 +74,7 @@ class TestHDF5Storage(unittest.TestCase):
         except ImportError:
             self.skipTest("h5py not installed")
 
-        acts = Activations.from_tensor(
+        acts = Activations(
             torch.randn(2, 3),
             dims="bh",
             metadata={"bad": object()},
@@ -85,10 +85,33 @@ class TestHDF5Storage(unittest.TestCase):
             with self.assertRaisesRegex(TypeError, "JSON-serializable"):
                 storage.save_hdf5(acts, str(path))
 
+    def test_hdf5_round_trips_dense_features(self):
+        try:
+            import h5py  # noqa: F401
+        except ImportError:
+            self.skipTest("h5py not installed")
+
+        acts = Activations(
+            torch.randn(2, 3),
+            dims="bh",
+            metadata={"model": "demo", "split": "pooled"},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "features.h5"
+            storage.save_hdf5(acts, str(path), dtype="float32")
+            loaded = storage.load_hdf5(str(path))
+
+        self.assertEqual(loaded.dims, "bh")
+        self.assertIsNone(loaded.offsets)
+        self.assertIsNone(loaded.detection_mask)
+        torch.testing.assert_close(loaded.data, acts.data.float())
+        self.assertEqual(loaded.metadata, acts.metadata)
+
 
 class TestMemmapStorage(unittest.TestCase):
     def test_round_trip_memmap_all_layers(self):
-        acts = Activations.from_padded(
+        acts = Activations(
             torch.randn(2, 2, 3, 4),
             detection_mask=torch.ones(2, 3, dtype=torch.bool),
             dims="blsh",
@@ -110,7 +133,7 @@ class TestMemmapStorage(unittest.TestCase):
         self.assertEqual(loaded.metadata, acts.metadata)
 
     def test_round_trip_memmap_single_layer(self):
-        acts = Activations.from_padded(
+        acts = Activations(
             torch.randn(2, 2, 3, 4),
             detection_mask=torch.ones(2, 3, dtype=torch.bool),
             dims="blsh",
@@ -137,7 +160,7 @@ class TestMemmapStorage(unittest.TestCase):
             [True, True, False, False],
             [False, True, True, True],
         ])
-        acts = Activations.from_padded(
+        acts = Activations(
             data,
             detection_mask=detection_mask,
             attention_mask=torch.ones(3, 4, dtype=torch.bool),
@@ -162,7 +185,7 @@ class TestMemmapStorage(unittest.TestCase):
         self.assertEqual(streamed.metadata, expected.metadata)
 
     def test_load_memmap_rejects_unknown_layer(self):
-        acts = Activations.from_padded(
+        acts = Activations(
             torch.randn(2, 2, 3, 4),
             detection_mask=torch.ones(2, 3, dtype=torch.bool),
             dims="blsh",
@@ -176,14 +199,14 @@ class TestMemmapStorage(unittest.TestCase):
                 storage.load_memmap(str(path), layer=99)
 
     def test_save_memmap_requires_sequence_and_layer_axes(self):
-        acts = Activations.from_tensor(torch.randn(2, 3), dims="bh")
+        acts = Activations(torch.randn(2, 3), dims="bh")
 
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(ValueError, "requires dims with 's' and 'l'"):
                 storage.save_memmap(acts, str(Path(tmp) / "acts.mm"))
 
     def test_memmap_rejects_non_json_metadata(self):
-        acts = Activations.from_padded(
+        acts = Activations(
             torch.randn(2, 2, 3, 4),
             detection_mask=torch.ones(2, 3, dtype=torch.bool),
             dims="blsh",

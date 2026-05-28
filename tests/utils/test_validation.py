@@ -12,8 +12,8 @@ class TestCheckActivations:
 
     @pytest.fixture
     def activations_4d(self):
-        """Create 4D activations [batch, layer, seq, hidden] via from_padded."""
-        return Activations.from_padded(
+        """Create 4D activations [batch, layer, seq, hidden]."""
+        return Activations(
             data=torch.randn(4, 2, 10, 32),
             detection_mask=torch.ones(4, 10),
             dims="blsh",
@@ -23,7 +23,7 @@ class TestCheckActivations:
     @pytest.fixture
     def activations_3d(self):
         """Create 3D activations [batch, seq, hidden] (single layer, axis removed)."""
-        acts_4d = Activations.from_padded(
+        acts_4d = Activations(
             data=torch.randn(4, 1, 10, 32),
             detection_mask=torch.ones(4, 10),
             dims="blsh",
@@ -34,7 +34,7 @@ class TestCheckActivations:
     @pytest.fixture
     def activations_no_seq(self):
         """Create activations without SEQ axis."""
-        acts = Activations.from_padded(
+        acts = Activations(
             data=torch.randn(4, 10, 32),
             detection_mask=torch.ones(4, 10),
             dims="bsh",
@@ -115,7 +115,7 @@ class TestCheckActivations:
         """ensure_finite=True fails when NaN present."""
         tensor = torch.randn(4, 2, 10, 32)
         tensor[0, 0, 0, 0] = float("nan")
-        acts = Activations.from_padded(
+        acts = Activations(
             data=tensor, detection_mask=torch.ones(4, 10),
             dims="blsh", layers=(0, 1),
         )
@@ -126,7 +126,7 @@ class TestCheckActivations:
         """ensure_finite=True fails when Inf present."""
         tensor = torch.randn(4, 2, 10, 32)
         tensor[0, 0, 0, 0] = float("inf")
-        acts = Activations.from_padded(
+        acts = Activations(
             data=tensor, detection_mask=torch.ones(4, 10),
             dims="blsh", layers=(0, 1),
         )

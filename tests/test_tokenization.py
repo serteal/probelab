@@ -12,10 +12,13 @@ try:
 except ImportError:
     transformers = None
 
-pytestmark = pytest.mark.skipif(
-    transformers is None,
-    reason="tokenization tests require the optional tokenization dependency",
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        transformers is None,
+        reason="tokenization tests require the optional tokenization dependency",
+    ),
+]
 AutoTokenizer = transformers.AutoTokenizer if transformers else None
 
 from probelab import masks

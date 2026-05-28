@@ -4,7 +4,7 @@ from typing import Any
 
 from datasets import load_dataset
 
-from ..types import Label, Message
+from ..types import Label
 from .base import Dataset
 from .builders import build_from_messages
 from .registry import Topic, _register_dataset

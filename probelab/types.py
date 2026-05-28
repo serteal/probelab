@@ -7,7 +7,7 @@ including Messages, Dialogues, Labels, and related protocols.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Literal
+from typing import Any
 
 
 class Role(str, Enum):
