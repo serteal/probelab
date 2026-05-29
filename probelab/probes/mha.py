@@ -27,6 +27,7 @@ class MHA(BaseProbe):
         patience: int = 5,
         batch_size: int = 32,
         val_split: float = 0.2,
+        eval_interval: int = 1,
         max_padded_tokens: int | None = None,
         *,
         optimizer_fn: Callable | None = None,
@@ -46,13 +47,14 @@ class MHA(BaseProbe):
         self.patience = patience
         self.batch_size = batch_size
         self.val_split = val_split
+        self.eval_interval = eval_interval
         self.max_padded_tokens = max_padded_tokens
         self.down_proj: nn.Linear | None = None
         self.cls_token: nn.Parameter | None = None
         self.encoder: nn.TransformerEncoder | None = None
         self.classifier: nn.Linear | None = None
 
-    def initialize(self, sequences: torch.Tensor, mask: torch.Tensor | None = None, labels: torch.Tensor | None = None):
+    def initialize(self, sequences: torch.Tensor, mask: torch.Tensor | None = None, labels: torch.Tensor | None = None) -> "MHA":
         working_dtype = self._resolve_dtype(sequences.dtype)
         self._training_dtype = working_dtype
         device = torch.device(self.device or sequences.device)
@@ -123,6 +125,7 @@ class MHA(BaseProbe):
             "patience": self.patience,
             "batch_size": self.batch_size,
             "val_split": self.val_split,
+            "eval_interval": self.eval_interval,
             "max_padded_tokens": self.max_padded_tokens,
         })
 

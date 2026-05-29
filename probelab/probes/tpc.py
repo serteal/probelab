@@ -141,6 +141,7 @@ class TPC(BaseProbe):
         return self
 
     def predict_logits(self, X: Activations, **kwargs) -> torch.Tensor:
+        self._check_initialized()
         features, _ = self._feature_data_from_activations(X)
         return self._feature_predict_from_flat(X, self(features))
 

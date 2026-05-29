@@ -1,15 +1,27 @@
-"""probelab: A library for training classifiers on LLM activations."""
+"""probelab: A library for training probes and activation monitors on LLM activations."""
 
-from . import batching, datasets, masks, metrics, pool, probes, storage, tokenization, types, utils
+from . import (
+    batching,
+    collection,
+    datasets,
+    masks,
+    metrics,
+    pool,
+    probes,
+    storage,
+    tokenization,
+    types,
+    utils,
+)
+from ._version import __version__
 from .activations import Activations
 from .datasets import Dataset
 from .tokenization import Tokens, tokenize_dataset, tokenize_dialogues
 
-__version__ = "0.1.0"
-
 __all__ = [
     "Activations",
     "batching",
+    "collection",
     "Dataset",
     "Tokens",
     "tokenize_dataset",
@@ -23,4 +35,5 @@ __all__ = [
     "tokenization",
     "types",
     "utils",
+    "__version__",
 ]

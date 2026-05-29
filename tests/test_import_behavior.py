@@ -25,6 +25,9 @@ def test_import_probelab_exposes_top_level_api():
         print(json.dumps({
             "has_activations": hasattr(probelab, "Activations"),
             "has_collect": hasattr(probelab, "collect_activations"),
+            "has_collection": hasattr(probelab, "collection"),
+            "has_collection_collect": hasattr(probelab.collection, "collect_activations"),
+            "has_collection_stream": hasattr(probelab.collection, "stream_activations"),
             "has_tokenize_dataset": hasattr(probelab, "tokenize_dataset"),
             "has_datasets": hasattr(probelab, "datasets"),
             "has_metrics": hasattr(probelab, "metrics"),
@@ -36,7 +39,12 @@ def test_import_probelab_exposes_top_level_api():
     """))
 
     assert result["has_activations"] is True
+    # collect_activations is reachable via the subpackage, not the top-level
+    # namespace, so `import probelab` never eagerly imports the mirin backend.
     assert result["has_collect"] is False
+    assert result["has_collection"] is True
+    assert result["has_collection_collect"] is True
+    assert result["has_collection_stream"] is True
     assert result["has_tokenize_dataset"] is True
     assert result["has_datasets"] is True
     assert result["has_metrics"] is True

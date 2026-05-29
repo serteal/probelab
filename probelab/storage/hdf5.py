@@ -8,6 +8,7 @@ import json
 import numpy as np
 import torch
 
+from .._version import __version__
 from ..activations import Activations
 
 _CAST_MAP = {
@@ -78,7 +79,7 @@ def save(
         handle.attrs["dims"] = activations.dims
         handle.attrs["dtype"] = dtype_str
         handle.attrs["metadata"] = _metadata_json(activations.metadata)
-        handle.attrs["probelab_version"] = "0.1.0"
+        handle.attrs["probelab_version"] = __version__
 
         if activations.layers is not None:
             handle.create_dataset("layers", data=list(activations.layers))
