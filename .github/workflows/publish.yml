@@ -1,8 +1,17 @@
 name: Publish
 
+# Tag-driven release. Versioning is derived from the git tag by hatch-vcs, so
+# the tag is the single source of truth. To release:
+#
+#   git tag v1.2.3 && git push origin v1.2.3
+#
+# The pushed ``v*`` tag builds the dists, creates a GitHub Release, and publishes
+# to PyPI via Trusted Publishing.
+
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
 
 permissions:
   contents: read
@@ -15,6 +24,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # hatch-vcs needs the tag + history to derive the version
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -32,12 +43,52 @@ jobs:
       - name: Check distributions
         run: uvx twine check dist/*
 
+      - name: Verify tag matches built version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          built=$(ls dist/*.tar.gz | sed -E 's#.*/probelab-(.+)\.tar\.gz#\1#')
+          echo "tag=$tag built=$built"
+          if [ "$tag" != "$built" ]; then
+            echo "::error::Tag v$tag does not match built version $built"
+            exit 1
+          fi
+
       - name: Upload distributions
         uses: actions/upload-artifact@v7
         with:
           name: python-package-distributions
           path: dist/
           if-no-files-found: error
+
+  github-release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the GitHub Release for the tag
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Create release from the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          new="${GITHUB_REF_NAME#v}"
+          if awk -v ver="$new" '
+            $0 ~ "^## " ver "([ ).-]|$)" { flag=1; next }
+            flag && /^## / { exit }
+            flag { print }
+          ' CHANGELOG.md | grep -q '[^[:space:]]'; then
+            awk -v ver="$new" '
+              $0 ~ "^## " ver "([ ).-]|$)" { flag=1; next }
+              flag && /^## / { exit }
+              flag { print }
+            ' CHANGELOG.md > notes.md
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file notes.md
+          else
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes
+          fi
 
   publish-to-pypi:
     name: Publish to PyPI

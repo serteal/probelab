@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
@@ -89,7 +89,7 @@ markers = [
 ]
 
 [tool.hatch.version]
-path = "probelab/_version.py"
+source = "vcs"
 
 [tool.hatch.build.targets.sdist]
 exclude = [

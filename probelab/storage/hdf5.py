@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 import json
 
 import numpy as np
 import torch
 
-from .._version import __version__
 from ..activations import Activations
 
 _CAST_MAP = {
@@ -16,6 +16,13 @@ _CAST_MAP = {
     "float16": torch.float16,
     "bfloat16": torch.bfloat16,
 }
+
+
+def _probelab_version() -> str:
+    try:
+        return _pkg_version("probelab")
+    except PackageNotFoundError:  # pragma: no cover - source tree without metadata
+        return "0.0.0+unknown"
 
 
 def _import_h5py():
@@ -79,7 +86,7 @@ def save(
         handle.attrs["dims"] = activations.dims
         handle.attrs["dtype"] = dtype_str
         handle.attrs["metadata"] = _metadata_json(activations.metadata)
-        handle.attrs["probelab_version"] = __version__
+        handle.attrs["probelab_version"] = _probelab_version()
 
         if activations.layers is not None:
             handle.create_dataset("layers", data=list(activations.layers))

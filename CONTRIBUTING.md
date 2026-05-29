@@ -54,36 +54,34 @@ access for the `integration` tests.
 
 ## Release process
 
-Releases are automated from a version bump. PyPI publishing uses Trusted
-Publishing (no API tokens).
+Releases are **tag-driven**. The version is derived from the git tag at build
+time by [`hatch-vcs`](https://github.com/ofek/hatch-vcs) — there is no version
+file to edit, and the tag is the single source of truth. PyPI publishing uses
+Trusted Publishing (no API tokens).
 
-To cut a release, open a normal PR that:
+To cut a release:
 
-1. Bumps `__version__` in `probelab/_version.py` (the single source of truth —
-   the build, `probelab.__version__`, and saved-artifact version tags all read
-   it). The new version must be a valid PEP 440 version, strictly greater than
-   the current one.
-2. Adds a matching section to `CHANGELOG.md` with a `## <version>` heading
-   (e.g. `## 0.1.1 - 2026-06-01`).
+1. Add a section to `CHANGELOG.md` with a `## <version>` heading
+   (e.g. `## 0.1.1 - 2026-06-01`) and merge it to `main`.
+2. Tag the release commit and push the tag:
 
-The PR-time **Release check** workflow (`.github/workflows/release-check.yml`)
-enforces this: if the PR changes `probelab/_version.py`, the bump must be valid
-(PEP 440, strictly increasing, tag not already used) and `CHANGELOG.md` must
-carry the matching section, or the check fails and blocks merge. PRs that do not
-touch the version pass untouched.
+   ```bash
+   git tag v0.1.1
+   git push origin v0.1.1
+   ```
 
-When the PR merges to `main` and CI passes, the **Release** workflow
-(`.github/workflows/release.yml`) automatically:
+Pushing a `v*` tag triggers `publish.yml`, which:
 
-- re-validates the version bump,
-- creates the `v<version>` tag and a GitHub Release with the changelog notes.
+- builds the dists (the version is read from the tag),
+- verifies the tag matches the built version,
+- creates a GitHub Release (notes from the matching `CHANGELOG.md` section, or
+  auto-generated if none is found),
+- uploads to PyPI.
 
-Publishing the GitHub Release triggers `publish.yml`, which builds and uploads
-to PyPI.
+`probelab.__version__` is read at runtime from the installed package metadata
+via `importlib.metadata`.
 
-Merging a PR that does **not** bump `probelab/_version.py` releases nothing — it
-is just a normal change. Run `make check` locally before opening any PR.
-
-PyPI versions are immutable. If a published release has a bug, bump to a new
-patch version rather than trying to replace the existing one.
+Run `make check` locally before tagging. PyPI versions are immutable: if a
+published release has a bug, tag a new patch version rather than trying to
+replace the existing one.
 

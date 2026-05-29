@@ -1,5 +1,7 @@
 """probelab: A library for training probes and activation monitors on LLM activations."""
 
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
 from . import (
     batching,
     collection,
@@ -13,10 +15,16 @@ from . import (
     types,
     utils,
 )
-from ._version import __version__
 from .activations import Activations
 from .datasets import Dataset
 from .tokenization import Tokens, tokenize_dataset, tokenize_dialogues
+
+try:
+    # Version is derived from the git tag at build time (hatch-vcs) and read
+    # from the installed package metadata at runtime.
+    __version__ = _pkg_version("probelab")
+except PackageNotFoundError:  # pragma: no cover - source tree without metadata
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     "Activations",
