@@ -219,6 +219,71 @@ class TestMemmapStorage(unittest.TestCase):
             with self.assertRaisesRegex(TypeError, "JSON-serializable"):
                 storage.save_memmap(acts, str(path))
 
+    def test_load_memmap_layers_arg_and_cast(self):
+        acts = Activations(
+            torch.randn(2, 2, 3, 4),
+            detection_mask=torch.ones(2, 3, dtype=torch.bool),
+            dims="blsh",
+            layers=(4, 8),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "acts.mm"
+            storage.save_memmap(acts, str(path))
+            loaded = storage.load_memmap(str(path), layers=8, cast="float32")
+
+        self.assertEqual(loaded.dims, "bsh")
+        self.assertEqual(loaded.data.dtype, torch.float32)
+
+    def test_load_memmap_layer_alias_is_deprecated(self):
+        acts = Activations(
+            torch.randn(2, 2, 3, 4),
+            detection_mask=torch.ones(2, 3, dtype=torch.bool),
+            dims="blsh",
+            layers=(4, 8),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "acts.mm"
+            storage.save_memmap(acts, str(path))
+            with self.assertWarns(DeprecationWarning):
+                storage.load_memmap(str(path), layer=8)
+
+
+class TestStorageDispatcher(unittest.TestCase):
+    def test_auto_format_memmap_round_trip(self):
+        acts = Activations(
+            torch.randn(2, 2, 3, 4),
+            detection_mask=torch.ones(2, 3, dtype=torch.bool),
+            dims="blsh",
+            layers=(4, 8),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "acts"  # no suffix -> memmap
+            storage.save(acts, str(path))
+            self.assertTrue(storage.has_memmap(str(path)))
+            loaded = storage.load(str(path))
+        self.assertEqual(loaded.dims, "blsh")
+        self.assertEqual(loaded.layers, (4, 8))
+
+    def test_auto_format_hdf5_round_trip(self):
+        try:
+            import h5py  # noqa: F401
+        except ImportError:
+            self.skipTest("h5py not installed")
+
+        acts = Activations(torch.randn(2, 3), dims="bh")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "acts.h5"  # suffix -> hdf5
+            storage.save(acts, str(path), dtype="float32")
+            loaded = storage.load(str(path))
+        self.assertEqual(loaded.dims, "bh")
+        torch.testing.assert_close(loaded.data, acts.data.float())
+
+    def test_invalid_format_raises(self):
+        acts = Activations(torch.randn(2, 3), dims="bh")
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "format must be"):
+                storage.save(acts, str(Path(tmp) / "x.h5"), format="zarr")
+
 
 if __name__ == "__main__":
     unittest.main()
