@@ -54,21 +54,33 @@ access for the `integration` tests.
 
 ## Release process
 
-PyPI publishing runs from GitHub Releases using Trusted Publishing.
+Releases are automated from a version bump. PyPI publishing uses Trusted
+Publishing (no API tokens).
 
-1. Bump the version in `probelab/_version.py` (the single source of truth — the
-   build, `probelab.__version__`, and saved-artifact version tags all read it).
-2. Add the release notes to `CHANGELOG.md`.
-3. Run `make check`.
-4. Commit, push, and wait for CI to pass on `main`.
-5. Create the GitHub release:
+To cut a release, open a normal PR that:
 
-   ```bash
-   gh release create v0.1.1 \
-     --target main \
-     --title "v0.1.1" \
-     --notes-file CHANGELOG.md
-   ```
+1. Bumps `__version__` in `probelab/_version.py` (the single source of truth —
+   the build, `probelab.__version__`, and saved-artifact version tags all read
+   it). The new version must be a valid PEP 440 version, strictly greater than
+   the current one.
+2. Adds a matching section to `CHANGELOG.md` with a `## <version>` heading
+   (e.g. `## 0.1.1 - 2026-06-01`).
+3. Is labelled **`release`**.
 
-PyPI versions are immutable. If a published release has a bug, publish a new
-patch version instead of trying to replace the existing one.
+When that PR merges to `main` and CI passes, the **Release** workflow
+(`.github/workflows/release.yml`) automatically:
+
+- confirms the merged PR had the `release` label,
+- validates the version bump (valid, strictly increasing, tag does not already
+  exist) and that `CHANGELOG.md` has notes for it,
+- creates the `v<version>` tag and a GitHub Release with those notes.
+
+Publishing the GitHub Release triggers `publish.yml`, which builds and uploads
+to PyPI.
+
+Merging a PR **without** the `release` label never publishes — it is just a
+normal change. Run `make check` locally before opening any PR.
+
+PyPI versions are immutable. If a published release has a bug, bump to a new
+patch version rather than trying to replace the existing one.
+
