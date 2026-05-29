@@ -5,8 +5,6 @@ import re
 import unittest
 from types import SimpleNamespace
 
-import pytest
-
 from probelab.chat_templates import (
     TEMPLATES,
     _QWEN_PREFIX,
