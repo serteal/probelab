@@ -748,15 +748,29 @@ class Activations:
     # Device / dtype
     # -------------------------------------------------------------------------
 
-    def to(self, device) -> "Activations":
+    def to(self, device=None, dtype: torch.dtype | None = None) -> "Activations":
+        """Move/cast to *device* and/or *dtype*.
+
+        ``offsets`` and ``detection_mask`` only follow the device move (they stay
+        int64/bool); *dtype* applies to the activation ``data`` only.
+        """
+        data = self.data
+        if device is not None:
+            data = data.to(device)
+        if dtype is not None:
+            data = data.to(dtype)
         return Activations(
-            data=self.data.to(device),
+            data=data,
             dims=self.dims,
-            offsets=self.offsets.to(device) if self.offsets is not None else None,
+            offsets=(
+                self.offsets.to(device)
+                if (self.offsets is not None and device is not None)
+                else self.offsets
+            ),
             detection_mask=(
                 self.detection_mask.to(device)
-                if self.detection_mask is not None
-                else None
+                if (self.detection_mask is not None and device is not None)
+                else self.detection_mask
             ),
             layers=self.layers,
             metadata=self.metadata,

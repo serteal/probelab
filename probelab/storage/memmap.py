@@ -190,7 +190,7 @@ def load(
 def stream(
     dir_path: str,
     *,
-    layers: int | None = None,
+    layers: int | list[int] | None = None,
     chunk_tokens: int = 500_000,
     cast: str | None = None,
 ) -> Generator[tuple[Activations, list[int]], None, None]:
@@ -198,11 +198,13 @@ def stream(
 
     Args:
         dir_path: Directory written by :func:`save`.
-        layers: Single layer id to stream, or ``None`` for all layers.
+        layers: Layer id(s) to stream. An ``int`` yields single-layer ``"bsh"``
+            chunks; a list yields ``"blsh"``; ``None`` streams all layers.
         chunk_tokens: Approximate token budget per yielded chunk.
         cast: Optional dtype name (``"float32"``/``"float16"``/``"bfloat16"``).
     """
     target_dtype = _CAST_MAP[cast] if cast else None
+    single_layer = isinstance(layers, int)
     path = Path(dir_path)
     with open(path / "meta.json") as handle:
         meta = json.load(handle)
@@ -227,7 +229,15 @@ def stream(
         shape=(total_tokens,),
     )
 
-    load_layers = [layers] if layers is not None else all_layers
+    if layers is None:
+        load_layers = list(all_layers)
+    elif single_layer:
+        load_layers = [layers]
+    else:
+        load_layers = list(layers)
+    for layer_id in load_layers:
+        if layer_id not in all_layers:
+            raise ValueError(f"Layer {layer_id} not in stored layers {all_layers}")
     layer_mms = {
         layer_id: np.memmap(
             path / f"layer_{layer_id}.bin",
@@ -256,9 +266,9 @@ def stream(
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", "The given NumPy array is not writable")
-            if layers is not None:
+            if single_layer:
                 chunk_data = torch.from_numpy(
-                    layer_mms[layers][tok_start:tok_end]
+                    layer_mms[load_layers[0]][tok_start:tok_end]
                 ).view(torch.bfloat16)
                 dims = "bsh"
                 stored_layers = None
@@ -267,11 +277,11 @@ def stream(
                     torch.from_numpy(layer_mms[layer_id][tok_start:tok_end]).view(
                         torch.bfloat16
                     )
-                    for layer_id in all_layers
+                    for layer_id in load_layers
                 ]
                 chunk_data = torch.stack(layer_chunks, dim=1)
                 dims = "blsh"
-                stored_layers = tuple(all_layers)
+                stored_layers = tuple(load_layers)
 
         if target_dtype is not None:
             chunk_data = chunk_data.to(target_dtype)
@@ -292,10 +302,18 @@ def stream(
 
 
 def has_memmap(dir_path: str) -> bool:
-    """Return whether a directory contains probelab memmap activations."""
+    """Return whether a directory contains probelab memmap activations.
+
+    Returns ``False`` (rather than raising) for a missing, unreadable, or
+    malformed ``meta.json`` so callers like the storage ``format="auto"``
+    dispatcher can safely probe arbitrary paths.
+    """
     meta_path = Path(dir_path) / "meta.json"
     if not meta_path.exists():
         return False
-    with open(meta_path) as handle:
-        meta = json.load(handle)
-    return meta.get("format") == "memmap_v1"
+    try:
+        with open(meta_path) as handle:
+            meta = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(meta, dict) and meta.get("format") == "memmap_v1"

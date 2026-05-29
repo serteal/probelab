@@ -4,9 +4,9 @@
 dialogues and return :class:`~probelab.activations.Activations` (or stream
 backend-neutral :class:`ActivationChunk` objects).
 
-The functions are reachable as ``probelab.collection.collect_activations`` and
-import lazily: the optional ``mirin`` backend is only imported when a function
-is actually called, so ``import probelab`` stays light and dependency-free.
+The functions are reachable as ``probelab.collection.collect_activations``. The
+optional ``mirin`` backend is imported lazily — only when a collection function
+is actually called — so importing probelab never pulls in mirin (or transformers).
 
 Example::
 

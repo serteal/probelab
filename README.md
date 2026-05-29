@@ -93,7 +93,6 @@ make check   # lint + test + build
   title = {probelab: A library for training probes on LLM activations},
   author = {Alex Serrano},
   url = {https://github.com/serteal/probelab},
-  version = {0.1.0},
   year = {2026},
 }
 ```

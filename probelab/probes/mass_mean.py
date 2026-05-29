@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
 
 import torch
 
@@ -22,8 +21,6 @@ class MassMean(BaseProbe):
         seed: int | None = None,
         device: str | None = None,
         cast: str | None = None,
-        optimizer_fn: Callable | None = None,
-        scheduler_fn: Callable | None = None,
     ):
         super().__init__(device=device, seed=seed, cast=cast)
         self.normalize = normalize
@@ -77,7 +74,10 @@ class MassMean(BaseProbe):
         if self.device is None:
             self.device = str(X.data.device)
         if features.shape[0] == 0:
-            return self
+            raise ValueError(
+                f"{self.__class__.__name__}.fit received no training features "
+                "(0 samples/tokens after masking). Check the activations and mask."
+            )
         if features.shape[0] < 2:
             raise ValueError("MassMean requires at least two training samples or tokens.")
         features = features.to(dtype=self._resolve_dtype(features.dtype))
@@ -87,7 +87,8 @@ class MassMean(BaseProbe):
     def predict_logits(self, X: Activations, **kwargs) -> torch.Tensor:
         self._check_initialized()
         features, _ = self._feature_data_from_activations(X)
-        return self._feature_predict_from_flat(X, self(features))
+        logits = self._feature_logits_batched(features, kwargs.get("batch_size"))
+        return self._feature_predict_from_flat(X, logits)
 
     def predict(self, X: Activations, **kwargs) -> torch.Tensor:
         with torch.no_grad():

@@ -72,9 +72,6 @@ dev = [
 ignore = ["F821"]  # forward annotation errors
 per-file-ignores = { "tests/test_mirin_integration.py" = ["E402"], "tests/test_seed_e2e.py" = ["E402"], "tests/test_tokenization.py" = ["E402"] }
 
-[tool.ty.rules]
-invalid-syntax-in-forward-annotation = "ignore"
-
 [tool.pytest.ini_options]
 addopts = ["-m", "not e2e"]
 testpaths = ["tests"]

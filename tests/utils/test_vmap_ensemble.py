@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 
-from probelab.utils.vmap_ensemble import VmapEnsemble, gated_bipolar_regularization
+from probelab.utils._vmap_ensemble import VmapEnsemble, gated_bipolar_regularization
 
 
 class TinyLinear(nn.Module):

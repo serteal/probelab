@@ -106,7 +106,10 @@ class EEMLP(BaseProbe):
         if self.device is None:
             self.device = str(X.data.device)
         if features.shape[0] == 0:
-            return self
+            raise ValueError(
+                f"{self.__class__.__name__}.fit received no training features "
+                "(0 samples/tokens after masking). Check the activations and mask."
+            )
         features = features.to(dtype=self._resolve_dtype(features.dtype))
         labels = labels.to(dtype=features.dtype)
         self.initialize(features, labels)
@@ -115,7 +118,8 @@ class EEMLP(BaseProbe):
     def predict_logits(self, X: Activations, **kwargs) -> torch.Tensor:
         self._check_initialized()
         features, _ = self._feature_data_from_activations(X)
-        return self._feature_predict_from_flat(X, self(features))
+        logits = self._feature_logits_batched(features, kwargs.get("batch_size"))
+        return self._feature_predict_from_flat(X, logits)
 
     def predict(self, X: Activations, **kwargs) -> torch.Tensor:
         with torch.no_grad():

@@ -1,6 +1,9 @@
-"""Utilities for probelab."""
+"""Internal utilities for probelab.
+
+These are implementation helpers, not part of the public API. Import paths and
+signatures here may change without notice.
+"""
 
 from .validation import check_activations
-from .vmap_ensemble import VmapEnsemble, gated_bipolar_regularization
 
-__all__ = ["check_activations", "VmapEnsemble", "gated_bipolar_regularization"]
+__all__ = ["check_activations"]
