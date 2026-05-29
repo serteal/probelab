@@ -74,11 +74,7 @@ Pass `pool=None` to `collect_activations` to keep token-level activations, then
 reduce them yourself with `acts.mean("s")`, `acts.last()`, or train a
 sequence probe (`pl.probes.Attention`, `pl.probes.MHA`, ...) directly.
 
-## Documentation
-
-In-depth guides live in [`docs/`](docs/): the activation data model, the mask
-cookbook, the probe gallery, collecting activations, and storage. Runnable
-scripts are in [`examples/`](examples/).
+Runnable scripts are in [`examples/`](examples/).
 
 ## Development
 

@@ -2,7 +2,6 @@
 
 import tempfile
 import unittest
-import warnings
 from pathlib import Path
 
 import torch
@@ -145,7 +144,7 @@ class TestMemmapStorage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "acts.mm"
             storage.save_memmap(acts, str(path))
-            loaded = storage.load_memmap(str(path), layer=8)
+            loaded = storage.load_memmap(str(path), layers=8)
 
         self.assertEqual(loaded.dims, "bsh")
         torch.testing.assert_close(
@@ -173,7 +172,7 @@ class TestMemmapStorage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "acts.mm"
             storage.save_memmap(acts, str(path))
-            chunks = list(storage.stream_memmap(str(path), layer=8, chunk_tokens=5))
+            chunks = list(storage.stream_memmap(str(path), layers=8, chunk_tokens=5))
 
         streamed = Activations.cat([chunk for chunk, _ in chunks])
         expected = acts.select("l", 8)
@@ -197,7 +196,7 @@ class TestMemmapStorage(unittest.TestCase):
             path = Path(tmp) / "acts.mm"
             storage.save_memmap(acts, str(path))
             with self.assertRaisesRegex(ValueError, "Layer 99 not in stored layers"):
-                storage.load_memmap(str(path), layer=99)
+                storage.load_memmap(str(path), layers=99)
 
     def test_save_memmap_requires_sequence_and_layer_axes(self):
         acts = Activations(torch.randn(2, 3), dims="bh")
@@ -234,26 +233,6 @@ class TestMemmapStorage(unittest.TestCase):
 
         self.assertEqual(loaded.dims, "bsh")
         self.assertEqual(loaded.data.dtype, torch.float32)
-
-    def test_load_memmap_layer_alias_is_deprecated(self):
-        acts = Activations(
-            torch.randn(2, 2, 3, 4),
-            detection_mask=torch.ones(2, 3, dtype=torch.bool),
-            dims="blsh",
-            layers=(4, 8),
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "acts.mm"
-            storage.save_memmap(acts, str(path))
-            # Use record=True + simplefilter("always") rather than assertWarns:
-            # the deprecation fires once per call-site and other tests in the
-            # session may have already populated the "shown once" registry.
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                storage.load_memmap(str(path), layer=8)
-            self.assertTrue(
-                any(issubclass(w.category, DeprecationWarning) for w in caught)
-            )
 
 
 class TestStorageDispatcher(unittest.TestCase):
