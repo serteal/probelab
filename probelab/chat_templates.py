@@ -61,8 +61,31 @@ TEMPLATES: dict[str, dict] = {
 }
 
 
+def _detect_from_chat_template(tokenizer: "PreTrainedTokenizerBase") -> str:
+    """Detect a template family from the tokenizer's chat_template string.
+
+    This is a more robust secondary signal than the model name: a renamed or
+    fine-tuned checkpoint still carries the original chat-template markup.
+    """
+    chat_template = getattr(tokenizer, "chat_template", None)
+    if not isinstance(chat_template, str):
+        return "unknown"
+    if "<|start_header_id|>" in chat_template:
+        return "llama"
+    if "<start_of_turn>" in chat_template:
+        return "gemma"
+    if "<|im_start|>" in chat_template:
+        # qwen3 adds the empty <think> block; treat plain ChatML as qwen.
+        return "qwen3" if "enable_thinking" in chat_template or "<think>" in chat_template else "qwen"
+    return "unknown"
+
+
 def detect_template(tokenizer: "PreTrainedTokenizerBase") -> str:
     """Detect template name from tokenizer.
+
+    First matches on the model name (``name_or_path``); if that is
+    inconclusive, falls back to inspecting the ``chat_template`` markup so that
+    renamed or fine-tuned checkpoints are still recognised.
 
     Args:
         tokenizer: HuggingFace tokenizer
@@ -82,18 +105,29 @@ def detect_template(tokenizer: "PreTrainedTokenizerBase") -> str:
     if "qwen" in name_lower:
         return "qwen"
 
-    return "unknown"
+    return _detect_from_chat_template(tokenizer)
 
 
-def get_template(tokenizer: "PreTrainedTokenizerBase") -> dict:
+def get_template(
+    tokenizer: "PreTrainedTokenizerBase", template: str | None = None
+) -> dict:
     """Get template configuration for a tokenizer.
 
     Args:
         tokenizer: HuggingFace tokenizer
+        template: Optional explicit template name to force (one of
+            ``TEMPLATES``). Overrides auto-detection.
 
     Returns:
         Dict with prefix_pattern, fold_system, token_padding
     """
+    if template is not None:
+        if template not in TEMPLATES:
+            raise ValueError(
+                f"Unknown template {template!r}. Available: {sorted(TEMPLATES)}"
+            )
+        return TEMPLATES[template]
+
     name = detect_template(tokenizer)
 
     if name in TEMPLATES:

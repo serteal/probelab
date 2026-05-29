@@ -27,10 +27,10 @@ from probelab.types import Message
 
 
 def _load_tokenizer():
-    """Load a small fast tokenizer for testing."""
-    tok = AutoTokenizer.from_pretrained("gpt2")
-    tok.pad_token = tok.eos_token
-    return tok
+    """Load a small fast tokenizer for testing, skipping if unavailable."""
+    from helpers import load_tokenizer_or_skip
+
+    return load_tokenizer_or_skip("gpt2")
 
 
 class TestBuildTokenMetadataRoles(unittest.TestCase):

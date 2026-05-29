@@ -45,35 +45,50 @@ print("AUROC:", pl.metrics.auroc(labels[n_train:], scores))
 print("Recall@1%FPR:", pl.metrics.recall_at_fpr(labels[n_train:], scores, fpr=0.01))
 ```
 
+## Collecting activations
+
+In practice you collect activations from a real model. The pipeline is:
+*dataset → tokenize (with a detection mask) → collect → probe*. The collection
+adapter is reachable as `probelab.collection` and imports its backend lazily:
+
+```python
+import probelab as pl
+from probelab import collection
+
+# 1. Load (or build) a dataset of dialogues + labels.
+dataset = pl.datasets.load("circuit_breakers")
+train, test = dataset.split(0.8, stratified=True)
+
+# 2. Tokenize, choosing which tokens to score with a mask.
+tokens = pl.tokenize_dataset(train, tokenizer, mask=pl.masks.assistant())
+
+# 3. Collect pooled activations for one or more layers.
+#    (requires `probelab[collection]` and the mirin backend)
+acts = collection.collect_activations(model, tokens, layers=[12], pool="mean")
+
+# 4. Train and evaluate a probe — same code as the synthetic example above.
+probe = pl.probes.Logistic().fit(acts, train.labels)
+```
+
+Pass `pool=None` to `collect_activations` to keep token-level activations, then
+reduce them yourself with `acts.mean("s")`, `acts.last()`, or train a
+sequence probe (`pl.probes.Attention`, `pl.probes.MHA`, ...) directly.
+
+## Documentation
+
+In-depth guides live in [`docs/`](docs/): the activation data model, the mask
+cookbook, the probe gallery, collecting activations, and storage. Runnable
+scripts are in [`examples/`](examples/).
+
 ## Development
 
-```bash
-make test
-make test-cov
-make test-integration
-make test-gpu
-make test-e2e
-```
-
-### Release
-
-PyPI publishing runs from GitHub Releases using Trusted Publishing.
-
-1. Update `version` in `pyproject.toml`.
-2. Add the release notes to `CHANGELOG.md`.
-3. Run `make check`.
-4. Commit, push, and wait for CI to pass on `main`.
-5. Create the GitHub release:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow, test
+markers, and the release process.
 
 ```bash
-gh release create v0.1.1 \
-  --target main \
-  --title "v0.1.1" \
-  --notes-file CHANGELOG.md
+uv sync --all-extras --dev
+make check   # lint + test + build
 ```
-
-PyPI versions are immutable. If a published release has a bug, publish a new
-patch version instead of trying to replace the existing one.
 
 ## Citation
 

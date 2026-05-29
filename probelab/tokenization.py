@@ -379,11 +379,16 @@ def build_token_metadata(
     formatted_dialogues: Sequence[str],
     tokenizer: "PreTrainedTokenizerBase",
     tokenizer_out: dict[str, torch.Tensor],
+    template: str | None = None,
 ) -> TokenMetadata:
     """Build metadata for efficient mask evaluation.
 
     This function creates metadata tensors that map tokens to messages and roles,
     enabling fast vectorized mask evaluation.
+
+    Args:
+        template: Optional explicit chat-template name to force instead of
+            auto-detecting it from the tokenizer.
     """
     batch_size, seq_len = tokenizer_out["input_ids"].shape
     device = tokenizer_out["input_ids"].device
@@ -404,11 +409,11 @@ def build_token_metadata(
     if hasattr(tokenizer, "bos_token_id") and tokenizer.bos_token_id is not None:
         bos_token_ids.add(tokenizer.bos_token_id)
 
-    template_name = detect_template(tokenizer)
-    template = get_template(tokenizer)
-    prefix_pattern = template["prefix_pattern"]
-    pad_left, pad_right = template["token_padding"]
-    fold_system = template["fold_system"]
+    template_name = template or detect_template(tokenizer)
+    template_cfg = get_template(tokenizer, template)
+    prefix_pattern = template_cfg["prefix_pattern"]
+    pad_left, pad_right = template_cfg["token_padding"]
+    fold_system = template_cfg["fold_system"]
 
     # Use offset_mapping for fast vectorised char->token lookup when available.
     offset_mapping: torch.Tensor | None = None
@@ -422,6 +427,8 @@ def build_token_metadata(
             except (ValueError, TypeError):
                 pass  # fall back to char_to_token
 
+    total_messages = 0
+    matched_messages = 0
     for batch_idx, dialogue in enumerate(dialogues):
         char_idx = 0
         formatted_text = formatted_dialogues[batch_idx]
@@ -432,6 +439,7 @@ def build_token_metadata(
             if fold_system and message.role == "system":
                 # The content will be part of the user message in the formatted text
                 continue
+            total_messages += 1
 
             # Find the start of the message content
             match = re.match(prefix_pattern, formatted_text[char_idx:])
@@ -460,6 +468,7 @@ def build_token_metadata(
                     )
 
             if start_tok_idx is not None:
+                matched_messages += 1
                 if end_tok_inclusive is None:
                     # char_to_token can return ``None`` when the message is empty or when
                     # we're at the very end of the decoded sequence. Fall back to the
@@ -474,6 +483,16 @@ def build_token_metadata(
                 message_boundaries[batch_idx, start_tok_idx:exclusive_end] = msg_idx
 
             char_idx = end_char_idx
+
+    if total_messages > 0 and matched_messages == 0:
+        logger.warning(
+            "Chat-template role detection matched 0 of %d messages "
+            "(template=%r). Role/message masks (assistant(), user(), ...) will "
+            "select nothing. Pass template= explicitly to tokenize_dataset/"
+            "tokenize_dialogues, or verify the tokenizer's chat_template.",
+            total_messages,
+            template_name,
+        )
 
     # --- Padding expansion (vectorised via max-pool) ---
     if pad_left > 0 or pad_right > 0:
@@ -559,6 +578,7 @@ def tokenize_dialogues(
     mask: Mask,
     device: torch.device | str = "cpu",
     add_generation_prompt: bool = False,
+    template: str | None = None,
     template_kwargs: dict[str, Any] | None = None,
     chunk_size: int = 1024,
     **tokenize_kwargs: Any,
@@ -575,6 +595,10 @@ def tokenize_dialogues(
             Use ``masks.all()`` to detect all non-padding tokens.
         device: Device to place tensors on.
         add_generation_prompt: Whether to append the model's generation prompt.
+        template: Optional explicit chat-template name (``"llama"``, ``"gemma"``,
+            ``"qwen"``, ``"qwen3"``) to force instead of auto-detecting it from
+            the tokenizer. Use this when detection fails for a renamed or
+            fine-tuned checkpoint.
         template_kwargs: Extra keyword arguments forwarded to
             ``tokenizer.apply_chat_template()`` (e.g. ``{"enable_thinking": True}``
             for Qwen3).
@@ -584,11 +608,14 @@ def tokenize_dialogues(
     Returns:
         Tokens object with flat input_ids, offsets, and detection_mask.
     """
+    # Padding is required to batch-tokenize; set a pad token on the caller's
+    # tokenizer when it lacks one (mutates the tokenizer in place, matching the
+    # common HF convention of reusing the EOS token for padding).
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # Convert dialogues to format expected by tokenizer
-    fold_system = get_template(tokenizer)["fold_system"]
+    fold_system = get_template(tokenizer, template)["fold_system"]
     dialogue_dicts = [
         preprocess_dialogue(dialogue, fold_system) for dialogue in dialogues
     ]
@@ -639,7 +666,7 @@ def tokenize_dialogues(
 
         # Build metadata for mask evaluation (operates on chunk-sized padded tensors)
         metadata = build_token_metadata(
-            chunk_processed, chunk_formatted, tokenizer, token_dict
+            chunk_processed, chunk_formatted, tokenizer, token_dict, template=template
         )
 
         # Evaluate mask
@@ -691,6 +718,7 @@ def tokenize_dataset(
     tokenizer: "PreTrainedTokenizerBase",
     mask: Mask,
     device: torch.device | str = "cpu",
+    template: str | None = None,
     template_kwargs: dict[str, Any] | None = None,
     **tokenize_kwargs: Any,
 ) -> Tokens:
@@ -702,6 +730,8 @@ def tokenize_dataset(
         mask: Mask function determining which tokens to detect. Required.
             Use ``masks.all()`` to detect all non-padding tokens.
         device: Device to place tensors on.
+        template: Optional explicit chat-template name to force instead of
+            auto-detecting it from the tokenizer.
         template_kwargs: Extra keyword arguments forwarded to
             ``tokenizer.apply_chat_template()`` (e.g. ``{"enable_thinking": True}``
             for Qwen3).
@@ -715,6 +745,7 @@ def tokenize_dataset(
         dialogues=dataset.dialogues,
         mask=mask,
         device=device,
+        template=template,
         template_kwargs=template_kwargs,
         **tokenize_kwargs,
     )
