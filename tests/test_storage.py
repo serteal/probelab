@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 import torch
@@ -244,8 +245,15 @@ class TestMemmapStorage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "acts.mm"
             storage.save_memmap(acts, str(path))
-            with self.assertWarns(DeprecationWarning):
+            # Use record=True + simplefilter("always") rather than assertWarns:
+            # the deprecation fires once per call-site and other tests in the
+            # session may have already populated the "shown once" registry.
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
                 storage.load_memmap(str(path), layer=8)
+            self.assertTrue(
+                any(issubclass(w.category, DeprecationWarning) for w in caught)
+            )
 
 
 class TestStorageDispatcher(unittest.TestCase):

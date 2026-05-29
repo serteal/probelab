@@ -21,6 +21,8 @@ pytestmark = [
 ]
 AutoTokenizer = transformers.AutoTokenizer if transformers else None
 
+import helpers  # noqa: E402  (test helper module on the tests path)
+
 from probelab import masks
 from probelab.tokenization import Tokens, build_token_metadata, tokenize_dialogues
 from probelab.types import Message
@@ -28,9 +30,7 @@ from probelab.types import Message
 
 def _load_tokenizer():
     """Load a small fast tokenizer for testing, skipping if unavailable."""
-    from helpers import load_tokenizer_or_skip
-
-    return load_tokenizer_or_skip("gpt2")
+    return helpers.load_tokenizer_or_skip("gpt2")
 
 
 class TestBuildTokenMetadataRoles(unittest.TestCase):

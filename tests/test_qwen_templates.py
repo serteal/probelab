@@ -5,6 +5,8 @@ import re
 import unittest
 from types import SimpleNamespace
 
+import helpers
+
 from probelab.chat_templates import (
     TEMPLATES,
     _QWEN_PREFIX,
