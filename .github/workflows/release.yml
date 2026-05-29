@@ -5,14 +5,14 @@ name: Release
 # To cut a release:
 #   1. Bump ``__version__`` in ``probelab/_version.py``.
 #   2. Add the matching section to ``CHANGELOG.md`` (heading ``## <version>``).
-#   3. Open a PR and add the ``release`` label to it.
-#   4. Merge to ``main``.
+#   3. Merge to ``main``.
 #
-# After CI passes on ``main`` this workflow checks that the merged PR carried the
-# ``release`` label, validates the version bump, then creates the ``v<version>``
-# tag + GitHub Release. Publishing the release triggers ``publish.yml`` (PyPI).
+# The PR-time "Release check" workflow enforces that a version bump always ships
+# with changelog notes and a valid bump. After CI passes on ``main`` this
+# workflow re-validates the bump, then creates the ``v<version>`` tag + GitHub
+# Release. Publishing the release triggers ``publish.yml`` (PyPI).
 #
-# Without the ``release`` label nothing happens — normal PRs merge as usual.
+# A merge that does not change ``probelab/_version.py`` releases nothing.
 
 on:
   workflow_run:
@@ -20,8 +20,7 @@ on:
     types: [completed]
 
 permissions:
-  contents: write       # create the tag and GitHub Release
-  pull-requests: read   # read labels off the merged PR
+  contents: write   # create the tag and GitHub Release
 
 jobs:
   release:
@@ -51,22 +50,8 @@ jobs:
       - name: Install packaging
         run: pip install packaging
 
-      - name: Check for the release label on the merged PR
-        id: gate
-        run: |
-          labels=$(gh api "repos/${{ github.repository }}/commits/${SHA}/pulls" \
-            --jq '[.[].labels[].name]' 2>/dev/null || echo '[]')
-          echo "Associated PR labels: $labels"
-          if echo "$labels" | grep -q '"release"'; then
-            echo "requested=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "requested=false" >> "$GITHUB_OUTPUT"
-            echo "No 'release' label on the merged PR; skipping release."
-          fi
-
       - name: Read and validate the version bump
         id: version
-        if: steps.gate.outputs.requested == 'true'
         run: |
           extract() { grep -oP '__version__\s*=\s*"\K[^"]+' "$1"; }
 
@@ -84,9 +69,11 @@ jobs:
           fi
           echo "old=$old new=$new"
 
+          # No version bump in this push -> nothing to release.
           if [ "$new" = "$old" ]; then
-            echo "::error::The PR is labelled 'release' but probelab/_version.py was not bumped (still $new)."
-            exit 1
+            echo "probelab/_version.py unchanged ($new); no release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           python - "$new" "$old" <<'PY'
@@ -113,11 +100,12 @@ jobs:
             exit 1
           fi
 
+          echo "release=true" >> "$GITHUB_OUTPUT"
           echo "version=$new" >> "$GITHUB_OUTPUT"
 
       - name: Extract changelog notes
         id: notes
-        if: steps.gate.outputs.requested == 'true'
+        if: steps.version.outputs.release == 'true'
         run: |
           new="${{ steps.version.outputs.version }}"
           awk -v ver="$new" '
@@ -133,7 +121,7 @@ jobs:
           cat notes.md
 
       - name: Create tag and GitHub Release
-        if: steps.gate.outputs.requested == 'true'
+        if: steps.version.outputs.release == 'true'
         run: |
           new="${{ steps.version.outputs.version }}"
           gh release create "v${new}" \

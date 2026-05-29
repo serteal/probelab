@@ -65,21 +65,24 @@ To cut a release, open a normal PR that:
    the current one.
 2. Adds a matching section to `CHANGELOG.md` with a `## <version>` heading
    (e.g. `## 0.1.1 - 2026-06-01`).
-3. Is labelled **`release`**.
 
-When that PR merges to `main` and CI passes, the **Release** workflow
+The PR-time **Release check** workflow (`.github/workflows/release-check.yml`)
+enforces this: if the PR changes `probelab/_version.py`, the bump must be valid
+(PEP 440, strictly increasing, tag not already used) and `CHANGELOG.md` must
+carry the matching section, or the check fails and blocks merge. PRs that do not
+touch the version pass untouched.
+
+When the PR merges to `main` and CI passes, the **Release** workflow
 (`.github/workflows/release.yml`) automatically:
 
-- confirms the merged PR had the `release` label,
-- validates the version bump (valid, strictly increasing, tag does not already
-  exist) and that `CHANGELOG.md` has notes for it,
-- creates the `v<version>` tag and a GitHub Release with those notes.
+- re-validates the version bump,
+- creates the `v<version>` tag and a GitHub Release with the changelog notes.
 
 Publishing the GitHub Release triggers `publish.yml`, which builds and uploads
 to PyPI.
 
-Merging a PR **without** the `release` label never publishes — it is just a
-normal change. Run `make check` locally before opening any PR.
+Merging a PR that does **not** bump `probelab/_version.py` releases nothing — it
+is just a normal change. Run `make check` locally before opening any PR.
 
 PyPI versions are immutable. If a published release has a bug, bump to a new
 patch version rather than trying to replace the existing one.
