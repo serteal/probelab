@@ -5,7 +5,7 @@ import re
 import unittest
 from types import SimpleNamespace
 
-import helpers
+import pytest
 
 from probelab.chat_templates import (
     TEMPLATES,
