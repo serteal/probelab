@@ -38,7 +38,9 @@ class VmapEnsemble:
             if ensemble.all_done:
                 break
             for x, mask, y in batches:
-                ensemble.train_step(x, mask, y)
+                # Signature is train_step(x, y, *extra); the mask is an extra
+                # forward arg, so it goes after the labels.
+                ensemble.train_step(x, y, mask)
             val_logits = ensemble.eval_forward_batched(X, val_idx, batch_size)
             ensemble.check_val(val_logits, y_val)
             ensemble.mark_epoch_done(epoch)

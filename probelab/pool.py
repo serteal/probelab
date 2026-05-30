@@ -333,24 +333,55 @@ def _flat_max(
 ) -> torch.Tensor:
     """Max pool over flat [T, *] data using offsets and det mask.
 
-    Uses scatter_reduce for vectorized segment reduction.
+    Chunks the input along the sample axis (like :func:`_flat_mean`) so that the
+    per-chunk ``scatter_reduce`` never materializes more than ~`_POOL_CHUNK_TOKENS`
+    tokens worth of masked copies at once. Each chunk holds whole samples, so its
+    segment maxima are final — no cross-chunk stitching needed.
     """
     batch = offsets.shape[0] - 1
-    det_bool = det.to(data.device).bool()
-    total = data.shape[0]
     extra_dims = data.shape[1:]
-    offsets_dev = offsets.to(data.device)
 
-    seg_ids = _segment_ids(offsets_dev, total)
-    # Mask out non-detected tokens with -inf
-    masked_data = data.clone()
-    masked_data[~det_bool] = float("-inf")
+    if batch == 0:
+        return data.new_zeros((0, *extra_dims))
+
+    offsets_cpu = offsets.detach().cpu()
+    det_full = det.to(data.device).bool() if det.device != data.device else det.bool()
 
     out = data.new_full((batch, *extra_dims), float("-inf"))
-    idx = seg_ids.view(-1, *([1] * len(extra_dims))).expand_as(masked_data)
-    out.scatter_reduce_(0, idx, masked_data.to(out.dtype), reduce="amax")
+    # Avoid shadowing the module-level ``max``/``min`` pool functions.
+    import builtins as _b
 
-    # Replace -inf with 0 for segments with no valid tokens
+    s = 0
+    while s < batch:
+        t_start = int(offsets_cpu[s].item())
+        single_sample_len = int((offsets_cpu[s + 1] - offsets_cpu[s]).item())
+        budget = _b.max(_POOL_CHUNK_TOKENS, single_sample_len)
+        target = t_start + budget
+        e = int(torch.searchsorted(
+            offsets_cpu, torch.tensor(target), right=True,
+        ).item()) - 1
+        e = _b.max(e, s + 1)
+        e = _b.min(e, batch)
+        t_end = int(offsets_cpu[e].item())
+
+        chunk_data = data[t_start:t_end]
+        chunk_det = det_full[t_start:t_end]
+        if chunk_data.shape[0] == 0:
+            s = e
+            continue
+
+        chunk_offsets = (offsets[s:e + 1] - offsets[s]).to(data.device)
+        seg_ids = _segment_ids(chunk_offsets, chunk_data.shape[0])
+        # Mask non-detected tokens with -inf only within this chunk.
+        masked = chunk_data.masked_fill(
+            ~chunk_det.view(-1, *([1] * len(extra_dims))), float("-inf")
+        )
+        idx = seg_ids.view(-1, *([1] * len(extra_dims))).expand_as(masked)
+        out[s:e].scatter_reduce_(0, idx, masked.to(out.dtype), reduce="amax")
+
+        s = e
+
+    # Replace -inf with 0 for segments with no valid tokens.
     out[out == float("-inf")] = 0
     return out
 

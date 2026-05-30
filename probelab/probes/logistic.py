@@ -66,19 +66,15 @@ class Logistic(BaseProbe):
         x = (x - self.scaler_mean) / self.scaler_std
         return self.linear(x).squeeze(-1)
 
-    def loss_on_batch(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        logits = self(features)
-        loss = F.binary_cross_entropy_with_logits(logits, labels)
-        if self.C > 0:
-            loss = loss + (1.0 / (2.0 * self.C)) * self.linear.weight.pow(2).sum() / max(1, labels.numel())
-        return loss
-
     def fit(self, X: Activations, y: list | torch.Tensor, **kwargs) -> "Logistic":
         features, labels = self._feature_data_from_activations(X, y)
         if self.device is None:
             self.device = str(X.data.device)
         if features.shape[0] == 0:
-            return self
+            raise ValueError(
+                f"{self.__class__.__name__}.fit received no training features "
+                "(0 samples/tokens after masking). Check the activations and mask."
+            )
         if features.shape[0] < 2:
             raise ValueError("Logistic requires at least two training samples or tokens.")
         if torch.unique(labels.detach().cpu()).numel() < 2:
@@ -146,7 +142,7 @@ class Logistic(BaseProbe):
     def predict_logits(self, X: Activations, **kwargs) -> torch.Tensor:
         self._check_initialized()
         features, _ = self._feature_data_from_activations(X)
-        logits = self(features)
+        logits = self._feature_logits_batched(features, kwargs.get("batch_size"))
         return self._feature_predict_from_flat(X, logits)
 
     def predict(self, X: Activations, **kwargs) -> torch.Tensor:

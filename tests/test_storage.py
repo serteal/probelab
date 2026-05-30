@@ -271,6 +271,31 @@ class TestStorageDispatcher(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "format must be"):
                 storage.save(acts, str(Path(tmp) / "x.h5"), format="zarr")
 
+    def test_has_memmap_tolerates_corrupt_meta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "broken"
+            d.mkdir()
+            (d / "meta.json").write_text("{ this is not json")
+            # Must not raise; a foreign/corrupt dir is simply "not a memmap".
+            self.assertFalse(storage.has_memmap(str(d)))
+
+    def test_memmap_stream_layers_parity(self):
+        acts = Activations(
+            torch.randn(3, 2, 4, 5),
+            detection_mask=torch.ones(3, 4, dtype=torch.bool),
+            dims="blsh",
+            layers=(4, 8),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "acts.mm"
+            storage.save_memmap(acts, str(path))
+            # int -> single-layer bsh chunks
+            single = list(storage.stream_memmap(str(path), layers=8, chunk_tokens=4))
+            self.assertTrue(all(c.dims == "bsh" for c, _ in single))
+            # list -> multilayer blsh chunks
+            multi = list(storage.stream_memmap(str(path), layers=[8], chunk_tokens=4))
+            self.assertTrue(all(c.dims == "blsh" and c.layers == (8,) for c, _ in multi))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,8 +5,9 @@ name: Publish
 #
 #   git tag v1.2.3 && git push origin v1.2.3
 #
-# The pushed ``v*`` tag builds the dists, creates a GitHub Release, and publishes
-# to PyPI via Trusted Publishing.
+# The pushed ``v*`` tag runs the test suite, builds the dists, publishes to PyPI
+# via Trusted Publishing, and then creates the GitHub Release. A red tree never
+# publishes, and the GitHub Release is only created after PyPI succeeds.
 
 on:
   push:
@@ -17,8 +18,39 @@ permissions:
   contents: read
 
 jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev --locked --python ${{ matrix.python-version }}
+
+      - name: Lint
+        run: uv run ruff check probelab tests
+
+      - name: Test
+        run: uv run pytest tests
+
   build:
     name: Build distributions
+    needs: test   # never publish a tag whose tree is red
     runs-on: ubuntu-latest
 
     steps:
@@ -62,7 +94,7 @@ jobs:
 
   github-release:
     name: Create GitHub Release
-    needs: build
+    needs: publish-to-pypi   # only announce a release that actually reached PyPI
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the GitHub Release for the tag

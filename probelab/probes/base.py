@@ -198,6 +198,23 @@ class BaseProbe(nn.Module):
         probs[padded_mask.to(flat_probs.device)] = flat_probs
         return probs
 
+    def _feature_logits_batched(
+        self, features: torch.Tensor, batch_size: int | None = None
+    ) -> torch.Tensor:
+        """Run ``forward`` over *features* in chunks to bound peak memory.
+
+        ``batch_size=None`` falls back to ``self.batch_size`` (or a single pass
+        when the probe has no ``batch_size``). Output matches a one-shot
+        ``self(features)`` call.
+        """
+        n = features.shape[0]
+        if batch_size is None:
+            batch_size = getattr(self, "batch_size", n) or n
+        if n == 0 or batch_size >= n:
+            return self(features)
+        chunks = [self(features[start : start + batch_size]) for start in range(0, n, batch_size)]
+        return torch.cat(chunks, dim=0)
+
     def regularization_loss(self) -> torch.Tensor:
         device, dtype = self._module_device_dtype()
         return torch.zeros((), device=device, dtype=dtype)
@@ -222,9 +239,7 @@ class BaseProbe(nn.Module):
     def _snapshot_best(self) -> None:
         self._best_state = copy.deepcopy(self.state_dict())
 
-    def _check_val_loss(self, val_loss: float, scheduler=None) -> bool:
-        # ``scheduler`` is retained for internal compatibility; training loops
-        # step schedulers on their epoch cadence, not validation cadence.
+    def _check_val_loss(self, val_loss: float) -> bool:
         if val_loss < self._best_val_loss:
             self._best_val_loss = val_loss
             self._patience_counter = 0

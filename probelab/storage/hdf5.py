@@ -171,17 +171,31 @@ def load(
 def stream(
     path: str,
     *,
-    chunk_tokens: int = 100_000,
+    layers: int | list[int] | None = None,
+    chunk_tokens: int = 500_000,
     cast: str | None = None,
 ) -> Generator[tuple[Activations, list[int]], None, None]:
-    """Yield activation chunks from an HDF5 file without loading it all."""
+    """Yield activation chunks from a sequence HDF5 file without loading it all.
+
+    Args:
+        path: HDF5 file written by :func:`save` with a sequence (``"s"``) layout.
+        layers: Layer id(s) to keep per chunk (``int`` drops the layer axis,
+            list keeps it, ``None`` keeps all). Only valid for multilayer files.
+        chunk_tokens: Approximate token budget per yielded chunk.
+        cast: Optional dtype name (``"float32"``/``"float16"``/``"bfloat16"``).
+    """
     h5py = _import_h5py()
     target_dtype = _CAST_MAP[cast] if cast else None
 
     with h5py.File(path, "r") as handle:
+        dims = str(handle.attrs["dims"])
+        if "offsets" not in handle or "detection_mask" not in handle:
+            raise ValueError(
+                f"stream() requires a sequence HDF5 file (dims with 's'); got dims={dims!r}. "
+                "Use load() for dense activations."
+            )
         offsets_np = handle["offsets"][:]
         stored_dtype = handle.attrs.get("dtype", "")
-        dims = str(handle.attrs["dims"])
         stored_layers = (
             tuple(int(x) for x in handle["layers"][:])
             if "layers" in handle
@@ -230,12 +244,15 @@ def stream(
                 local_offsets[i - chunk_start + 1] = int(offsets_np[i + 1]) - tok_start
 
             indices = list(range(chunk_start, chunk_end))
-            yield Activations.from_flat(
+            chunk = Activations.from_flat(
                 data=chunk_data,
                 dims=dims,
                 offsets=local_offsets,
                 detection_mask=chunk_mask,
                 layers=stored_layers,
                 metadata=metadata,
-            ), indices
+            )
+            if layers is not None and "l" in dims:
+                chunk = chunk.select("l", layers)
+            yield chunk, indices
             sample_idx = chunk_end

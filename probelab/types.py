@@ -16,14 +16,6 @@ class Role(str, Enum):
     ASSISTANT = "assistant"
 
 
-class AggregationMethod(str, Enum):
-    MEAN = "mean"
-    MAX = "max"
-    LAST_TOKEN = "last_token"
-    EMA = "ema"
-    ROLLING = "rolling"
-
-
 @dataclass
 class Message:
     """
