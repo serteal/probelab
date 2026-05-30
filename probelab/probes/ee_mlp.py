@@ -110,9 +110,10 @@ class EEMLP(BaseProbe):
         features = features.to(dtype=self._resolve_dtype(features.dtype))
         labels = labels.to(dtype=features.dtype)
         self.initialize(features, labels)
-        return self._fit_feature_default(features, labels, shuffle_with_generator=False, **kwargs)
+        return self._fit_feature_default(features, labels, **kwargs)
 
     def predict_logits(self, X: Activations, **kwargs) -> torch.Tensor:
+        self._check_initialized()
         features, _ = self._feature_data_from_activations(X)
         return self._feature_predict_from_flat(X, self(features))
 

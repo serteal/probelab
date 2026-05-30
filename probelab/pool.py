@@ -12,6 +12,11 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+# Public pooling functions. ``mean``/``max`` deliberately shadow the builtins
+# inside this module; always access them as ``pool.mean`` / ``pool.max`` rather
+# than via ``from probelab.pool import *``.
+__all__ = ["mean", "max", "last_token", "ema", "rolling"]
+
 
 def mean(
     x: torch.Tensor,
@@ -70,10 +75,8 @@ def max(
     # Handle empty sequences
     no_valid = ~mask.any(dim=1)
     if no_valid.any():
-        # Batch dim shifts by 1 if we removed a dim before it
-        batch_dim_out = 0 if dim > 0 else 0
         indexer = [slice(None)] * result.ndim
-        indexer[batch_dim_out] = no_valid
+        indexer[0] = no_valid  # batch dim
         result[tuple(indexer)] = 0.0
     return result
 

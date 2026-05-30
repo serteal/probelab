@@ -1,5 +1,7 @@
 """Reusable dialogue building utilities."""
 
+from collections.abc import Sequence
+
 from ..types import Dialogue, Message
 
 # Role normalization mapping
@@ -31,4 +33,47 @@ def build_from_messages(
         content = msg.get(content_field, msg.get("value", ""))
         if role in ("user", "assistant", "system") and content:
             dialogue.append(Message(role=role, content=content))
+    return dialogue
+
+
+# Common field aliases seen across HuggingFace QA-style datasets.
+_USER_KEYS = ("question", "prompt", "instruction", "input", "query", "text")
+_ASSISTANT_KEYS = ("answer", "response", "output", "completion", "target")
+
+
+def build_qa(
+    item: dict,
+    *,
+    user_keys: Sequence[str] = _USER_KEYS,
+    assistant_keys: Sequence[str] = _ASSISTANT_KEYS,
+    system_keys: Sequence[str] = (),
+) -> Dialogue | None:
+    """Build a (optionally system-prefixed) single-turn dialogue from a record.
+
+    Tries each key in ``user_keys`` / ``assistant_keys`` / ``system_keys`` in
+    order and uses the first non-empty value. This consolidates the
+    try-several-field-aliases pattern repeated across topic loaders.
+
+    Returns ``None`` when no user content is found, so callers can skip the row.
+    """
+
+    def _first(keys: Sequence[str]) -> str | None:
+        for key in keys:
+            value = item.get(key)
+            if value:
+                return str(value)
+        return None
+
+    user = _first(user_keys)
+    if not user:
+        return None
+
+    dialogue: Dialogue = []
+    system = _first(system_keys) if system_keys else None
+    if system:
+        dialogue.append(Message(role="system", content=system))
+    dialogue.append(Message(role="user", content=user))
+    assistant = _first(assistant_keys)
+    if assistant:
+        dialogue.append(Message(role="assistant", content=assistant))
     return dialogue

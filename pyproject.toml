@@ -1,11 +1,11 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "probelab"
-version = "0.1.0"
-description = "A library for training activation monitors on language model activations."
+dynamic = ["version"]
+description = "A library for training probes and activation monitors on language model activations."
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "Alex Serrano", email = "oss@alexserrano.org" }]
@@ -87,6 +87,9 @@ markers = [
     "slow: tests that are too slow for normal local feedback",
     "gpu: tests that require accelerator hardware",
 ]
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.sdist]
 exclude = [

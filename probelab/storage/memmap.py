@@ -14,6 +14,12 @@ import torch
 
 from ..activations import Activations
 
+_CAST_MAP = {
+    "float32": torch.float32,
+    "float16": torch.float16,
+    "bfloat16": torch.bfloat16,
+}
+
 
 def _json_metadata(metadata: dict) -> dict:
     try:
@@ -98,10 +104,20 @@ def save(activations: Activations, dir_path: str) -> None:
 def load(
     dir_path: str,
     *,
-    layer: int | list[int] | None = None,
+    layers: int | list[int] | None = None,
     device: str = "cpu",
+    cast: str | None = None,
 ) -> Activations:
-    """Load activations from a memmap directory."""
+    """Load activations from a memmap directory.
+
+    Args:
+        dir_path: Directory written by :func:`save`.
+        layers: Layer id(s) to load. An ``int`` returns single-layer ``"bsh"``
+            activations; a list returns ``"blsh"``; ``None`` loads all layers.
+        device: Target device.
+        cast: Optional dtype name (``"float32"``/``"float16"``/``"bfloat16"``).
+    """
+    target_dtype = _CAST_MAP[cast] if cast else None
     path = Path(dir_path)
     with open(path / "meta.json") as handle:
         meta = json.load(handle)
@@ -128,12 +144,12 @@ def load(
     )
     detection_mask = torch.from_numpy(mask_mm.copy()).to(torch.bool).to(device)
 
-    if layer is None:
+    if layers is None:
         load_layers = all_layers
-    elif isinstance(layer, int):
-        load_layers = [layer]
+    elif isinstance(layers, int):
+        load_layers = [layers]
     else:
-        load_layers = list(layer)
+        load_layers = list(layers)
 
     layer_tensors = []
     for layer_id in load_layers:
@@ -147,10 +163,12 @@ def load(
         )
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", "The given NumPy array is not writable")
-            tensor = torch.from_numpy(layer_mm).view(torch.bfloat16).to(device)
-        layer_tensors.append(tensor)
+            tensor = torch.from_numpy(layer_mm).view(torch.bfloat16)
+        if target_dtype is not None:
+            tensor = tensor.to(target_dtype)
+        layer_tensors.append(tensor.to(device))
 
-    if isinstance(layer, int):
+    if isinstance(layers, int):
         return Activations.from_flat(
             data=layer_tensors[0],
             dims="bsh",
@@ -172,10 +190,19 @@ def load(
 def stream(
     dir_path: str,
     *,
-    layer: int | None = None,
+    layers: int | None = None,
     chunk_tokens: int = 500_000,
+    cast: str | None = None,
 ) -> Generator[tuple[Activations, list[int]], None, None]:
-    """Yield activation chunks from memmap files."""
+    """Yield activation chunks from memmap files.
+
+    Args:
+        dir_path: Directory written by :func:`save`.
+        layers: Single layer id to stream, or ``None`` for all layers.
+        chunk_tokens: Approximate token budget per yielded chunk.
+        cast: Optional dtype name (``"float32"``/``"float16"``/``"bfloat16"``).
+    """
+    target_dtype = _CAST_MAP[cast] if cast else None
     path = Path(dir_path)
     with open(path / "meta.json") as handle:
         meta = json.load(handle)
@@ -200,7 +227,7 @@ def stream(
         shape=(total_tokens,),
     )
 
-    load_layers = [layer] if layer is not None else all_layers
+    load_layers = [layers] if layers is not None else all_layers
     layer_mms = {
         layer_id: np.memmap(
             path / f"layer_{layer_id}.bin",
@@ -229,9 +256,9 @@ def stream(
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", "The given NumPy array is not writable")
-            if layer is not None:
+            if layers is not None:
                 chunk_data = torch.from_numpy(
-                    layer_mms[layer][tok_start:tok_end]
+                    layer_mms[layers][tok_start:tok_end]
                 ).view(torch.bfloat16)
                 dims = "bsh"
                 stored_layers = None
@@ -246,6 +273,8 @@ def stream(
                 dims = "blsh"
                 stored_layers = tuple(all_layers)
 
+        if target_dtype is not None:
+            chunk_data = chunk_data.to(target_dtype)
         chunk_mask = torch.from_numpy(mask_mm[tok_start:tok_end].astype(bool).copy())
         local_offsets = torch.zeros(chunk_end - chunk_start + 1, dtype=torch.int64)
         for i in range(chunk_start, chunk_end):

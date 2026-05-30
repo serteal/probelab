@@ -54,7 +54,7 @@ def wild_jailbreak() -> Dataset:
     "WildJailbreak balanced subset for augmenting harmful training data",
 )
 def wild_jailbreak_aug() -> Dataset:
-    """Balanced 80k-sample subset of WildJailbreak, 20k per data_type.
+    """Balanced 50k-sample subset of WildJailbreak, 12.5k per data_type.
     Deterministic (seed=0). Used as additional harmful training data
     on top of wildguard_mix_train for §6B harmful-scaling."""
     import random

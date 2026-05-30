@@ -21,14 +21,21 @@ pytestmark = [
 ]
 AutoTokenizer = transformers.AutoTokenizer if transformers else None
 
-from probelab import masks
-from probelab.tokenization import Tokens, build_token_metadata, tokenize_dialogues
-from probelab.types import Message
+from probelab import masks  # noqa: E402
+from probelab.tokenization import Tokens, build_token_metadata, tokenize_dialogues  # noqa: E402
+from probelab.types import Message  # noqa: E402
 
 
 def _load_tokenizer():
-    """Load a small fast tokenizer for testing."""
-    tok = AutoTokenizer.from_pretrained("gpt2")
+    """Load a small fast tokenizer for testing, skipping if unavailable.
+
+    Skips (rather than errors) when the Hub is unreachable so the suite stays
+    runnable offline.
+    """
+    try:
+        tok = AutoTokenizer.from_pretrained("gpt2")
+    except Exception as exc:  # network/offline/gated
+        pytest.skip(f"could not load gpt2 tokenizer: {exc}")
     tok.pad_token = tok.eos_token
     return tok
 

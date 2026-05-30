@@ -223,8 +223,15 @@ def cysecbench(path: str | None = None) -> Dataset:
 @_register_dataset("intercode_ctf", Topic.CYBERSECURITY, "InterCode CTF challenges")
 def intercode_ctf() -> Dataset:
     """InterCode CTF: 100 CTF challenges from picoCTF (GitHub)."""
+    import urllib.error
+
     url = "https://raw.githubusercontent.com/princeton-nlp/intercode/master/data/ctf/ic_ctf.json"
-    data = json.loads(urlopen(url).read())
+    try:
+        data = json.loads(urlopen(url, timeout=30).read())
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise RuntimeError(
+            f"Failed to download InterCode CTF data from {url!r}: {e}"
+        ) from e
 
     dialogues, labels = [], []
     metadata: dict[str, list[Any]] = {"task_id": [], "tags": []}
